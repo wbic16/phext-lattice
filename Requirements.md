@@ -117,6 +117,11 @@
 - R3.5.2: Click-to-select dimensions in sentron panel
 - R3.5.3: Search overlay with live results and click-to-jump
 - R3.5.4: Goto overlay for direct coordinate entry
+- R3.5.5: URL hash reflects current coordinate (`#z.z.z/y.y.y/x.x.x`)
+- R3.5.6: Browser back/forward navigates coordinate history via hash
+- R3.5.7: Loading a URL with a hash navigates to that coordinate on startup
+- R3.5.8: Hash updates on every navigation (dim change, move, goto, search jump, zoom drill)
+- R3.5.9: Coordinate links and bookmarks are shareable via URL
 
 ### R3.6 Theme
 - R3.6.1: Dark background (#171717)

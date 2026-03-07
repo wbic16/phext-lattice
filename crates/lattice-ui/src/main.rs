@@ -958,13 +958,22 @@ async function api(method, path, body) {
 }
 
 // ── Render ──
-function render(nav) {
+let suppressHashChange = false;
+
+function render(nav, skipHash) {
   lastNav = nav;
   const p = nav.position;
   const indicator = p.has_scroll ? '●' : '○';
   $('coord-text').textContent = `💎 ${p.coordinate} ◆ ${p.dimension} ${indicator}`;
   $('scroll-count').textContent = `[${p.total_scrolls} scrolls]`;
   $('dirty-flag').textContent = dirty ? '● unsaved' : '';
+
+  // Update URL hash for browser back/forward
+  if (!skipHash) {
+    suppressHashChange = true;
+    location.hash = p.coordinate;
+    suppressHashChange = false;
+  }
 
   // Sentron
   const s = nav.sentron;
@@ -1281,8 +1290,24 @@ $('search-input').addEventListener('keydown', (e) => {
   }
 });
 
-// Initial load
-api('GET', '/api/nav').then(render);
+// Browser back/forward via hash
+window.addEventListener('hashchange', async () => {
+  if (suppressHashChange) return;
+  const hash = location.hash.replace(/^#/, '');
+  if (hash && /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash)) {
+    render(await api('POST', '/api/goto', hash), true);
+  }
+});
+
+// Initial load — navigate to hash coordinate if present
+(async () => {
+  const hash = location.hash.replace(/^#/, '');
+  if (hash && /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash)) {
+    render(await api('POST', '/api/goto', hash));
+  } else {
+    render(await api('GET', '/api/nav'));
+  }
+})();
 </script>
 </body>
 </html>
