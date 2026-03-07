@@ -723,6 +723,16 @@ body {
   tab-size: 4;
 }
 #content.empty { color: var(--dim); font-style: italic; }
+#content a.coord-link {
+  color: var(--coord);
+  text-decoration: none;
+  cursor: pointer;
+  border-bottom: 1px dotted var(--coord);
+}
+#content a.coord-link:hover {
+  color: var(--active);
+  border-bottom-color: var(--active);
+}
 
 #editor {
   display: none;
@@ -1004,10 +1014,10 @@ function render(nav) {
   }
   $('sentron').innerHTML = html;
 
-  // Scroll content
+  // Scroll content — with coordinate auto-hyperlinking
   const el = $('content');
   if (nav.scroll.content) {
-    el.textContent = nav.scroll.content;
+    el.innerHTML = linkifyCoordinates(escHtml(nav.scroll.content));
     el.className = '';
   } else {
     el.textContent = '○ empty coordinate';
@@ -1182,6 +1192,16 @@ function closeOverlays() {
 // ── Helpers ──
 function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function escAttr(s) { return s.replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
+
+// Auto-detect phext coordinates (z.z.z/y.y.y/x.x.x) and make them clickable links.
+// Runs on already-escaped HTML text, so slashes and dots are literal.
+function linkifyCoordinates(html) {
+  // Match patterns like 1.2.3/4.5.6/7.8.9 — three dot-separated groups of 1-4 digit numbers
+  const coordRe = /\b(\d{1,4}\.\d{1,4}\.\d{1,4}\/\d{1,4}\.\d{1,4}\.\d{1,4}\/\d{1,4}\.\d{1,4}\.\d{1,4})\b/g;
+  return html.replace(coordRe, (match) => {
+    return `<a class="coord-link" onclick="event.preventDefault();gotoCoord('${match}')" href="#">${match}</a>`;
+  });
+}
 
 // ── Keyboard ──
 document.addEventListener('keydown', async (e) => {
