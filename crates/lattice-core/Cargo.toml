@@ -1,0 +1,11 @@
+[package]
+name = "lattice-core"
+description = "Memory-mapped 9D phext lattice with O(1) coordinate lookup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+libphext.workspace = true
+memmap2.workspace = true
