@@ -138,7 +138,7 @@ impl LatticeIndex {
     /// Returns None if `coord` is at or beyond the last populated coordinate.
     pub fn next_populated(&self, coord: &Coordinate) -> Option<Coordinate> {
         // Binary search for the position
-        match self.ordered.binary_search_by(|c| c.partial_cmp(coord).unwrap()) {
+        match self.ordered.binary_search(coord) {
             Ok(idx) => {
                 // Exact match — return the next one
                 if idx + 1 < self.ordered.len() {
@@ -160,15 +160,8 @@ impl LatticeIndex {
 
     /// Find the previous populated coordinate before `coord` in document order.
     pub fn prev_populated(&self, coord: &Coordinate) -> Option<Coordinate> {
-        match self.ordered.binary_search_by(|c| c.partial_cmp(coord).unwrap()) {
-            Ok(idx) => {
-                if idx > 0 {
-                    Some(self.ordered[idx - 1])
-                } else {
-                    None
-                }
-            }
-            Err(idx) => {
+        match self.ordered.binary_search(coord) {
+            Ok(idx) | Err(idx) => {
                 if idx > 0 {
                     Some(self.ordered[idx - 1])
                 } else {

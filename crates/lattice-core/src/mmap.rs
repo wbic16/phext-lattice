@@ -146,7 +146,7 @@ impl MappedLattice {
             }
         }
 
-        coords.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        coords.sort();
         coords.dedup();
         coords
     }
@@ -249,6 +249,16 @@ impl MappedLattice {
         }
 
         output
+    }
+
+    /// Access the raw mmap buffer for search operations.
+    /// Returns None if overlay has modifications (use to_phext_bytes instead).
+    pub fn raw_buffer(&self) -> Option<&[u8]> {
+        if self.overlay.is_empty() {
+            Some(&self.mmap)
+        } else {
+            None
+        }
     }
 
     /// Access the underlying index for navigation queries.
