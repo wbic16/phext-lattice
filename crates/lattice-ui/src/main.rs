@@ -1,64 +1,106 @@
-/// phext-edit — GPU-rendered phext editor.
+/// phext-edit — web-served phext editor.
 ///
-/// The body of Zed (Rust + gpui), the soul of Emacs (extensible runtime),
-/// the mind of Helix (modal, structural, intelligent).
+/// Hosts a memory-mapped phext file over HTTP. Open your browser to navigate
+/// the 9D lattice with sentron topology, search, and scroll editing.
+///
+/// Usage: phext-edit <file.phext> [--port 8080]
 
-mod coordinate_bar;
-mod dimension_panel;
-mod scroll_view;
-mod editor_pane;
 mod theme;
 
-use gpui::*;
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
+
+use serde::Serialize;
+
 use lattice_core::{
-    MappedLattice, Navigator, Dimension, CoordinateNav,
-    Sentron, VimMode, EditorMode,
-    UndoEngine, LatticeOverview, DimensionDensity,
+    CoordinateNav, Dimension, LatticeOverview,
+    MappedLattice, Navigator, Sentron,
+    DimensionDensity,
 };
 
-// ── Actions ────────────────────────────────────────────────────────────
+// ── API Types ──────────────────────────────────────────────────────────
 
-actions!(phext_edit, [
-    // Dimension selection
-    Dim1, Dim2, Dim3, Dim4, Dim5, Dim6, Dim7, Dim8, Dim9,
-    // Movement
-    MoveForward, MoveBackward,
-    NextPopulated, PrevPopulated,
-    JumpForward10, JumpBackward10,
-    // Navigation
-    CycleDimGroupForward, CycleDimGroupBackward,
-    JumpToBase,
-    // View
-    EnterScroll, ExitScroll,
-    TogglePreview,
-    // Quit
-    Quit,
-]);
-
-// ── Window ─────────────────────────────────────────────────────────────
-
-struct PhextWindow {
-    lattice: MappedLattice,
-    nav: Navigator,
-    sentron: Sentron,
-    overview: LatticeOverview,
-    _densities: Vec<DimensionDensity>,
-    _undo: UndoEngine,
-    _mode: Box<dyn EditorMode>,
-    file_path: String,
-    focus_handle: FocusHandle,
-    viewing_scroll: bool,
-    scroll_offset: f32,
-    status_msg: String,
+#[derive(Serialize)]
+struct ApiStatus {
+    scrolls: usize,
+    bytes: usize,
+    file: String,
 }
 
-impl PhextWindow {
-    fn new(lattice: MappedLattice, file_path: String, window: &mut Window, cx: &mut App) -> Self {
+#[derive(Serialize)]
+struct ApiPosition {
+    coordinate: String,
+    dimension: String,
+    dimension_index: u8,
+    has_scroll: bool,
+    total_scrolls: usize,
+}
+
+#[derive(Serialize)]
+struct ApiScroll {
+    coordinate: String,
+    content: String,
+    bytes: usize,
+}
+
+#[derive(Serialize)]
+struct ApiSentron {
+    center: String,
+    size: usize,
+    structural_reach: usize,
+    sequential_reach: usize,
+    axons: Vec<ApiAxon>,
+}
+
+#[derive(Serialize)]
+struct ApiAxon {
+    dimension: u8,
+    name: String,
+    group: String,
+    value: usize,
+    backward: usize,
+    forward: usize,
+}
+
+#[derive(Serialize)]
+struct ApiNav {
+    position: ApiPosition,
+    sentron: ApiSentron,
+    scroll: ApiScroll,
+    densities: Vec<ApiDensity>,
+}
+
+#[derive(Serialize)]
+struct ApiDensity {
+    dimension: u8,
+    name: String,
+    extent: usize,
+    populated: usize,
+    sparkline: String,
+}
+
+#[derive(Serialize)]
+struct ApiSearchHit {
+    coordinate: String,
+    context: String,
+    offset: usize,
+}
+
+// ── State ──────────────────────────────────────────────────────────────
+
+struct AppState {
+    lattice: MappedLattice,
+    nav: Navigator,
+    overview: LatticeOverview,
+    file_path: String,
+}
+
+impl AppState {
+    fn new(lattice: MappedLattice, file_path: String) -> Self {
         let buf = lattice.to_phext_bytes();
         let overview = LatticeOverview::build(&buf, lattice.index());
-        let densities: Vec<DimensionDensity> = (1..=9u8)
-            .map(|i| DimensionDensity::build(Dimension::from_index(i).unwrap(), lattice.index()))
-            .collect();
 
         let mut nav = Navigator::new();
         if lattice.has_scroll(&libphext::phext::default_coordinate()) {
@@ -67,385 +109,791 @@ impl PhextWindow {
             nav.next_populated(lattice.index());
         }
 
-        let sentron = Sentron::build(&nav.position(), lattice.index());
-        let focus_handle = cx.focus_handle();
-        window.focus(&focus_handle);
-
-        PhextWindow {
-            lattice,
-            nav,
-            sentron,
-            overview,
-            _densities: densities,
-            _undo: UndoEngine::new(),
-            _mode: Box::new(VimMode::new()),
-            file_path,
-            focus_handle,
-            viewing_scroll: false,
-            scroll_offset: 0.0,
-            status_msg: String::new(),
-        }
+        AppState { lattice, nav, overview, file_path }
     }
 
-    fn refresh_sentron(&mut self) {
-        if self.sentron.center != self.nav.position() {
-            self.sentron = Sentron::build(&self.nav.position(), self.lattice.index());
-        }
-    }
-
-    // ── Action handlers ──
-
-    fn on_dim(&mut self, dim: u8, _window: &mut Window, cx: &mut Context<Self>) {
-        self.nav.select_dimension(dim);
-        cx.notify();
-    }
-
-    fn on_move_forward(&mut self, _: &MoveForward, _window: &mut Window, cx: &mut Context<Self>) {
-        if !self.nav.move_forward() {
-            self.status_msg = "▸ boundary".into();
-        }
-        cx.notify();
-    }
-
-    fn on_move_backward(&mut self, _: &MoveBackward, _window: &mut Window, cx: &mut Context<Self>) {
-        if !self.nav.move_backward() {
-            self.status_msg = "◂ boundary".into();
-        }
-        cx.notify();
-    }
-
-    fn on_next_populated(&mut self, _: &NextPopulated, _window: &mut Window, cx: &mut Context<Self>) {
-        if !self.nav.next_populated(self.lattice.index()) {
-            self.status_msg = "▾ last scroll".into();
-        }
-        cx.notify();
-    }
-
-    fn on_prev_populated(&mut self, _: &PrevPopulated, _window: &mut Window, cx: &mut Context<Self>) {
-        if !self.nav.prev_populated(self.lattice.index()) {
-            self.status_msg = "▴ first scroll".into();
-        }
-        cx.notify();
-    }
-
-    fn on_jump_forward_10(&mut self, _: &JumpForward10, _window: &mut Window, cx: &mut Context<Self>) {
-        let mut n = 0;
-        for _ in 0..10 {
-            if self.nav.next_populated(self.lattice.index()) { n += 1; } else { break; }
-        }
-        if n > 0 { self.status_msg = format!("↓{}", n); }
-        cx.notify();
-    }
-
-    fn on_jump_backward_10(&mut self, _: &JumpBackward10, _window: &mut Window, cx: &mut Context<Self>) {
-        let mut n = 0;
-        for _ in 0..10 {
-            if self.nav.prev_populated(self.lattice.index()) { n += 1; } else { break; }
-        }
-        if n > 0 { self.status_msg = format!("↑{}", n); }
-        cx.notify();
-    }
-
-    fn on_cycle_dim_forward(&mut self, _: &CycleDimGroupForward, _window: &mut Window, cx: &mut Context<Self>) {
-        let dim = self.nav.active_dimension() as u8;
-        let next = if dim <= 3 { 4 } else if dim <= 6 { 7 } else { 1 };
-        self.nav.select_dimension(next);
-        cx.notify();
-    }
-
-    fn on_cycle_dim_backward(&mut self, _: &CycleDimGroupBackward, _window: &mut Window, cx: &mut Context<Self>) {
-        let dim = self.nav.active_dimension() as u8;
-        let prev = if dim >= 7 { 4 } else if dim >= 4 { 1 } else { 7 };
-        self.nav.select_dimension(prev);
-        cx.notify();
-    }
-
-    fn on_jump_to_base(&mut self, _: &JumpToBase, _window: &mut Window, cx: &mut Context<Self>) {
-        self.nav.goto(libphext::phext::default_coordinate());
-        self.status_msg = "⌂ BASE".into();
-        cx.notify();
-    }
-
-    fn on_enter_scroll(&mut self, _: &EnterScroll, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.lattice.has_scroll(&self.nav.position()) {
-            self.viewing_scroll = true;
-            self.scroll_offset = 0.0;
-        } else {
-            self.status_msg = "○ empty coordinate".into();
-        }
-        cx.notify();
-    }
-
-    fn on_exit_scroll(&mut self, _: &ExitScroll, _window: &mut Window, cx: &mut Context<Self>) {
-        self.viewing_scroll = false;
-        cx.notify();
-    }
-
-    fn on_quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
-        cx.quit();
-    }
-
-    // ── Rendering helpers ──
-
-    fn coordinate_text(&self) -> String {
+    fn position_json(&self) -> ApiPosition {
         let pos = self.nav.position();
-        let dim = self.nav.active_dimension();
-        let has = if self.lattice.has_scroll(&pos) { "●" } else { "○" };
-        format!("💎 {} ◆ {} {} [{} scrolls]",
-            pos, dim.name(), has, self.overview.total_scrolls)
-    }
-
-    fn sentron_lines(&self) -> Vec<(String, theme::ArmColor)> {
-        let s = &self.sentron;
-        let pos = self.nav.position();
-        let dim = self.nav.active_dimension();
-        let mut lines = Vec::new();
-
-        lines.push((format!("◉ sentron [{}/40]  {}↔{}", s.size(), s.structural_reach, s.sequential_reach), theme::ArmColor::Neutral));
-        lines.push((String::new(), theme::ArmColor::Neutral));
-
-        lines.push(("── spatial ──".into(), theme::ArmColor::Z));
-        for axon in s.structural_axons() {
-            let marker = if axon.dimension == dim { "▸" } else { " " };
-            lines.push((
-                format!("{}{} {:<10} {:>4}  −{:>3} +{:<3}", marker, axon.dimension as u8, axon.dimension.name(), pos.dimension_value(axon.dimension), axon.backward_count, axon.forward_count),
-                theme::ArmColor::Z,
-            ));
+        ApiPosition {
+            coordinate: format!("{}", pos),
+            dimension: self.nav.active_dimension().name().to_string(),
+            dimension_index: self.nav.active_dimension() as u8,
+            has_scroll: self.lattice.has_scroll(&pos),
+            total_scrolls: self.overview.total_scrolls,
         }
-        lines.push((String::new(), theme::ArmColor::Neutral));
-
-        lines.push(("── temporal ──".into(), theme::ArmColor::Y));
-        for axon in s.sequential_axons() {
-            let marker = if axon.dimension == dim { "▸" } else { " " };
-            lines.push((
-                format!("{}{} {:<10} {:>4}  −{:>3} +{:<3}", marker, axon.dimension as u8, axon.dimension.name(), pos.dimension_value(axon.dimension), axon.backward_count, axon.forward_count),
-                theme::ArmColor::Y,
-            ));
-        }
-        lines.push((String::new(), theme::ArmColor::Neutral));
-
-        let scroll_marker = if dim == Dimension::Scroll { "▸" } else { " " };
-        lines.push((
-            format!("{}9 {:<10} {:>4}  ← neuron", scroll_marker, "Scroll", pos.dimension_value(Dimension::Scroll)),
-            theme::ArmColor::X,
-        ));
-
-        lines
     }
 
-    fn content_preview(&self) -> String {
+    fn scroll_json(&self) -> ApiScroll {
         let pos = self.nav.position();
-        self.lattice.read_scroll(&pos)
-            .unwrap_or_else(|| "○ empty coordinate\n\nNavigate to a populated scroll\nwith j/k or goto with g".to_string())
+        let content = self.lattice.read_scroll(&pos).unwrap_or_default();
+        let bytes = content.len();
+        ApiScroll {
+            coordinate: format!("{}", pos),
+            content,
+            bytes,
+        }
     }
 
-    fn mode_label(&self) -> String {
-        if self.viewing_scroll { "SCROLL".into() } else { "LATTICE".into() }
+    fn sentron_json(&self) -> ApiSentron {
+        let sentron = Sentron::build(&self.nav.position(), self.lattice.index());
+        let pos = self.nav.position();
+        let mut axons = Vec::new();
+
+        for axon in sentron.structural_axons() {
+            axons.push(ApiAxon {
+                dimension: axon.dimension as u8,
+                name: axon.dimension.name().to_string(),
+                group: "spatial".into(),
+                value: pos.dimension_value(axon.dimension),
+                backward: axon.backward_count,
+                forward: axon.forward_count,
+            });
+        }
+        for axon in sentron.sequential_axons() {
+            axons.push(ApiAxon {
+                dimension: axon.dimension as u8,
+                name: axon.dimension.name().to_string(),
+                group: "temporal".into(),
+                value: pos.dimension_value(axon.dimension),
+                backward: axon.backward_count,
+                forward: axon.forward_count,
+            });
+        }
+        axons.push(ApiAxon {
+            dimension: 9,
+            name: "Scroll".into(),
+            group: "neuron".into(),
+            value: pos.dimension_value(Dimension::Scroll),
+            backward: 0,
+            forward: 0,
+        });
+
+        ApiSentron {
+            center: format!("{}", sentron.center),
+            size: sentron.size(),
+            structural_reach: sentron.structural_reach,
+            sequential_reach: sentron.sequential_reach,
+            axons,
+        }
     }
 
-    fn help_text(&self) -> String {
-        if self.viewing_scroll {
-            "Esc:back to lattice".into()
-        } else if !self.status_msg.is_empty() {
-            self.status_msg.clone()
-        } else {
-            "1-9:dim  h/l:move  j/k:nav  J/K:×10  Enter:view  Tab:cycle  Home:BASE  q:quit".into()
+    fn densities_json(&self) -> Vec<ApiDensity> {
+        (1..=9u8).map(|i| {
+            let dim = Dimension::from_index(i).unwrap();
+            let d = DimensionDensity::build(dim, self.lattice.index());
+            ApiDensity {
+                dimension: i,
+                name: dim.name().to_string(),
+                extent: d.distribution.len(),
+                populated: d.total,
+                sparkline: d.sparkline(20),
+            }
+        }).collect()
+    }
+
+    fn nav_json(&self) -> ApiNav {
+        ApiNav {
+            position: self.position_json(),
+            sentron: self.sentron_json(),
+            scroll: self.scroll_json(),
+            densities: self.densities_json(),
         }
     }
 }
 
-impl Render for PhextWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.refresh_sentron();
+// ── HTTP Server ────────────────────────────────────────────────────────
 
-        let coord_text: SharedString = self.coordinate_text().into();
-        let content: SharedString = self.content_preview().into();
-        let mode: SharedString = self.mode_label().into();
-        let help: SharedString = self.help_text().into();
+fn parse_request(reader: &mut BufReader<std::net::TcpStream>) -> Option<(String, String, HashMap<String, String>)> {
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line).ok()? == 0 {
+        return None;
+    }
+    let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
+    if parts.len() < 2 { return None; }
+    let method = parts[0].to_string();
+    let path = parts[1].to_string();
 
-        // Build sentron panel lines
-        let sentron_lines = self.sentron_lines();
-        let sentron_children: Vec<Div> = sentron_lines.into_iter().map(|(text, color)| {
-            let text: SharedString = text.into();
-            div()
-                .text_color(color.to_hsla())
-                .child(text)
-        }).collect();
+    // Read headers
+    let mut headers = HashMap::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).ok()? == 0 { break; }
+        let line = line.trim().to_string();
+        if line.is_empty() { break; }
+        if let Some((k, v)) = line.split_once(':') {
+            headers.insert(k.trim().to_lowercase(), v.trim().to_string());
+        }
+    }
 
-        div()
-            .id("phext-root")
-            .key_context("PhextEdit")
-            .track_focus(&self.focus_handle)
-            .on_action(cx.listener(Self::on_move_forward))
-            .on_action(cx.listener(Self::on_move_backward))
-            .on_action(cx.listener(Self::on_next_populated))
-            .on_action(cx.listener(Self::on_prev_populated))
-            .on_action(cx.listener(Self::on_jump_forward_10))
-            .on_action(cx.listener(Self::on_jump_backward_10))
-            .on_action(cx.listener(Self::on_cycle_dim_forward))
-            .on_action(cx.listener(Self::on_cycle_dim_backward))
-            .on_action(cx.listener(Self::on_jump_to_base))
-            .on_action(cx.listener(Self::on_enter_scroll))
-            .on_action(cx.listener(Self::on_exit_scroll))
-            .on_action(cx.listener(Self::on_quit))
-            .on_action(cx.listener(|this: &mut Self, _: &Dim1, _w, cx| { this.on_dim(1, _w, cx); }))
-            .on_action(cx.listener(|this: &mut Self, _: &Dim2, _w, cx| { this.on_dim(2, _w, cx); }))
-            .on_action(cx.listener(|this: &mut Self, _: &Dim3, _w, cx| { this.on_dim(3, _w, cx); }))
-            .on_action(cx.listener(|this: &mut Self, _: &Dim4, _w, cx| { this.on_dim(4, _w, cx); }))
-            .on_action(cx.listener(|this: &mut Self, _: &Dim5, _w, cx| { this.on_dim(5, _w, cx); }))
-            .on_action(cx.listener(|this: &mut Self, _: &Dim6, _w, cx| { this.on_dim(6, _w, cx); }))
-            .on_action(cx.listener(|this: &mut Self, _: &Dim7, _w, cx| { this.on_dim(7, _w, cx); }))
-            .on_action(cx.listener(|this: &mut Self, _: &Dim8, _w, cx| { this.on_dim(8, _w, cx); }))
-            .on_action(cx.listener(|this: &mut Self, _: &Dim9, _w, cx| { this.on_dim(9, _w, cx); }))
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(theme::bg())
-            .text_color(theme::text())
-            .text_sm()
-            // Coordinate bar
-            .child(
-                div()
-                    .h(px(36.0))
-                    .w_full()
-                    .bg(theme::bar_bg())
-                    .border_b_1()
-                    .border_color(theme::border())
-                    .flex()
-                    .items_center()
-                    .child(div().px_3().text_color(theme::coord_text()).child(coord_text))
-            )
-            // Main area
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_1()
-                    // Left: Sentron panel
-                    .child(
-                        div()
-                            .w(px(320.0))
-                            .h_full()
-                            .bg(theme::panel_bg())
-                            .border_r_1()
-                            .border_color(theme::border())
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .px_3()
-                                    .py_2()
-                                    .text_xs()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_0p5()
-                                    .children(sentron_children)
-                            )
-                    )
-                    // Right: Scroll content
-                    .child(
-                        div()
-                            .flex_1()
-                            .h_full()
-                            .overflow_hidden()
-                            .child(
-                                div()
-                                    .px_4()
-                                    .py_3()
-                                    .text_color(theme::text())
-                                    .child(content)
-                            )
-                    )
-            )
-            // Status bar
-            .child(
-                div()
-                    .h(px(24.0))
-                    .w_full()
-                    .bg(theme::status_bg())
-                    .border_t_1()
-                    .border_color(theme::border())
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .px_2()
-                            .mx_1()
-                            .text_xs()
-                            .bg(theme::z_color())
-                            .text_color(gpui::black())
-                            .child(mode)
-                    )
-                    .child(
-                        div()
-                            .px_3()
-                            .text_xs()
-                            .text_color(theme::dim_text())
-                            .child(help)
-                    )
-            )
+    Some((method, path, headers))
+}
+
+fn read_body(reader: &mut BufReader<std::net::TcpStream>, headers: &HashMap<String, String>) -> String {
+    let len: usize = headers.get("content-length")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    if len == 0 { return String::new(); }
+    let mut buf = vec![0u8; len];
+    let _ = reader.read_exact(&mut buf);
+    String::from_utf8_lossy(&buf).to_string()
+}
+
+fn send(stream: &mut std::net::TcpStream, status: u16, content_type: &str, body: &[u8]) {
+    let status_text = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        404 => "Not Found",
+        _ => "Error",
+    };
+    let header = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+        status, status_text, content_type, body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body);
+    let _ = stream.flush();
+}
+
+fn json_response(stream: &mut std::net::TcpStream, value: &impl Serialize) {
+    let body = serde_json::to_string(value).unwrap_or_else(|_| "{}".into());
+    send(stream, 200, "application/json", body.as_bytes());
+}
+
+fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>) {
+    let cloned = match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let mut reader = BufReader::new(cloned);
+
+    let (method, path, headers) = match parse_request(&mut reader) {
+        Some(v) => v,
+        None => return,
+    };
+
+    // CORS preflight
+    if method == "OPTIONS" {
+        let h = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n\r\n";
+        let _ = stream.write_all(h.as_bytes());
+        return;
+    }
+
+    let mut state = state.lock().unwrap();
+
+    match (method.as_str(), path.as_str()) {
+        // ── Static UI ──
+        ("GET", "/") | ("GET", "/index.html") => {
+            send(stream, 200, "text/html; charset=utf-8", INDEX_HTML.as_bytes());
+        }
+
+        // ── API: Full nav state ──
+        ("GET", "/api/nav") => {
+            json_response(stream, &state.nav_json());
+        }
+
+        // ── API: Status ──
+        ("GET", "/api/status") => {
+            let buf = state.lattice.to_phext_bytes();
+            json_response(stream, &ApiStatus {
+                scrolls: state.overview.total_scrolls,
+                bytes: buf.len(),
+                file: state.file_path.clone(),
+            });
+        }
+
+        // ── API: Navigation commands ──
+        ("POST", "/api/dim") => {
+            let body = read_body(&mut reader, &headers);
+            if let Ok(d) = body.trim().parse::<u8>() {
+                if (1..=9).contains(&d) {
+                    state.nav.select_dimension(d);
+                }
+            }
+            json_response(stream, &state.nav_json());
+        }
+
+        ("POST", "/api/forward") => {
+            state.nav.move_forward();
+            json_response(stream, &state.nav_json());
+        }
+
+        ("POST", "/api/backward") => {
+            state.nav.move_backward();
+            json_response(stream, &state.nav_json());
+        }
+
+        ("POST", "/api/next") => {
+            let idx = state.lattice.index().clone();
+            state.nav.next_populated(&idx);
+            json_response(stream, &state.nav_json());
+        }
+
+        ("POST", "/api/prev") => {
+            let idx = state.lattice.index().clone();
+            state.nav.prev_populated(&idx);
+            json_response(stream, &state.nav_json());
+        }
+
+        ("POST", "/api/goto") => {
+            let body = read_body(&mut reader, &headers);
+            // Parse coordinate from body — expects "z.z.z/y.y.y/x.x.x"
+            if let Some(coord) = parse_coordinate(body.trim()) {
+                state.nav.goto(coord);
+            }
+            json_response(stream, &state.nav_json());
+        }
+
+        ("POST", "/api/base") => {
+            state.nav.goto(libphext::phext::default_coordinate());
+            json_response(stream, &state.nav_json());
+        }
+
+        // ── API: Search ──
+        ("POST", "/api/search") => {
+            let body = read_body(&mut reader, &headers);
+            let query = body.trim();
+            if query.is_empty() {
+                json_response(stream, &Vec::<ApiSearchHit>::new());
+            } else {
+                let buf = state.lattice.to_phext_bytes();
+                let hits = lattice_core::search_lattice_auto(
+                    &buf,
+                    state.lattice.index(),
+                    query,
+                    false,
+                    50,
+                );
+                let api_hits: Vec<ApiSearchHit> = hits.into_iter().map(|h| ApiSearchHit {
+                    coordinate: format!("{}", h.coordinate),
+                    context: h.context,
+                    offset: h.offset,
+                }).collect();
+                json_response(stream, &api_hits);
+            }
+        }
+
+        // ── API: Read scroll at arbitrary coordinate ──
+        ("GET", p) if p.starts_with("/api/scroll/") => {
+            let coord_str = &p["/api/scroll/".len()..];
+            if let Some(coord) = parse_coordinate(coord_str) {
+                let content = state.lattice.read_scroll(&coord).unwrap_or_default();
+                let bytes = content.len();
+                json_response(stream, &ApiScroll {
+                    coordinate: format!("{}", coord),
+                    content,
+                    bytes,
+                });
+            } else {
+                send(stream, 400, "text/plain", b"invalid coordinate");
+            }
+        }
+
+        _ => {
+            send(stream, 404, "text/plain", b"not found");
+        }
     }
 }
 
-// ── Main ───────────────────────────────────────────────────────────────
+fn parse_coordinate(s: &str) -> Option<libphext::phext::Coordinate> {
+    // Parse "z.z.z/y.y.y/x.x.x" format
+    let parts: Vec<&str> = s.split('/').collect();
+    if parts.len() != 3 { return None; }
+
+    let z: Vec<usize> = parts[0].split('.').filter_map(|n| n.parse().ok()).collect();
+    let y: Vec<usize> = parts[1].split('.').filter_map(|n| n.parse().ok()).collect();
+    let x: Vec<usize> = parts[2].split('.').filter_map(|n| n.parse().ok()).collect();
+
+    if z.len() != 3 || y.len() != 3 || x.len() != 3 { return None; }
+
+    Some(libphext::phext::Coordinate {
+        z: libphext::phext::ZCoordinate { library: z[0], shelf: z[1], series: z[2] },
+        y: libphext::phext::YCoordinate { collection: y[0], volume: y[1], book: y[2] },
+        x: libphext::phext::XCoordinate { chapter: x[0], section: x[1], scroll: x[2] },
+    })
+}
+
+// ── Entry Point ────────────────────────────────────────────────────────
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("phext-edit — GPU-rendered phext editor");
+        eprintln!("phext-edit — web-served phext editor");
         eprintln!();
-        eprintln!("Usage: phext-edit <file.phext>");
+        eprintln!("Usage: phext-edit <file.phext> [--port 8080]");
         std::process::exit(1);
     }
 
     let file_path = args[1].clone();
+    let mut port: u16 = 8080;
+    if let Some(i) = args.iter().position(|a| a == "--port") {
+        if let Some(p) = args.get(i + 1) {
+            port = p.parse().unwrap_or(8080);
+        }
+    }
+
     let lattice = MappedLattice::open(&file_path).unwrap_or_else(|e| {
         eprintln!("Failed to open {}: {}", file_path, e);
         std::process::exit(1);
     });
 
-    Application::new().run(move |cx: &mut App| {
-        // Key bindings — Lattice mode
-        cx.bind_keys([
-            KeyBinding::new("1", Dim1, Some("PhextEdit")),
-            KeyBinding::new("2", Dim2, Some("PhextEdit")),
-            KeyBinding::new("3", Dim3, Some("PhextEdit")),
-            KeyBinding::new("4", Dim4, Some("PhextEdit")),
-            KeyBinding::new("5", Dim5, Some("PhextEdit")),
-            KeyBinding::new("6", Dim6, Some("PhextEdit")),
-            KeyBinding::new("7", Dim7, Some("PhextEdit")),
-            KeyBinding::new("8", Dim8, Some("PhextEdit")),
-            KeyBinding::new("9", Dim9, Some("PhextEdit")),
-            KeyBinding::new("l", MoveForward, Some("PhextEdit")),
-            KeyBinding::new("right", MoveForward, Some("PhextEdit")),
-            KeyBinding::new("h", MoveBackward, Some("PhextEdit")),
-            KeyBinding::new("left", MoveBackward, Some("PhextEdit")),
-            KeyBinding::new("j", NextPopulated, Some("PhextEdit")),
-            KeyBinding::new("down", NextPopulated, Some("PhextEdit")),
-            KeyBinding::new("k", PrevPopulated, Some("PhextEdit")),
-            KeyBinding::new("up", PrevPopulated, Some("PhextEdit")),
-            KeyBinding::new("shift-j", JumpForward10, Some("PhextEdit")),
-            KeyBinding::new("shift-k", JumpBackward10, Some("PhextEdit")),
-            KeyBinding::new("tab", CycleDimGroupForward, Some("PhextEdit")),
-            KeyBinding::new("shift-tab", CycleDimGroupBackward, Some("PhextEdit")),
-            KeyBinding::new("home", JumpToBase, Some("PhextEdit")),
-            KeyBinding::new("enter", EnterScroll, Some("PhextEdit")),
-            KeyBinding::new("escape", ExitScroll, Some("PhextEdit")),
-            KeyBinding::new("q", Quit, Some("PhextEdit")),
-        ]);
+    let state = Arc::new(Mutex::new(AppState::new(lattice, file_path.clone())));
 
-        let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some(format!("💎 phext-edit — {}", file_path).into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            |window, cx| cx.new(|cx| PhextWindow::new(lattice, file_path.clone(), window, cx)),
-        ).unwrap();
-
-        cx.activate(true);
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).unwrap_or_else(|e| {
+        eprintln!("Failed to bind port {}: {}", port, e);
+        std::process::exit(1);
     });
+
+    let scroll_count = state.lock().unwrap().overview.total_scrolls;
+    println!("💎 phext-edit serving {} on http://0.0.0.0:{}", file_path, port);
+    println!("   {} scrolls", scroll_count);
+    println!();
+    println!("   Open in browser: http://localhost:{}", port);
+
+    for stream in listener.incoming() {
+        match stream {
+            Ok(mut stream) => {
+                let state = Arc::clone(&state);
+                std::thread::spawn(move || {
+                    handle_request(&mut stream, &state);
+                });
+            }
+            Err(e) => eprintln!("connection error: {}", e),
+        }
+    }
 }
+
+// ── Embedded Frontend ──────────────────────────────────────────────────
+
+const INDEX_HTML: &str = r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>💎 phext-edit</title>
+<style>
+:root {
+  --bg: #171717;
+  --panel: #131313;
+  --bar: #1c1c1c;
+  --border: #2e2e2e;
+  --text: #dedede;
+  --dim: #808080;
+  --coord: #d4a855;
+  --z-color: #4dc9c9;
+  --y-color: #c964c9;
+  --x-color: #6bc96b;
+  --active: #e8c547;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Coordinate bar */
+#coord-bar {
+  height: 36px;
+  background: var(--bar);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  color: var(--coord);
+  font-weight: bold;
+  gap: 12px;
+  flex-shrink: 0;
+}
+#coord-bar .scrolls { color: var(--dim); font-weight: normal; font-size: 11px; }
+
+/* Main area */
+#main {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* Sentron panel */
+#sentron {
+  width: 300px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  padding: 12px;
+  overflow-y: auto;
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+#sentron .header { color: var(--dim); margin-bottom: 8px; }
+#sentron .group-label { color: var(--dim); margin-top: 8px; font-size: 11px; }
+#sentron .axon { display: flex; gap: 4px; cursor: pointer; padding: 1px 4px; border-radius: 3px; }
+#sentron .axon:hover { background: #ffffff10; }
+#sentron .axon.active { background: #ffffff18; }
+#sentron .axon .marker { width: 12px; color: var(--active); }
+#sentron .axon.spatial { color: var(--z-color); }
+#sentron .axon.temporal { color: var(--y-color); }
+#sentron .axon.neuron { color: var(--x-color); }
+#sentron .axon .dim-num { width: 14px; text-align: right; }
+#sentron .axon .dim-name { width: 80px; }
+#sentron .axon .dim-val { width: 36px; text-align: right; }
+#sentron .axon .counts { color: var(--dim); }
+
+/* Density sparklines */
+#densities {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+#densities .row { display: flex; gap: 6px; font-size: 11px; color: var(--dim); }
+#densities .row .name { width: 70px; }
+#densities .row .spark { letter-spacing: 1px; }
+
+/* Scroll content */
+#content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.5;
+  tab-size: 4;
+}
+#content.empty { color: var(--dim); font-style: italic; }
+
+/* Status bar */
+#status-bar {
+  height: 24px;
+  background: #101010;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 11px;
+  flex-shrink: 0;
+  gap: 12px;
+}
+#status-bar .mode {
+  background: var(--z-color);
+  color: #000;
+  padding: 1px 8px;
+  border-radius: 2px;
+  font-weight: bold;
+}
+#status-bar .help { color: var(--dim); }
+#status-bar .msg { color: var(--active); }
+
+/* Search overlay */
+#search-overlay {
+  display: none;
+  position: fixed;
+  top: 36px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  width: 500px;
+  max-height: 400px;
+  z-index: 10;
+  box-shadow: 0 8px 32px #00000080;
+}
+#search-overlay.visible { display: block; }
+#search-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  outline: none;
+}
+#search-input:focus { border-color: var(--coord); }
+#search-results {
+  max-height: 300px;
+  overflow-y: auto;
+  margin-top: 6px;
+}
+#search-results .hit {
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 3px;
+  display: flex;
+  gap: 10px;
+}
+#search-results .hit:hover { background: #ffffff10; }
+#search-results .hit .hit-coord { color: var(--coord); min-width: 160px; }
+#search-results .hit .hit-ctx { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Goto overlay */
+#goto-overlay {
+  display: none;
+  position: fixed;
+  top: 36px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  width: 360px;
+  z-index: 10;
+  box-shadow: 0 8px 32px #00000080;
+}
+#goto-overlay.visible { display: block; }
+#goto-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  outline: none;
+}
+#goto-input:focus { border-color: var(--coord); }
+</style>
+</head>
+<body>
+
+<div id="coord-bar">
+  <span id="coord-text">loading...</span>
+  <span class="scrolls" id="scroll-count"></span>
+</div>
+
+<div id="main">
+  <div id="sentron"></div>
+  <div id="content"></div>
+</div>
+
+<div id="status-bar">
+  <span class="mode">LATTICE</span>
+  <span class="help">1-9:dim  h/l:move  j/k:nav  J/K:×10  /:search  g:goto  Home:BASE</span>
+  <span class="msg" id="status-msg"></span>
+</div>
+
+<div id="search-overlay">
+  <input id="search-input" placeholder="search scrolls..." autocomplete="off" />
+  <div id="search-results"></div>
+</div>
+
+<div id="goto-overlay">
+  <input id="goto-input" placeholder="z.z.z/y.y.y/x.x.x" autocomplete="off" />
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let mode = 'lattice'; // lattice | search | goto
+let statusTimeout = null;
+
+function showMsg(msg) {
+  $('status-msg').textContent = msg;
+  clearTimeout(statusTimeout);
+  statusTimeout = setTimeout(() => $('status-msg').textContent = '', 2000);
+}
+
+async function api(method, path, body) {
+  const opts = { method };
+  if (body !== undefined) {
+    opts.headers = { 'Content-Type': 'text/plain' };
+    opts.body = typeof body === 'string' ? body : JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  return res.json();
+}
+
+function render(nav) {
+  // Coordinate bar
+  const p = nav.position;
+  const indicator = p.has_scroll ? '●' : '○';
+  $('coord-text').textContent = `💎 ${p.coordinate} ◆ ${p.dimension} ${indicator}`;
+  $('scroll-count').textContent = `[${p.total_scrolls} scrolls]`;
+
+  // Sentron panel
+  const s = nav.sentron;
+  let html = `<div class="header">◉ sentron [${s.size}/40] reach: ${s.structural_reach}↔${s.sequential_reach}</div>`;
+  html += '<div class="group-label">── spatial ──</div>';
+  for (const a of s.axons.filter(a => a.group === 'spatial')) {
+    const active = a.dimension === p.dimension_index ? 'active' : '';
+    const marker = a.dimension === p.dimension_index ? '▸' : ' ';
+    html += `<div class="axon spatial ${active}" onclick="selectDim(${a.dimension})">
+      <span class="marker">${marker}</span>
+      <span class="dim-num">${a.dimension}</span>
+      <span class="dim-name">${a.name}</span>
+      <span class="dim-val">${a.value}</span>
+      <span class="counts">−${a.backward} +${a.forward}</span>
+    </div>`;
+  }
+  html += '<div class="group-label">── temporal ──</div>';
+  for (const a of s.axons.filter(a => a.group === 'temporal')) {
+    const active = a.dimension === p.dimension_index ? 'active' : '';
+    const marker = a.dimension === p.dimension_index ? '▸' : ' ';
+    html += `<div class="axon temporal ${active}" onclick="selectDim(${a.dimension})">
+      <span class="marker">${marker}</span>
+      <span class="dim-num">${a.dimension}</span>
+      <span class="dim-name">${a.name}</span>
+      <span class="dim-val">${a.value}</span>
+      <span class="counts">−${a.backward} +${a.forward}</span>
+    </div>`;
+  }
+  for (const a of s.axons.filter(a => a.group === 'neuron')) {
+    const active = a.dimension === p.dimension_index ? 'active' : '';
+    const marker = a.dimension === p.dimension_index ? '▸' : ' ';
+    html += `<div class="axon neuron ${active}" onclick="selectDim(${a.dimension})">
+      <span class="marker">${marker}</span>
+      <span class="dim-num">${a.dimension}</span>
+      <span class="dim-name">${a.name}</span>
+      <span class="dim-val">${a.value}</span>
+      <span class="counts">← neuron</span>
+    </div>`;
+  }
+
+  // Densities
+  if (nav.densities && nav.densities.length) {
+    html += '<div id="densities">';
+    for (const d of nav.densities) {
+      html += `<div class="row"><span class="name">${d.name}</span><span class="spark">${d.sparkline}</span></div>`;
+    }
+    html += '</div>';
+  }
+
+  $('sentron').innerHTML = html;
+
+  // Scroll content
+  const el = $('content');
+  if (nav.scroll.content) {
+    el.textContent = nav.scroll.content;
+    el.className = '';
+  } else {
+    el.textContent = '○ empty coordinate';
+    el.className = 'empty';
+  }
+}
+
+async function selectDim(d) { render(await api('POST', '/api/dim', String(d))); }
+async function moveForward() { render(await api('POST', '/api/forward')); }
+async function moveBackward() { render(await api('POST', '/api/backward')); }
+async function nextPop() { render(await api('POST', '/api/next')); }
+async function prevPop() { render(await api('POST', '/api/prev')); }
+async function jumpBase() { render(await api('POST', '/api/base')); showMsg('⌂ BASE'); }
+
+async function gotoCoord(coord) {
+  render(await api('POST', '/api/goto', coord));
+}
+
+async function doSearch(query) {
+  const hits = await api('POST', '/api/search', query);
+  const el = $('search-results');
+  if (!hits.length) {
+    el.innerHTML = '<div style="color:var(--dim);padding:8px">no results</div>';
+    return;
+  }
+  el.innerHTML = hits.map(h =>
+    `<div class="hit" onclick="jumpToHit('${h.coordinate}')">
+      <span class="hit-coord">${h.coordinate}</span>
+      <span class="hit-ctx">${escHtml(h.context)}</span>
+    </div>`
+  ).join('');
+}
+
+function jumpToHit(coord) {
+  closeOverlays();
+  gotoCoord(coord);
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function openSearch() {
+  mode = 'search';
+  $('search-overlay').className = 'visible';
+  $('search-input').value = '';
+  $('search-results').innerHTML = '';
+  $('search-input').focus();
+}
+
+function openGoto() {
+  mode = 'goto';
+  $('goto-overlay').className = 'visible';
+  $('goto-input').value = '';
+  $('goto-input').focus();
+}
+
+function closeOverlays() {
+  mode = 'lattice';
+  $('search-overlay').className = '';
+  $('goto-overlay').className = '';
+}
+
+// Keyboard handler
+document.addEventListener('keydown', async (e) => {
+  if (mode === 'search') {
+    if (e.key === 'Escape') { closeOverlays(); e.preventDefault(); }
+    return;
+  }
+  if (mode === 'goto') {
+    if (e.key === 'Escape') { closeOverlays(); e.preventDefault(); }
+    if (e.key === 'Enter') {
+      const v = $('goto-input').value.trim();
+      if (v) { closeOverlays(); await gotoCoord(v); }
+      e.preventDefault();
+    }
+    return;
+  }
+
+  // Lattice mode
+  const k = e.key;
+  if (k >= '1' && k <= '9') { await selectDim(parseInt(k)); e.preventDefault(); }
+  else if (k === 'l' || k === 'ArrowRight') { await moveForward(); e.preventDefault(); }
+  else if (k === 'h' || k === 'ArrowLeft') { await moveBackward(); e.preventDefault(); }
+  else if (k === 'j' || k === 'ArrowDown') {
+    if (e.shiftKey) { for (let i=0;i<10;i++) await nextPop(); }
+    else { await nextPop(); }
+    e.preventDefault();
+  }
+  else if (k === 'k' || k === 'ArrowUp') {
+    if (e.shiftKey) { for (let i=0;i<10;i++) await prevPop(); }
+    else { await prevPop(); }
+    e.preventDefault();
+  }
+  else if (k === 'J') { for (let i=0;i<10;i++) await nextPop(); e.preventDefault(); }
+  else if (k === 'K') { for (let i=0;i<10;i++) await prevPop(); e.preventDefault(); }
+  else if (k === '/' || (k === 'f' && e.ctrlKey)) { openSearch(); e.preventDefault(); }
+  else if (k === 'g') { openGoto(); e.preventDefault(); }
+  else if (k === 'Home') { await jumpBase(); e.preventDefault(); }
+  else if (k === 'Tab') {
+    e.preventDefault();
+    // Cycle dimension groups: Z(1-4) → Y(5-8) → X(9)
+    // Read current from last render, approximate
+  }
+});
+
+// Search input handler
+$('search-input').addEventListener('input', (e) => {
+  const q = e.target.value.trim();
+  if (q.length >= 2) { doSearch(q); }
+  else { $('search-results').innerHTML = ''; }
+});
+$('search-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    const q = e.target.value.trim();
+    if (q) doSearch(q);
+    e.preventDefault();
+  }
+});
+
+// Initial load
+api('GET', '/api/nav').then(render);
+</script>
+</body>
+</html>
+"##;
