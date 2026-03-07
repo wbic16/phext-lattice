@@ -99,9 +99,17 @@ struct ApiZoomEntry {
 
 #[derive(Serialize)]
 struct ApiZoom {
-    tier: String,  // "z", "y", "x"
+    tier: String,
     parent: String,
     entries: Vec<ApiZoomEntry>,
+}
+
+/// Full lattice tree — returned once, cached client-side
+#[derive(Serialize)]
+struct ApiTree {
+    total_scrolls: usize,
+    /// All populated coordinates as sorted strings
+    coordinates: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -155,11 +163,7 @@ impl AppState {
         let pos = self.nav.position();
         let content = self.lattice.read_scroll(&pos).unwrap_or_default();
         let bytes = content.len();
-        ApiScroll {
-            coordinate: format!("{}", pos),
-            content,
-            bytes,
-        }
+        ApiScroll { coordinate: format!("{}", pos), content, bytes }
     }
 
     fn sentron_json(&self) -> ApiSentron {
@@ -188,12 +192,8 @@ impl AppState {
             });
         }
         axons.push(ApiAxon {
-            dimension: 9,
-            name: "Scroll".into(),
-            group: "neuron".into(),
-            value: pos.dimension_value(Dimension::Scroll),
-            backward: 0,
-            forward: 0,
+            dimension: 9, name: "Scroll".into(), group: "neuron".into(),
+            value: pos.dimension_value(Dimension::Scroll), backward: 0, forward: 0,
         });
 
         ApiSentron {
@@ -228,11 +228,17 @@ impl AppState {
         }
     }
 
-    /// 3-tier zoom: Z-level (library.shelf.series groups),
-    /// Y-level (collection.volume.book within a Z), X-level (chapter.section.scroll within Z/Y)
+    fn tree_json(&self) -> ApiTree {
+        let mut coords = self.lattice.populated_coordinates();
+        coords.sort();
+        ApiTree {
+            total_scrolls: coords.len(),
+            coordinates: coords.iter().map(|c| format!("{}", c)).collect(),
+        }
+    }
+
     fn zoom_z(&self) -> ApiZoom {
         let coords = self.lattice.populated_coordinates();
-        // Group by Z coordinate
         let mut groups: HashMap<String, Vec<libphext::phext::Coordinate>> = HashMap::new();
         for c in &coords {
             let key = format!("{}.{}.{}", c.z.library, c.z.shelf, c.z.series);
@@ -243,12 +249,7 @@ impl AppState {
             let preview = self.lattice.read_scroll(&first)
                 .map(|s| s.chars().take(80).collect::<String>())
                 .unwrap_or_default();
-            ApiZoomEntry {
-                label: key.clone(),
-                coordinate: format!("{}/1.1.1/1.1.1", key),
-                scroll_count: scrolls.len(),
-                preview,
-            }
+            ApiZoomEntry { label: key.clone(), coordinate: format!("{}/1.1.1/1.1.1", key), scroll_count: scrolls.len(), preview }
         }).collect();
         entries.sort_by(|a, b| a.label.cmp(&b.label));
         ApiZoom { tier: "z".into(), parent: "".into(), entries }
@@ -257,7 +258,6 @@ impl AppState {
     fn zoom_y(&self, z_str: &str) -> ApiZoom {
         let z_parts: Vec<usize> = z_str.split('.').filter_map(|n| n.parse().ok()).collect();
         if z_parts.len() != 3 { return ApiZoom { tier: "y".into(), parent: z_str.into(), entries: vec![] }; }
-
         let coords = self.lattice.populated_coordinates();
         let mut groups: HashMap<String, Vec<libphext::phext::Coordinate>> = HashMap::new();
         for c in &coords {
@@ -271,12 +271,7 @@ impl AppState {
             let preview = self.lattice.read_scroll(&first)
                 .map(|s| s.chars().take(80).collect::<String>())
                 .unwrap_or_default();
-            ApiZoomEntry {
-                label: key.clone(),
-                coordinate: format!("{}/{}/1.1.1", z_str, key),
-                scroll_count: scrolls.len(),
-                preview,
-            }
+            ApiZoomEntry { label: key.clone(), coordinate: format!("{}/{}/1.1.1", z_str, key), scroll_count: scrolls.len(), preview }
         }).collect();
         entries.sort_by(|a, b| a.label.cmp(&b.label));
         ApiZoom { tier: "y".into(), parent: z_str.into(), entries }
@@ -288,7 +283,6 @@ impl AppState {
         if z_parts.len() != 3 || y_parts.len() != 3 {
             return ApiZoom { tier: "x".into(), parent: format!("{}/{}", z_str, y_str), entries: vec![] };
         }
-
         let coords = self.lattice.populated_coordinates();
         let mut entries: Vec<ApiZoomEntry> = coords.iter().filter(|c| {
             c.z.library == z_parts[0] && c.z.shelf == z_parts[1] && c.z.series == z_parts[2] &&
@@ -298,12 +292,7 @@ impl AppState {
             let preview = self.lattice.read_scroll(c)
                 .map(|s| s.chars().take(80).collect::<String>())
                 .unwrap_or_default();
-            ApiZoomEntry {
-                label: key,
-                coordinate: format!("{}", c),
-                scroll_count: 1,
-                preview,
-            }
+            ApiZoomEntry { label: key, coordinate: format!("{}", c), scroll_count: 1, preview }
         }).collect();
         entries.sort_by(|a, b| a.label.cmp(&b.label));
         ApiZoom { tier: "x".into(), parent: format!("{}/{}", z_str, y_str), entries }
@@ -314,14 +303,11 @@ impl AppState {
 
 fn parse_request(reader: &mut BufReader<std::net::TcpStream>) -> Option<(String, String, HashMap<String, String>)> {
     let mut request_line = String::new();
-    if reader.read_line(&mut request_line).ok()? == 0 {
-        return None;
-    }
+    if reader.read_line(&mut request_line).ok()? == 0 { return None; }
     let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
     if parts.len() < 2 { return None; }
     let method = parts[0].to_string();
     let path = parts[1].to_string();
-
     let mut headers = HashMap::new();
     loop {
         let mut line = String::new();
@@ -332,14 +318,11 @@ fn parse_request(reader: &mut BufReader<std::net::TcpStream>) -> Option<(String,
             headers.insert(k.trim().to_lowercase(), v.trim().to_string());
         }
     }
-
     Some((method, path, headers))
 }
 
 fn read_body(reader: &mut BufReader<std::net::TcpStream>, headers: &HashMap<String, String>) -> String {
-    let len: usize = headers.get("content-length")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
+    let len: usize = headers.get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
     if len == 0 { return String::new(); }
     let mut buf = vec![0u8; len];
     let _ = reader.read_exact(&mut buf);
@@ -347,12 +330,7 @@ fn read_body(reader: &mut BufReader<std::net::TcpStream>, headers: &HashMap<Stri
 }
 
 fn send(stream: &mut std::net::TcpStream, status: u16, content_type: &str, body: &[u8]) {
-    let status_text = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        404 => "Not Found",
-        _ => "Error",
-    };
+    let status_text = match status { 200 => "OK", 400 => "Bad Request", 404 => "Not Found", _ => "Error" };
     let header = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
         status, status_text, content_type, body.len()
@@ -368,16 +346,9 @@ fn json_response(stream: &mut std::net::TcpStream, value: &impl Serialize) {
 }
 
 fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>) {
-    let cloned = match stream.try_clone() {
-        Ok(s) => s,
-        Err(_) => return,
-    };
+    let cloned = match stream.try_clone() { Ok(s) => s, Err(_) => return };
     let mut reader = BufReader::new(cloned);
-
-    let (method, path, headers) = match parse_request(&mut reader) {
-        Some(v) => v,
-        None => return,
-    };
+    let (method, path, headers) = match parse_request(&mut reader) { Some(v) => v, None => return };
 
     if method == "OPTIONS" {
         let h = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n\r\n";
@@ -388,77 +359,52 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
     let mut state = state.lock().unwrap();
 
     match (method.as_str(), path.as_str()) {
-        // ── Static UI ──
         ("GET", "/") | ("GET", "/index.html") => {
             send(stream, 200, "text/html; charset=utf-8", INDEX_HTML.as_bytes());
         }
-
-        // ── API: Full nav state ──
-        ("GET", "/api/nav") => {
-            json_response(stream, &state.nav_json());
-        }
-
-        // ── API: Status ──
+        ("GET", "/api/nav") => { json_response(stream, &state.nav_json()); }
         ("GET", "/api/status") => {
             let buf = state.lattice.to_phext_bytes();
             json_response(stream, &ApiStatus {
-                scrolls: state.overview.total_scrolls,
-                bytes: buf.len(),
-                file: state.file_path.clone(),
-                dirty: state.dirty,
+                scrolls: state.overview.total_scrolls, bytes: buf.len(),
+                file: state.file_path.clone(), dirty: state.dirty,
             });
         }
+        ("GET", "/api/tree") => { json_response(stream, &state.tree_json()); }
 
-        // ── API: Navigation ──
+        // Navigation
         ("POST", "/api/dim") => {
             let body = read_body(&mut reader, &headers);
             if let Ok(d) = body.trim().parse::<u8>() {
-                if (1..=9).contains(&d) {
-                    state.nav.select_dimension(d);
-                }
+                if (1..=9).contains(&d) { state.nav.select_dimension(d); }
             }
             json_response(stream, &state.nav_json());
         }
-
-        ("POST", "/api/forward") => {
-            state.nav.move_forward();
-            json_response(stream, &state.nav_json());
-        }
-
-        ("POST", "/api/backward") => {
-            state.nav.move_backward();
-            json_response(stream, &state.nav_json());
-        }
-
+        ("POST", "/api/forward") => { state.nav.move_forward(); json_response(stream, &state.nav_json()); }
+        ("POST", "/api/backward") => { state.nav.move_backward(); json_response(stream, &state.nav_json()); }
         ("POST", "/api/next") => {
             let idx = state.lattice.index().clone();
             state.nav.next_populated(&idx);
             json_response(stream, &state.nav_json());
         }
-
         ("POST", "/api/prev") => {
             let idx = state.lattice.index().clone();
             state.nav.prev_populated(&idx);
             json_response(stream, &state.nav_json());
         }
-
         ("POST", "/api/goto") => {
             let body = read_body(&mut reader, &headers);
-            if let Some(coord) = parse_coordinate(body.trim()) {
-                state.nav.goto(coord);
-            }
+            if let Some(coord) = parse_coordinate(body.trim()) { state.nav.goto(coord); }
             json_response(stream, &state.nav_json());
         }
-
         ("POST", "/api/base") => {
             state.nav.goto(libphext::phext::default_coordinate());
             json_response(stream, &state.nav_json());
         }
 
-        // ── API: Edit ──
+        // Edit
         ("POST", "/api/update") => {
             let body = read_body(&mut reader, &headers);
-            // Body is JSON: {"coordinate": "z.z.z/y.y.y/x.x.x", "content": "..."}
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
                 let coord_str = val.get("coordinate").and_then(|v| v.as_str()).unwrap_or("");
                 let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("");
@@ -474,20 +420,14 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
                 json_response(stream, &ApiOk { ok: false, message: "invalid json".into() });
             }
         }
-
         ("POST", "/api/save") => {
             match state.lattice.save() {
-                Ok(()) => {
-                    state.dirty = false;
-                    json_response(stream, &ApiOk { ok: true, message: "saved".into() });
-                }
-                Err(e) => {
-                    json_response(stream, &ApiOk { ok: false, message: format!("save failed: {}", e) });
-                }
+                Ok(()) => { state.dirty = false; json_response(stream, &ApiOk { ok: true, message: "saved".into() }); }
+                Err(e) => { json_response(stream, &ApiOk { ok: false, message: format!("save failed: {}", e) }); }
             }
         }
 
-        // ── API: Search ──
+        // Search
         ("POST", "/api/search") => {
             let body = read_body(&mut reader, &headers);
             let query = body.trim();
@@ -495,62 +435,39 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
                 json_response(stream, &Vec::<ApiSearchHit>::new());
             } else {
                 let buf = state.lattice.to_phext_bytes();
-                let hits = lattice_core::search_lattice_auto(
-                    &buf,
-                    state.lattice.index(),
-                    query,
-                    false,
-                    50,
-                );
+                let hits = lattice_core::search_lattice_auto(&buf, state.lattice.index(), query, false, 50);
                 let api_hits: Vec<ApiSearchHit> = hits.into_iter().map(|h| ApiSearchHit {
-                    coordinate: format!("{}", h.coordinate),
-                    context: h.context,
-                    offset: h.offset,
+                    coordinate: format!("{}", h.coordinate), context: h.context, offset: h.offset,
                 }).collect();
                 json_response(stream, &api_hits);
             }
         }
 
-        // ── API: 3-tier zoom ──
-        ("GET", "/api/zoom/z") => {
-            json_response(stream, &state.zoom_z());
-        }
-
+        // Zoom tiers
+        ("GET", "/api/zoom/z") => { json_response(stream, &state.zoom_z()); }
         ("GET", p) if p.starts_with("/api/zoom/y/") => {
-            let z_str = &p["/api/zoom/y/".len()..];
-            json_response(stream, &state.zoom_y(z_str));
+            json_response(stream, &state.zoom_y(&p["/api/zoom/y/".len()..]));
         }
-
         ("GET", p) if p.starts_with("/api/zoom/x/") => {
-            // path: /api/zoom/x/z.z.z/y.y.y
             let rest = &p["/api/zoom/x/".len()..];
             let parts: Vec<&str> = rest.splitn(2, '/').collect();
-            if parts.len() == 2 {
-                json_response(stream, &state.zoom_x(parts[0], parts[1]));
-            } else {
-                send(stream, 400, "text/plain", b"expected /api/zoom/x/z.z.z/y.y.y");
-            }
+            if parts.len() == 2 { json_response(stream, &state.zoom_x(parts[0], parts[1])); }
+            else { send(stream, 400, "text/plain", b"expected /api/zoom/x/z.z.z/y.y.y"); }
         }
 
-        // ── API: Read scroll at arbitrary coordinate ──
+        // Scroll read
         ("GET", p) if p.starts_with("/api/scroll/") => {
             let coord_str = &p["/api/scroll/".len()..];
             if let Some(coord) = parse_coordinate(coord_str) {
                 let content = state.lattice.read_scroll(&coord).unwrap_or_default();
                 let bytes = content.len();
-                json_response(stream, &ApiScroll {
-                    coordinate: format!("{}", coord),
-                    content,
-                    bytes,
-                });
+                json_response(stream, &ApiScroll { coordinate: format!("{}", coord), content, bytes });
             } else {
                 send(stream, 400, "text/plain", b"invalid coordinate");
             }
         }
 
-        _ => {
-            send(stream, 404, "text/plain", b"not found");
-        }
+        _ => { send(stream, 404, "text/plain", b"not found"); }
     }
 }
 
@@ -568,8 +485,6 @@ fn parse_coordinate(s: &str) -> Option<libphext::phext::Coordinate> {
     })
 }
 
-// ── Entry Point ────────────────────────────────────────────────────────
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -578,40 +493,27 @@ fn main() {
         eprintln!("Usage: phext-edit <file.phext> [--port 8080]");
         std::process::exit(1);
     }
-
     let file_path = args[1].clone();
     let mut port: u16 = 8080;
     if let Some(i) = args.iter().position(|a| a == "--port") {
-        if let Some(p) = args.get(i + 1) {
-            port = p.parse().unwrap_or(8080);
-        }
+        if let Some(p) = args.get(i + 1) { port = p.parse().unwrap_or(8080); }
     }
-
     let lattice = MappedLattice::open(&file_path).unwrap_or_else(|e| {
-        eprintln!("Failed to open {}: {}", file_path, e);
-        std::process::exit(1);
+        eprintln!("Failed to open {}: {}", file_path, e); std::process::exit(1);
     });
-
     let state = Arc::new(Mutex::new(AppState::new(lattice, file_path.clone())));
-
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).unwrap_or_else(|e| {
-        eprintln!("Failed to bind port {}: {}", port, e);
-        std::process::exit(1);
+        eprintln!("Failed to bind port {}: {}", port, e); std::process::exit(1);
     });
-
     let scroll_count = state.lock().unwrap().overview.total_scrolls;
     println!("💎 phext-edit serving {} on http://0.0.0.0:{}", file_path, port);
     println!("   {} scrolls", scroll_count);
-    println!();
     println!("   Open in browser: http://localhost:{}", port);
-
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
                 let state = Arc::clone(&state);
-                std::thread::spawn(move || {
-                    handle_request(&mut stream, &state);
-                });
+                std::thread::spawn(move || { handle_request(&mut stream, &state); });
             }
             Err(e) => eprintln!("connection error: {}", e),
         }
@@ -628,243 +530,183 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
 <title>💎 phext-edit</title>
 <style>
 :root {
-  --bg: #171717;
-  --panel: #131313;
-  --bar: #1c1c1c;
-  --border: #2e2e2e;
-  --text: #dedede;
-  --dim: #808080;
-  --coord: #d4a855;
-  --z-color: #4dc9c9;
-  --y-color: #c964c9;
-  --x-color: #6bc96b;
-  --active: #e8c547;
-  --danger: #e05555;
+  --bg: #171717; --panel: #131313; --bar: #1c1c1c; --border: #2e2e2e;
+  --text: #dedede; --dim: #808080; --coord: #d4a855;
+  --z-color: #4dc9c9; --y-color: #c964c9; --x-color: #6bc96b;
+  --active: #e8c547; --danger: #e05555;
+  --trans-fast: 120ms ease; --trans-med: 200ms ease;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
-  background: var(--bg);
-  color: var(--text);
+  background: var(--bg); color: var(--text);
   font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-  font-size: 13px;
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
+  font-size: 13px; height: 100vh; display: flex; flex-direction: column; overflow: hidden;
 }
 
-/* Coordinate bar */
+/* ── Coordinate bar ── */
 #coord-bar {
-  height: 36px;
-  background: var(--bar);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  padding: 0 16px;
-  color: var(--coord);
-  font-weight: bold;
-  gap: 8px;
-  flex-shrink: 0;
+  height: 36px; background: var(--bar); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; padding: 0 16px; color: var(--coord);
+  font-weight: bold; gap: 8px; flex-shrink: 0;
 }
 #coord-bar .scrolls { color: var(--dim); font-weight: normal; font-size: 11px; }
 #coord-bar .dirty { color: var(--danger); font-size: 11px; }
-#coord-bar .zoom-crumbs { display: flex; gap: 4px; font-size: 11px; font-weight: normal; }
-#coord-bar .zoom-crumbs .crumb { color: var(--z-color); cursor: pointer; }
-#coord-bar .zoom-crumbs .crumb:hover { text-decoration: underline; }
-#coord-bar .zoom-crumbs .sep { color: var(--dim); }
+.zoom-crumbs { display: flex; gap: 4px; font-size: 11px; font-weight: normal; }
+.zoom-crumbs .crumb { color: var(--z-color); cursor: pointer; transition: color var(--trans-fast); }
+.zoom-crumbs .crumb:hover { color: var(--active); text-decoration: underline; }
+.zoom-crumbs .sep { color: var(--dim); }
 
-/* Main area */
+/* ── Main ── */
 #main { flex: 1; display: flex; overflow: hidden; }
 
-/* Sentron panel */
-#sentron {
-  width: 300px;
-  background: var(--panel);
-  border-right: 1px solid var(--border);
-  padding: 12px;
-  overflow-y: auto;
-  flex-shrink: 0;
-  font-size: 12px;
-  line-height: 1.6;
+/* ── Left panel: sentron + navtree ── */
+#left-panel {
+  width: 320px; background: var(--panel); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden;
 }
-#sentron .header { color: var(--dim); margin-bottom: 8px; }
-#sentron .group-label { color: var(--dim); margin-top: 8px; font-size: 11px; }
-#sentron .axon { display: flex; gap: 4px; cursor: pointer; padding: 1px 4px; border-radius: 3px; }
-#sentron .axon:hover { background: #ffffff10; }
-#sentron .axon.active { background: #ffffff18; }
-#sentron .axon .marker { width: 12px; color: var(--active); }
-#sentron .axon.spatial { color: var(--z-color); }
-#sentron .axon.temporal { color: var(--y-color); }
-#sentron .axon.neuron { color: var(--x-color); }
-#sentron .axon .dim-num { width: 14px; text-align: right; }
-#sentron .axon .dim-name { width: 80px; }
-#sentron .axon .dim-val { width: 36px; text-align: right; }
-#sentron .axon .counts { color: var(--dim); }
-
-/* Density sparklines */
-#densities {
-  margin-top: 12px;
-  border-top: 1px solid var(--border);
-  padding-top: 8px;
+#panel-tabs {
+  height: 28px; display: flex; border-bottom: 1px solid var(--border);
+  font-size: 11px; flex-shrink: 0;
 }
-#densities .row { display: flex; gap: 6px; font-size: 11px; color: var(--dim); }
-#densities .row .name { width: 70px; }
-#densities .row .spark { letter-spacing: 1px; }
+#panel-tabs .tab {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: var(--dim); transition: all var(--trans-fast);
+  border-bottom: 2px solid transparent;
+}
+#panel-tabs .tab:hover { color: var(--text); background: #ffffff06; }
+#panel-tabs .tab.active { color: var(--text); border-bottom-color: var(--coord); }
+#sentron-panel, #navtree-panel { flex: 1; overflow-y: auto; padding: 10px 12px; }
+#navtree-panel { display: none; }
 
-/* Content area — view and edit */
+/* Sentron */
+#sentron-panel .header { color: var(--dim); margin-bottom: 6px; font-size: 12px; }
+#sentron-panel .group-label { color: var(--dim); margin-top: 6px; font-size: 11px; }
+.axon {
+  display: flex; gap: 4px; cursor: pointer; padding: 1px 4px; border-radius: 3px;
+  font-size: 12px; transition: background var(--trans-fast);
+}
+.axon:hover { background: #ffffff10; }
+.axon.active { background: #ffffff18; }
+.axon .marker { width: 12px; color: var(--active); }
+.axon.spatial { color: var(--z-color); }
+.axon.temporal { color: var(--y-color); }
+.axon.neuron { color: var(--x-color); }
+.axon .dim-num { width: 14px; text-align: right; }
+.axon .dim-name { width: 80px; }
+.axon .dim-val { width: 36px; text-align: right; }
+.axon .counts { color: var(--dim); }
+
+/* Densities */
+.densities { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 6px; }
+.densities .row { display: flex; gap: 6px; font-size: 11px; color: var(--dim); }
+.densities .row .name { width: 70px; }
+.densities .row .spark { letter-spacing: 1px; }
+
+/* ── Navtree ── */
+.nt-level { font-size: 11px; color: var(--dim); margin: 6px 0 4px; }
+.nt-level.z { color: var(--z-color); }
+.nt-level.y { color: var(--y-color); }
+.nt-level.x { color: var(--x-color); }
+.nt-group {
+  display: flex; align-items: center; gap: 4px; padding: 2px 4px; cursor: pointer;
+  border-radius: 3px; transition: background var(--trans-fast); font-size: 12px;
+}
+.nt-group:hover { background: #ffffff10; }
+.nt-group.current { background: #ffffff14; color: var(--active); }
+.nt-group .nt-arrow { width: 14px; color: var(--dim); font-size: 10px; transition: transform var(--trans-fast); }
+.nt-group .nt-arrow.open { transform: rotate(90deg); }
+.nt-group .nt-label { color: var(--coord); min-width: 70px; }
+.nt-group .nt-count { color: var(--dim); font-size: 10px; }
+.nt-children { margin-left: 16px; overflow: hidden; transition: max-height var(--trans-med); }
+.nt-children.collapsed { max-height: 0 !important; }
+.nt-scroll {
+  padding: 1px 4px; cursor: pointer; border-radius: 2px; font-size: 11px;
+  display: flex; gap: 6px; transition: background var(--trans-fast);
+  white-space: nowrap; overflow: hidden;
+}
+.nt-scroll:hover { background: #ffffff10; }
+.nt-scroll.current { background: #ffffff14; color: var(--active); }
+.nt-scroll .nt-coord { color: var(--x-color); min-width: 60px; }
+.nt-scroll .nt-preview { color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Dimensional subspace headers ── */
+.subspace-header {
+  padding: 6px 8px; margin: 8px 0 4px; border-radius: 4px; font-size: 11px;
+  display: flex; align-items: center; gap: 8px;
+}
+.subspace-header.d11 { background: #ffffff08; color: var(--text); border-left: 3px solid var(--z-color); }
+.subspace-header.d7 { background: #ffffff06; color: var(--text); border-left: 3px solid var(--y-color); }
+.subspace-header.d4 { background: #ffffff04; color: var(--text); border-left: 3px solid var(--x-color); }
+.subspace-header .sh-dim { font-weight: bold; }
+.subspace-header .sh-desc { color: var(--dim); }
+
+/* ── Content area ── */
 #content-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 #content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px 20px;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  line-height: 1.5;
-  tab-size: 4;
+  flex: 1; overflow-y: auto; padding: 16px 20px;
+  white-space: pre-wrap; word-wrap: break-word; line-height: 1.5; tab-size: 4;
+  transition: opacity var(--trans-fast);
 }
 #content.empty { color: var(--dim); font-style: italic; }
 #content a.coord-link {
-  color: var(--coord);
-  text-decoration: none;
-  cursor: pointer;
-  border-bottom: 1px dotted var(--coord);
+  color: var(--coord); text-decoration: none; cursor: pointer;
+  border-bottom: 1px dotted var(--coord); transition: color var(--trans-fast);
 }
-#content a.coord-link:hover {
-  color: var(--active);
-  border-bottom-color: var(--active);
-}
+#content a.coord-link:hover { color: var(--active); border-bottom-color: var(--active); }
 
-#editor {
-  display: none;
-  flex: 1;
-  overflow: hidden;
-  padding: 0;
-}
+#editor { display: none; flex: 1; overflow: hidden; flex-direction: column; }
 #editor textarea {
-  width: 100%;
-  height: 100%;
-  background: var(--bg);
-  color: var(--text);
-  font-family: inherit;
-  font-size: 13px;
-  line-height: 1.5;
-  padding: 16px 20px;
-  border: none;
-  outline: none;
-  resize: none;
-  tab-size: 4;
+  width: 100%; flex: 1; background: var(--bg); color: var(--text);
+  font-family: inherit; font-size: 13px; line-height: 1.5;
+  padding: 16px 20px; border: none; outline: none; resize: none; tab-size: 4;
 }
 #editor .editor-toolbar {
-  height: 28px;
-  background: var(--bar);
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  padding: 0 12px;
-  gap: 8px;
-  font-size: 11px;
+  height: 28px; background: var(--bar); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; padding: 0 12px; gap: 8px; font-size: 11px; flex-shrink: 0;
 }
 #editor .editor-toolbar button {
-  background: var(--border);
-  color: var(--text);
-  border: none;
-  padding: 2px 10px;
-  border-radius: 3px;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 11px;
+  background: var(--border); color: var(--text); border: none;
+  padding: 2px 10px; border-radius: 3px; cursor: pointer;
+  font-family: inherit; font-size: 11px; transition: background var(--trans-fast);
 }
 #editor .editor-toolbar button:hover { background: #444; }
 #editor .editor-toolbar button.save-btn { background: var(--x-color); color: #000; }
 #editor .editor-toolbar button.save-btn:hover { background: #8ddf8d; }
 #editor .editor-toolbar .coord-label { color: var(--coord); }
 
-/* Zoom view */
-#zoom-view {
-  display: none;
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px 20px;
-}
-#zoom-view .zoom-header {
-  color: var(--dim);
-  font-size: 12px;
-  margin-bottom: 12px;
-}
-#zoom-view .zoom-entry {
-  display: flex;
-  gap: 12px;
-  padding: 6px 8px;
-  cursor: pointer;
-  border-radius: 4px;
-  border-bottom: 1px solid #1a1a1a;
-  align-items: baseline;
-}
-#zoom-view .zoom-entry:hover { background: #ffffff08; }
-#zoom-view .zoom-entry .ze-label { color: var(--coord); min-width: 80px; font-weight: bold; }
-#zoom-view .zoom-entry .ze-count { color: var(--dim); min-width: 60px; font-size: 11px; }
-#zoom-view .zoom-entry .ze-preview { color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-/* Status bar */
+/* ── Status bar ── */
 #status-bar {
-  height: 24px;
-  background: #101010;
-  border-top: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  padding: 0 12px;
-  font-size: 11px;
-  flex-shrink: 0;
-  gap: 12px;
+  height: 24px; background: #101010; border-top: 1px solid var(--border);
+  display: flex; align-items: center; padding: 0 12px; font-size: 11px; flex-shrink: 0; gap: 12px;
 }
 #status-bar .mode {
-  padding: 1px 8px;
-  border-radius: 2px;
-  font-weight: bold;
-  color: #000;
+  padding: 1px 8px; border-radius: 2px; font-weight: bold; color: #000;
+  transition: background var(--trans-fast);
 }
 #status-bar .mode.lattice { background: var(--z-color); }
 #status-bar .mode.edit { background: var(--x-color); }
-#status-bar .mode.zoom { background: var(--y-color); }
 #status-bar .help { color: var(--dim); }
 #status-bar .msg { color: var(--active); }
 
-/* Overlays */
+/* ── Overlays ── */
 .overlay {
-  display: none;
-  position: fixed;
-  top: 36px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px;
-  z-index: 10;
-  box-shadow: 0 8px 32px #00000080;
+  display: none; position: fixed; top: 36px; left: 50%; transform: translateX(-50%);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px; z-index: 10; box-shadow: 0 8px 32px #00000080;
 }
 .overlay.visible { display: block; }
 #search-overlay { width: 500px; max-height: 400px; }
 #goto-overlay { width: 360px; }
 .overlay input {
-  width: 100%;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  color: var(--text);
-  font-family: inherit;
-  font-size: 13px;
-  padding: 6px 10px;
-  border-radius: 4px;
-  outline: none;
+  width: 100%; background: var(--bg); border: 1px solid var(--border);
+  color: var(--text); font-family: inherit; font-size: 13px;
+  padding: 6px 10px; border-radius: 4px; outline: none;
 }
 .overlay input:focus { border-color: var(--coord); }
 #search-results { max-height: 300px; overflow-y: auto; margin-top: 6px; }
 #search-results .hit {
-  padding: 4px 8px;
-  cursor: pointer;
-  border-radius: 3px;
-  display: flex;
-  gap: 10px;
+  padding: 4px 8px; cursor: pointer; border-radius: 3px; display: flex; gap: 10px;
+  transition: background var(--trans-fast);
 }
 #search-results .hit:hover { background: #ffffff10; }
 #search-results .hit .hit-coord { color: var(--coord); min-width: 160px; }
@@ -877,11 +719,17 @@ body {
   <span id="coord-text">loading...</span>
   <span class="scrolls" id="scroll-count"></span>
   <span class="dirty" id="dirty-flag"></span>
-  <span class="zoom-crumbs" id="zoom-crumbs"></span>
 </div>
 
 <div id="main">
-  <div id="sentron"></div>
+  <div id="left-panel">
+    <div id="panel-tabs">
+      <div class="tab active" id="tab-sentron" onclick="showPanel('sentron')">◉ Sentron</div>
+      <div class="tab" id="tab-navtree" onclick="showPanel('navtree')">🌳 Nav</div>
+    </div>
+    <div id="sentron-panel"></div>
+    <div id="navtree-panel"></div>
+  </div>
   <div id="content-area">
     <div id="content"></div>
     <div id="editor">
@@ -892,13 +740,12 @@ body {
       </div>
       <textarea id="edit-textarea" spellcheck="false"></textarea>
     </div>
-    <div id="zoom-view"></div>
   </div>
 </div>
 
 <div id="status-bar">
   <span class="mode lattice" id="mode-label">LATTICE</span>
-  <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  z:zoom  /:search  g:goto  Home:BASE</span>
+  <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  t:tree  /:search  g:goto  Home:BASE</span>
   <span class="msg" id="status-msg"></span>
 </div>
 
@@ -906,7 +753,6 @@ body {
   <input id="search-input" placeholder="search scrolls..." autocomplete="off" />
   <div id="search-results"></div>
 </div>
-
 <div class="overlay" id="goto-overlay">
   <input id="goto-input" placeholder="z.z.z/y.y.y/x.x.x" autocomplete="off" />
 </div>
@@ -915,11 +761,13 @@ body {
 const $ = id => document.getElementById(id);
 
 // ── State ──
-let mode = 'lattice'; // lattice | edit | zoom | search | goto
+let mode = 'lattice';
 let lastNav = null;
 let dirty = false;
-let zoomStack = []; // [{tier, parent}] for back-navigation
 let statusTimeout = null;
+let treeData = null; // cached tree from /api/tree
+let treeExpanded = {}; // {zKey: bool, 'zKey/yKey': bool}
+let activePanel = 'sentron';
 
 function showMsg(msg) {
   $('status-msg').textContent = msg;
@@ -932,19 +780,24 @@ function setMode(m) {
   const ml = $('mode-label');
   ml.textContent = m.toUpperCase();
   ml.className = 'mode ' + m;
-
   $('content').style.display = (m === 'lattice') ? '' : 'none';
   $('editor').style.display = (m === 'edit') ? 'flex' : 'none';
-  $('zoom-view').style.display = (m === 'zoom') ? '' : 'none';
-
   const help = {
-    lattice: '1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  z:zoom  /:search  g:goto  Home:BASE  Ctrl+S:save',
+    lattice: '1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  t:tree  /:search  g:goto  Home:BASE  Ctrl+S:save',
     edit: 'Ctrl+S:save  Esc:cancel',
-    zoom: 'Enter/click:drill  Backspace:up  Esc:lattice',
     search: 'Enter:search  Esc:close',
     goto: 'Enter:go  Esc:close',
   };
   $('help-text').textContent = help[m] || '';
+}
+
+function showPanel(name) {
+  activePanel = name;
+  $('sentron-panel').style.display = (name === 'sentron') ? '' : 'none';
+  $('navtree-panel').style.display = (name === 'navtree') ? '' : 'none';
+  $('tab-sentron').className = 'tab' + (name === 'sentron' ? ' active' : '');
+  $('tab-navtree').className = 'tab' + (name === 'navtree' ? ' active' : '');
+  if (name === 'navtree' && !treeData) loadTree();
 }
 
 async function api(method, path, body) {
@@ -953,8 +806,7 @@ async function api(method, path, body) {
     opts.headers = { 'Content-Type': (typeof body === 'object' ? 'application/json' : 'text/plain') };
     opts.body = typeof body === 'object' ? JSON.stringify(body) : body;
   }
-  const res = await fetch(path, opts);
-  return res.json();
+  return (await fetch(path, opts)).json();
 }
 
 // ── Render ──
@@ -968,62 +820,57 @@ function render(nav, skipHash) {
   $('scroll-count').textContent = `[${p.total_scrolls} scrolls]`;
   $('dirty-flag').textContent = dirty ? '● unsaved' : '';
 
-  // Update URL hash for browser back/forward
   if (!skipHash) {
     suppressHashChange = true;
     location.hash = p.coordinate;
     suppressHashChange = false;
   }
 
-  // Sentron
+  renderSentron(nav);
+  renderContent(nav);
+  if (activePanel === 'navtree' && treeData) highlightTreeNode(p.coordinate);
+}
+
+function renderSentron(nav) {
   const s = nav.sentron;
+  const p = nav.position;
   let html = `<div class="header">◉ sentron [${s.size}/40] reach: ${s.structural_reach}↔${s.sequential_reach}</div>`;
   html += '<div class="group-label">── spatial ──</div>';
   for (const a of s.axons.filter(a => a.group === 'spatial')) {
     const active = a.dimension === p.dimension_index ? 'active' : '';
     const marker = a.dimension === p.dimension_index ? '▸' : ' ';
     html += `<div class="axon spatial ${active}" onclick="selectDim(${a.dimension})">
-      <span class="marker">${marker}</span>
-      <span class="dim-num">${a.dimension}</span>
-      <span class="dim-name">${a.name}</span>
-      <span class="dim-val">${a.value}</span>
-      <span class="counts">−${a.backward} +${a.forward}</span>
-    </div>`;
+      <span class="marker">${marker}</span><span class="dim-num">${a.dimension}</span>
+      <span class="dim-name">${a.name}</span><span class="dim-val">${a.value}</span>
+      <span class="counts">−${a.backward} +${a.forward}</span></div>`;
   }
   html += '<div class="group-label">── temporal ──</div>';
   for (const a of s.axons.filter(a => a.group === 'temporal')) {
     const active = a.dimension === p.dimension_index ? 'active' : '';
     const marker = a.dimension === p.dimension_index ? '▸' : ' ';
     html += `<div class="axon temporal ${active}" onclick="selectDim(${a.dimension})">
-      <span class="marker">${marker}</span>
-      <span class="dim-num">${a.dimension}</span>
-      <span class="dim-name">${a.name}</span>
-      <span class="dim-val">${a.value}</span>
-      <span class="counts">−${a.backward} +${a.forward}</span>
-    </div>`;
+      <span class="marker">${marker}</span><span class="dim-num">${a.dimension}</span>
+      <span class="dim-name">${a.name}</span><span class="dim-val">${a.value}</span>
+      <span class="counts">−${a.backward} +${a.forward}</span></div>`;
   }
   for (const a of s.axons.filter(a => a.group === 'neuron')) {
     const active = a.dimension === p.dimension_index ? 'active' : '';
     const marker = a.dimension === p.dimension_index ? '▸' : ' ';
     html += `<div class="axon neuron ${active}" onclick="selectDim(${a.dimension})">
-      <span class="marker">${marker}</span>
-      <span class="dim-num">${a.dimension}</span>
-      <span class="dim-name">${a.name}</span>
-      <span class="dim-val">${a.value}</span>
-      <span class="counts">← neuron</span>
-    </div>`;
+      <span class="marker">${marker}</span><span class="dim-num">${a.dimension}</span>
+      <span class="dim-name">${a.name}</span><span class="dim-val">${a.value}</span>
+      <span class="counts">← neuron</span></div>`;
   }
-
   if (nav.densities && nav.densities.length) {
-    html += '<div id="densities">';
-    for (const d of nav.densities) {
+    html += '<div class="densities">';
+    for (const d of nav.densities)
       html += `<div class="row"><span class="name">${d.name}</span><span class="spark">${d.sparkline}</span></div>`;
-    }
     html += '</div>';
   }
-  $('sentron').innerHTML = html;
+  $('sentron-panel').innerHTML = html;
+}
 
-  // Scroll content — with coordinate auto-hyperlinking
+function renderContent(nav) {
   const el = $('content');
   if (nav.scroll.content) {
     el.innerHTML = linkifyCoordinates(escHtml(nav.scroll.content));
@@ -1032,6 +879,105 @@ function render(nav, skipHash) {
     el.textContent = '○ empty coordinate';
     el.className = 'empty';
   }
+}
+
+// ── Navtree ──
+// Builds a hierarchical tree from flat coordinate list.
+// Structure: Z groups → Y groups → X scrolls
+// Dimensional subspace: 11D = full, 7D = within Z, 4D = within Z/Y, 1D = single scroll
+
+async function loadTree() {
+  treeData = await api('GET', '/api/tree');
+  renderTree();
+}
+
+function buildTree(coords) {
+  // coords = ["1.1.1/1.1.1/1.1.1", ...]
+  const tree = {}; // zKey → { yKey → [xCoords] }
+  for (const c of coords) {
+    const [z, y, x] = c.split('/');
+    if (!tree[z]) tree[z] = {};
+    if (!tree[z][y]) tree[z][y] = [];
+    tree[z][y].push({ x, full: c });
+  }
+  return tree;
+}
+
+function renderTree() {
+  if (!treeData) return;
+  const tree = buildTree(treeData.coordinates);
+  const zKeys = Object.keys(tree).sort();
+  const curCoord = lastNav ? lastNav.position.coordinate : '';
+
+  let html = `<div class="subspace-header d11"><span class="sh-dim">11D</span><span class="sh-desc">Full Lattice · ${treeData.total_scrolls} scrolls</span></div>`;
+
+  for (const zk of zKeys) {
+    const yGroups = tree[zk];
+    const yKeys = Object.keys(yGroups).sort();
+    const zCount = yKeys.reduce((s, yk) => s + yGroups[yk].length, 0);
+    const zExpanded = !!treeExpanded[zk];
+    const zCurrent = curCoord.startsWith(zk + '/') ? ' current' : '';
+
+    html += `<div class="nt-group${zCurrent}" onclick="toggleZ('${zk}')">
+      <span class="nt-arrow${zExpanded ? ' open' : ''}">▶</span>
+      <span class="nt-label">${zk}</span>
+      <span class="nt-count">${zCount}</span></div>`;
+    html += `<div class="nt-children${zExpanded ? '' : ' collapsed'}" id="nt-z-${zk.replace(/\./g,'-')}">`;
+
+    if (zExpanded) {
+      html += `<div class="subspace-header d7"><span class="sh-dim">7D</span><span class="sh-desc">Z=${zk} · ${yKeys.length} subspaces</span></div>`;
+      for (const yk of yKeys) {
+        const scrolls = yGroups[yk];
+        const zyKey = zk + '/' + yk;
+        const yExpanded = !!treeExpanded[zyKey];
+        const yCurrent = curCoord.startsWith(zyKey + '/') ? ' current' : '';
+
+        html += `<div class="nt-group${yCurrent}" onclick="toggleY('${escAttr(zk)}','${escAttr(yk)}')">
+          <span class="nt-arrow${yExpanded ? ' open' : ''}">▶</span>
+          <span class="nt-label" style="color:var(--y-color)">${yk}</span>
+          <span class="nt-count">${scrolls.length}</span></div>`;
+        html += `<div class="nt-children${yExpanded ? '' : ' collapsed'}" id="nt-y-${zyKey.replace(/[\/.]/g,'-')}">`;
+
+        if (yExpanded) {
+          html += `<div class="subspace-header d4"><span class="sh-dim">4D</span><span class="sh-desc">Y=${yk} · ${scrolls.length} scrolls</span></div>`;
+          for (const s of scrolls) {
+            const isCur = s.full === curCoord ? ' current' : '';
+            html += `<div class="nt-scroll${isCur}" onclick="treeNav('${escAttr(s.full)}')">
+              <span class="nt-coord">${s.x}</span></div>`;
+          }
+        }
+        html += '</div>';
+      }
+    }
+    html += '</div>';
+  }
+
+  $('navtree-panel').innerHTML = html;
+}
+
+function toggleZ(zk) {
+  treeExpanded[zk] = !treeExpanded[zk];
+  renderTree();
+}
+
+function toggleY(zk, yk) {
+  const key = zk + '/' + yk;
+  treeExpanded[key] = !treeExpanded[key];
+  // Auto-expand parent Z
+  if (!treeExpanded[zk]) treeExpanded[zk] = true;
+  renderTree();
+}
+
+async function treeNav(coord) {
+  render(await api('POST', '/api/goto', coord));
+}
+
+function highlightTreeNode(coord) {
+  // Auto-expand to show current coordinate
+  const [z, y] = coord.split('/');
+  if (z && !treeExpanded[z]) { treeExpanded[z] = true; }
+  if (z && y && !treeExpanded[z + '/' + y]) { treeExpanded[z + '/' + y] = true; }
+  renderTree();
 }
 
 // ── Navigation ──
@@ -1043,7 +989,7 @@ async function prevPop() { render(await api('POST', '/api/prev')); }
 async function jumpBase() { render(await api('POST', '/api/base')); showMsg('⌂ BASE'); }
 async function gotoCoord(coord) { render(await api('POST', '/api/goto', coord)); }
 
-// ── Edit mode ──
+// ── Edit ──
 function enterEdit() {
   if (!lastNav || !lastNav.scroll) return;
   setMode('edit');
@@ -1051,191 +997,71 @@ function enterEdit() {
   $('edit-textarea').value = lastNav.scroll.content || '';
   $('edit-textarea').focus();
 }
-
 async function saveScroll() {
   const coord = lastNav.position.coordinate;
   const content = $('edit-textarea').value;
-  const res = await api('POST', '/api/update', { coordinate: coord, content: content });
+  const res = await api('POST', '/api/update', { coordinate: coord, content });
   if (res.ok) {
     dirty = true;
     showMsg('scroll saved to memory');
     setMode('lattice');
+    // Refresh tree if it was loaded
+    if (treeData) loadTree();
     render(await api('GET', '/api/nav'));
-  } else {
-    showMsg('save failed: ' + res.message);
-  }
+  } else { showMsg('save failed: ' + res.message); }
 }
-
 async function saveToDisk() {
   const res = await api('POST', '/api/save');
-  if (res.ok) {
-    dirty = false;
-    $('dirty-flag').textContent = '';
-    showMsg('💾 saved to disk');
-  } else {
-    showMsg('disk save failed: ' + res.message);
-  }
+  if (res.ok) { dirty = false; $('dirty-flag').textContent = ''; showMsg('💾 saved to disk'); }
+  else { showMsg('disk save failed: ' + res.message); }
 }
-
-function cancelEdit() {
-  setMode('lattice');
-}
-
-// ── Zoom mode ──
-async function enterZoom() {
-  zoomStack = [];
-  const data = await api('GET', '/api/zoom/z');
-  renderZoom(data);
-  setMode('zoom');
-}
-
-function renderZoom(data) {
-  // Breadcrumbs
-  let crumbs = '<span class="crumb" onclick="enterZoom()">Z</span>';
-  if (data.tier === 'y' || data.tier === 'x') {
-    crumbs += `<span class="sep">›</span><span class="crumb" onclick="zoomToY('${data.parent.split('/')[0] || data.parent}')">${data.parent.split('/')[0] || data.parent}</span>`;
-  }
-  if (data.tier === 'x') {
-    const parts = data.parent.split('/');
-    if (parts.length >= 2) {
-      crumbs += `<span class="sep">›</span><span class="crumb">${parts[1]}</span>`;
-    }
-  }
-  $('zoom-crumbs').innerHTML = crumbs;
-
-  // Entries
-  const tierLabel = {z: 'Z — Library.Shelf.Series', y: 'Y — Collection.Volume.Book', x: 'X — Chapter.Section.Scroll'};
-  let html = `<div class="zoom-header">${tierLabel[data.tier] || data.tier} (${data.entries.length} groups)</div>`;
-  for (const e of data.entries) {
-    html += `<div class="zoom-entry" onclick="zoomDrill('${data.tier}', '${escAttr(e.label)}', '${escAttr(e.coordinate)}', '${escAttr(data.parent)}')">
-      <span class="ze-label">${escHtml(e.label)}</span>
-      <span class="ze-count">${e.scroll_count} scroll${e.scroll_count !== 1 ? 's' : ''}</span>
-      <span class="ze-preview">${escHtml(e.preview)}</span>
-    </div>`;
-  }
-  $('zoom-view').innerHTML = html;
-}
-
-async function zoomDrill(tier, label, coordinate, parent) {
-  if (tier === 'z') {
-    zoomStack.push({tier: 'z'});
-    const data = await api('GET', '/api/zoom/y/' + label);
-    renderZoom(data);
-  } else if (tier === 'y') {
-    zoomStack.push({tier: 'y', parent: parent});
-    const data = await api('GET', '/api/zoom/x/' + parent + '/' + label);
-    renderZoom(data);
-  } else if (tier === 'x') {
-    // Drill to scroll — switch to lattice at that coordinate
-    $('zoom-crumbs').innerHTML = '';
-    setMode('lattice');
-    await gotoCoord(coordinate);
-  }
-}
-
-async function zoomToY(zStr) {
-  zoomStack = [{tier: 'z'}];
-  const data = await api('GET', '/api/zoom/y/' + zStr);
-  renderZoom(data);
-}
-
-async function zoomUp() {
-  if (zoomStack.length === 0) {
-    $('zoom-crumbs').innerHTML = '';
-    setMode('lattice');
-    return;
-  }
-  const prev = zoomStack.pop();
-  if (prev.tier === 'z') {
-    const data = await api('GET', '/api/zoom/z');
-    renderZoom(data);
-  } else if (prev.tier === 'y') {
-    const data = await api('GET', '/api/zoom/y/' + prev.parent);
-    renderZoom(data);
-  }
-}
+function cancelEdit() { setMode('lattice'); }
 
 // ── Search ──
 async function doSearch(query) {
   const hits = await api('POST', '/api/search', query);
   const el = $('search-results');
-  if (!hits.length) {
-    el.innerHTML = '<div style="color:var(--dim);padding:8px">no results</div>';
-    return;
-  }
+  if (!hits.length) { el.innerHTML = '<div style="color:var(--dim);padding:8px">no results</div>'; return; }
   el.innerHTML = hits.map(h =>
     `<div class="hit" onclick="jumpToHit('${escAttr(h.coordinate)}')">
       <span class="hit-coord">${escHtml(h.coordinate)}</span>
-      <span class="hit-ctx">${escHtml(h.context)}</span>
-    </div>`
+      <span class="hit-ctx">${escHtml(h.context)}</span></div>`
   ).join('');
 }
-
-function jumpToHit(coord) {
-  closeOverlays();
-  gotoCoord(coord);
-}
+function jumpToHit(coord) { closeOverlays(); gotoCoord(coord); }
 
 // ── Overlays ──
 function openSearch() {
-  mode = 'search';
-  $('search-overlay').className = 'overlay visible';
-  $('search-input').value = '';
-  $('search-results').innerHTML = '';
-  $('search-input').focus();
+  mode = 'search'; $('search-overlay').className = 'overlay visible';
+  $('search-input').value = ''; $('search-results').innerHTML = ''; $('search-input').focus();
 }
-
 function openGoto() {
-  mode = 'goto';
-  $('goto-overlay').className = 'overlay visible';
-  $('goto-input').value = '';
-  $('goto-input').focus();
+  mode = 'goto'; $('goto-overlay').className = 'overlay visible';
+  $('goto-input').value = ''; $('goto-input').focus();
 }
-
 function closeOverlays() {
-  $('search-overlay').className = 'overlay';
-  $('goto-overlay').className = 'overlay';
+  $('search-overlay').className = 'overlay'; $('goto-overlay').className = 'overlay';
   if (mode === 'search' || mode === 'goto') setMode('lattice');
 }
 
 // ── Helpers ──
 function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function escAttr(s) { return s.replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
-
-// Auto-detect phext coordinates (z.z.z/y.y.y/x.x.x) and make them clickable links.
-// Runs on already-escaped HTML text, so slashes and dots are literal.
 function linkifyCoordinates(html) {
-  // Match patterns like 1.2.3/4.5.6/7.8.9 — three dot-separated groups of 1-4 digit numbers
   const coordRe = /\b(\d{1,4}\.\d{1,4}\.\d{1,4}\/\d{1,4}\.\d{1,4}\.\d{1,4}\/\d{1,4}\.\d{1,4}\.\d{1,4})\b/g;
-  return html.replace(coordRe, (match) => {
-    return `<a class="coord-link" onclick="event.preventDefault();gotoCoord('${match}')" href="#">${match}</a>`;
-  });
+  return html.replace(coordRe, m => `<a class="coord-link" onclick="event.preventDefault();gotoCoord('${m}')" href="#">${m}</a>`);
 }
 
 // ── Keyboard ──
 document.addEventListener('keydown', async (e) => {
-  // Global: Ctrl+S saves to disk
   if ((e.ctrlKey || e.metaKey) && e.key === 's') {
     e.preventDefault();
-    if (mode === 'edit') {
-      await saveScroll();
-      await saveToDisk();
-    } else if (dirty) {
-      await saveToDisk();
-    }
+    if (mode === 'edit') { await saveScroll(); await saveToDisk(); }
+    else if (dirty) { await saveToDisk(); }
     return;
   }
-
-  if (mode === 'edit') {
-    if (e.key === 'Escape') { cancelEdit(); e.preventDefault(); }
-    return; // let textarea handle all other keys
-  }
-
-  if (mode === 'search') {
-    if (e.key === 'Escape') { closeOverlays(); e.preventDefault(); }
-    return;
-  }
-
+  if (mode === 'edit') { if (e.key === 'Escape') { cancelEdit(); e.preventDefault(); } return; }
+  if (mode === 'search') { if (e.key === 'Escape') { closeOverlays(); e.preventDefault(); } return; }
   if (mode === 'goto') {
     if (e.key === 'Escape') { closeOverlays(); e.preventDefault(); }
     if (e.key === 'Enter') {
@@ -1246,25 +1072,16 @@ document.addEventListener('keydown', async (e) => {
     return;
   }
 
-  if (mode === 'zoom') {
-    if (e.key === 'Escape') { $('zoom-crumbs').innerHTML = ''; setMode('lattice'); e.preventDefault(); }
-    else if (e.key === 'Backspace') { await zoomUp(); e.preventDefault(); }
-    return;
-  }
-
-  // Lattice mode
   const k = e.key;
   if (k >= '1' && k <= '9') { await selectDim(parseInt(k)); e.preventDefault(); }
   else if (k === 'l' || k === 'ArrowRight') { await moveForward(); e.preventDefault(); }
   else if (k === 'h' || k === 'ArrowLeft') { await moveBackward(); e.preventDefault(); }
   else if (k === 'j' || k === 'ArrowDown') {
-    if (e.shiftKey) { for (let i=0;i<10;i++) await nextPop(); }
-    else { await nextPop(); }
+    if (e.shiftKey) { for (let i=0;i<10;i++) await nextPop(); } else { await nextPop(); }
     e.preventDefault();
   }
   else if (k === 'k' || k === 'ArrowUp') {
-    if (e.shiftKey) { for (let i=0;i<10;i++) await prevPop(); }
-    else { await prevPop(); }
+    if (e.shiftKey) { for (let i=0;i<10;i++) await prevPop(); } else { await prevPop(); }
     e.preventDefault();
   }
   else if (k === 'J') { for (let i=0;i<10;i++) await nextPop(); e.preventDefault(); }
@@ -1272,41 +1089,32 @@ document.addEventListener('keydown', async (e) => {
   else if (k === '/' || (k === 'f' && e.ctrlKey)) { openSearch(); e.preventDefault(); }
   else if (k === 'g') { openGoto(); e.preventDefault(); }
   else if (k === 'e' || k === 'Enter') { enterEdit(); e.preventDefault(); }
-  else if (k === 'z') { await enterZoom(); e.preventDefault(); }
+  else if (k === 't') { showPanel(activePanel === 'navtree' ? 'sentron' : 'navtree'); e.preventDefault(); }
   else if (k === 'Home') { await jumpBase(); e.preventDefault(); }
 });
 
-// Search handlers
-$('search-input').addEventListener('input', (e) => {
+$('search-input').addEventListener('input', e => {
   const q = e.target.value.trim();
-  if (q.length >= 2) doSearch(q);
-  else $('search-results').innerHTML = '';
+  if (q.length >= 2) doSearch(q); else $('search-results').innerHTML = '';
 });
-$('search-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    const q = e.target.value.trim();
-    if (q) doSearch(q);
-    e.preventDefault();
-  }
+$('search-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { const q = e.target.value.trim(); if (q) doSearch(q); e.preventDefault(); }
 });
 
-// Browser back/forward via hash
 window.addEventListener('hashchange', async () => {
   if (suppressHashChange) return;
   const hash = location.hash.replace(/^#/, '');
-  if (hash && /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash)) {
+  if (hash && /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash))
     render(await api('POST', '/api/goto', hash), true);
-  }
 });
 
-// Initial load — navigate to hash coordinate if present
+// Initial load
 (async () => {
   const hash = location.hash.replace(/^#/, '');
-  if (hash && /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash)) {
+  if (hash && /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash))
     render(await api('POST', '/api/goto', hash));
-  } else {
+  else
     render(await api('GET', '/api/nav'));
-  }
 })();
 </script>
 </body>

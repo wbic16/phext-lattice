@@ -91,12 +91,18 @@
 - R3.1.4: Thread-per-connection with `Arc<Mutex<AppState>>`
 - R3.1.5: Serves from headless machines, browse from any device
 
-### R3.2 3-Tier Zoom
-- R3.2.1: Z-tier — list all populated Library.Shelf.Series groups with scroll counts
-- R3.2.2: Y-tier — drill into a Z group, list Collection.Volume.Book groups
-- R3.2.3: X-tier — drill into a Z/Y group, list Chapter.Section.Scroll entries with previews
-- R3.2.4: Click to drill deeper; Backspace to zoom out; Esc to return to lattice
-- R3.2.5: Breadcrumb trail showing current zoom path
+### R3.2 Navtree — Dimensional Subspace Browser
+- R3.2.1: Collapsible tree showing Z → Y → X hierarchy
+- R3.2.2: **11D view** — full lattice: all Z groups (Library.Shelf.Series) with scroll counts
+- R3.2.3: **7D view** — fix Z, expand Y subspace (Collection.Volume.Book groups)
+- R3.2.4: **4D view** — fix Z+Y, expand X subspace (Chapter.Section.Scroll entries)
+- R3.2.5: **1D view** — click a scroll to navigate and view content
+- R3.2.6: Dimensional subspace headers labeled with dimension count (11D/7D/4D)
+- R3.2.7: Color-coded: Z=cyan border, Y=magenta border, X=green border
+- R3.2.8: Auto-expand tree to show current coordinate on navigation
+- R3.2.9: Tree data loaded once from `/api/tree`, cached client-side
+- R3.2.10: Tab toggle between Sentron panel and Navtree (`t` key)
+- R3.2.11: Smooth expand/collapse transitions (120ms arrows, 200ms children)
 
 ### R3.3 Editing
 - R3.3.1: `e` or `Enter` enters edit mode with textarea
