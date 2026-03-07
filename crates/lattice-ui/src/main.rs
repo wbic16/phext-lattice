@@ -118,6 +118,14 @@ struct ApiOk {
     message: String,
 }
 
+/// Available phext file metadata
+#[derive(Serialize, Clone)]
+struct PhextFile {
+    name: String,
+    path: String,
+    bytes: u64,
+}
+
 // ── State ──────────────────────────────────────────────────────────────
 
 struct AppState {
@@ -126,6 +134,10 @@ struct AppState {
     overview: LatticeOverview,
     file_path: String,
     dirty: bool,
+    /// Directory of phext files available
+    phext_dir: Option<String>,
+    /// Auth token (None = no auth required)
+    auth_token: Option<String>,
 }
 
 impl AppState {
@@ -140,7 +152,7 @@ impl AppState {
             nav.next_populated(lattice.index());
         }
 
-        AppState { lattice, nav, overview, file_path, dirty: false }
+        AppState { lattice, nav, overview, file_path, dirty: false, phext_dir: None, auth_token: None }
     }
 
     fn rebuild_overview(&mut self) {
@@ -226,6 +238,62 @@ impl AppState {
             scroll: self.scroll_json(),
             densities: self.densities_json(),
         }
+    }
+
+    fn list_phexts(&self) -> Vec<PhextFile> {
+        let dir = match &self.phext_dir {
+            Some(d) => d.clone(),
+            None => {
+                // Single file mode — just show current file
+                let meta = std::fs::metadata(&self.file_path).ok();
+                return vec![PhextFile {
+                    name: std::path::Path::new(&self.file_path)
+                        .file_name().unwrap_or_default().to_string_lossy().to_string(),
+                    path: self.file_path.clone(),
+                    bytes: meta.map(|m| m.len()).unwrap_or(0),
+                }];
+            }
+        };
+        let mut files = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map(|e| e == "phext").unwrap_or(false) {
+                    let meta = std::fs::metadata(&path).ok();
+                    files.push(PhextFile {
+                        name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                        path: path.to_string_lossy().to_string(),
+                        bytes: meta.map(|m| m.len()).unwrap_or(0),
+                    });
+                }
+            }
+        }
+        files.sort_by(|a, b| a.name.cmp(&b.name));
+        files
+    }
+
+    fn open_phext(&mut self, path: &str) -> Result<(), String> {
+        // Validate path is within allowed directory
+        if let Some(dir) = &self.phext_dir {
+            let canonical = std::fs::canonicalize(path).map_err(|e| format!("{}", e))?;
+            let dir_canonical = std::fs::canonicalize(dir).map_err(|e| format!("{}", e))?;
+            if !canonical.starts_with(&dir_canonical) {
+                return Err("path outside allowed directory".into());
+            }
+        }
+        let lattice = MappedLattice::open(path).map_err(|e| format!("{}", e))?;
+        let buf = lattice.to_phext_bytes();
+        self.overview = LatticeOverview::build(&buf, lattice.index());
+        self.nav = Navigator::new();
+        if lattice.has_scroll(&libphext::phext::default_coordinate()) {
+            self.nav.goto(libphext::phext::default_coordinate());
+        } else {
+            self.nav.next_populated(lattice.index());
+        }
+        self.lattice = lattice;
+        self.file_path = path.to_string();
+        self.dirty = false;
+        Ok(())
     }
 
     fn tree_json(&self) -> ApiTree {
@@ -358,10 +426,40 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
 
     let mut state = state.lock().unwrap();
 
+    // Auth check — skip for GET / (the UI page itself)
+    if path != "/" && path != "/index.html" {
+        if let Some(ref token) = state.auth_token {
+            let auth_header = headers.get("authorization").cloned().unwrap_or_default();
+            let provided = if auth_header.to_lowercase().starts_with("bearer ") {
+                auth_header[7..].trim().to_string()
+            } else {
+                auth_header.trim().to_string()
+            };
+            if &provided != token {
+                send(stream, 401, "text/plain", b"unauthorized");
+                return;
+            }
+        }
+    }
+
     match (method.as_str(), path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => {
             send(stream, 200, "text/html; charset=utf-8", INDEX_HTML.as_bytes());
         }
+
+        // ── Phext file management ──
+        ("GET", "/api/phexts") => {
+            json_response(stream, &state.list_phexts());
+        }
+        ("POST", "/api/open") => {
+            let body = read_body(&mut reader, &headers);
+            let path_str = body.trim().to_string();
+            match state.open_phext(&path_str) {
+                Ok(()) => json_response(stream, &ApiOk { ok: true, message: format!("opened {}", state.file_path) }),
+                Err(e) => json_response(stream, &ApiOk { ok: false, message: e }),
+            }
+        }
+
         ("GET", "/api/nav") => { json_response(stream, &state.nav_json()); }
         ("GET", "/api/status") => {
             let buf = state.lattice.to_phext_bytes();
@@ -485,30 +583,77 @@ fn parse_coordinate(s: &str) -> Option<libphext::phext::Coordinate> {
     })
 }
 
+fn get_flag(args: &[String], flag: &str) -> Option<String> {
+    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!("phext-edit — web-served phext editor");
         eprintln!();
-        eprintln!("Usage: phext-edit <file.phext> [--port 8080]");
+        eprintln!("Usage: phext-edit <file.phext> [options]");
+        eprintln!("       phext-edit --dir <directory> [options]");
+        eprintln!();
+        eprintln!("Options:");
+        eprintln!("  --port <port>     HTTP port (default: 8080)");
+        eprintln!("  --dir <path>      Serve all .phext files in directory");
+        eprintln!("  --token <token>   Require auth token for API access");
         std::process::exit(1);
     }
-    let file_path = args[1].clone();
-    let mut port: u16 = 8080;
-    if let Some(i) = args.iter().position(|a| a == "--port") {
-        if let Some(p) = args.get(i + 1) { port = p.parse().unwrap_or(8080); }
-    }
+
+    let port: u16 = get_flag(&args, "--port").and_then(|p| p.parse().ok()).unwrap_or(8080);
+    let token = get_flag(&args, "--token");
+    let dir = get_flag(&args, "--dir");
+
+    // Determine initial file
+    let file_path = if let Some(ref d) = dir {
+        // Find first .phext in directory
+        let mut first = None;
+        if let Ok(entries) = std::fs::read_dir(d) {
+            for entry in entries.flatten() {
+                if entry.path().extension().map(|e| e == "phext").unwrap_or(false) {
+                    first = Some(entry.path().to_string_lossy().to_string());
+                    break;
+                }
+            }
+        }
+        first.unwrap_or_else(|| {
+            eprintln!("No .phext files found in {}", d);
+            std::process::exit(1);
+        })
+    } else {
+        args[1].clone()
+    };
+
     let lattice = MappedLattice::open(&file_path).unwrap_or_else(|e| {
-        eprintln!("Failed to open {}: {}", file_path, e); std::process::exit(1);
+        eprintln!("Failed to open {}: {}", file_path, e);
+        std::process::exit(1);
     });
-    let state = Arc::new(Mutex::new(AppState::new(lattice, file_path.clone())));
+
+    let mut app_state = AppState::new(lattice, file_path.clone());
+    app_state.phext_dir = dir.clone();
+    app_state.auth_token = token.clone();
+
+    let state = Arc::new(Mutex::new(app_state));
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).unwrap_or_else(|e| {
-        eprintln!("Failed to bind port {}: {}", port, e); std::process::exit(1);
+        eprintln!("Failed to bind port {}: {}", port, e);
+        std::process::exit(1);
     });
+
     let scroll_count = state.lock().unwrap().overview.total_scrolls;
-    println!("💎 phext-edit serving {} on http://0.0.0.0:{}", file_path, port);
-    println!("   {} scrolls", scroll_count);
+    let phext_count = state.lock().unwrap().list_phexts().len();
+
+    println!("💎 phext-edit on http://0.0.0.0:{}", port);
+    if let Some(ref d) = dir {
+        println!("   directory: {} ({} phext files)", d, phext_count);
+    }
+    println!("   active: {} ({} scrolls)", file_path, scroll_count);
+    if token.is_some() {
+        println!("   auth: token required");
+    }
     println!("   Open in browser: http://localhost:{}", port);
+
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
@@ -745,6 +890,7 @@ body {
 
 <div id="status-bar">
   <span class="mode lattice" id="mode-label">LATTICE</span>
+  <span id="active-file" style="color:var(--dim);cursor:pointer;font-size:11px" onclick="openPhextPicker()" title="Click to switch phext"></span>
   <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  t:tree  /:search  g:goto  Home:BASE</span>
   <span class="msg" id="status-msg"></span>
 </div>
@@ -756,6 +902,20 @@ body {
 <div class="overlay" id="goto-overlay">
   <input id="goto-input" placeholder="z.z.z/y.y.y/x.x.x" autocomplete="off" />
 </div>
+<div class="overlay" id="phext-overlay" style="width:500px;max-height:500px">
+  <div style="color:var(--dim);font-size:11px;margin-bottom:6px">Select a phext file:</div>
+  <div id="phext-list" style="max-height:400px;overflow-y:auto"></div>
+</div>
+<div id="auth-screen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:100;display:flex;align-items:center;justify-content:center">
+  <div style="text-align:center;max-width:400px">
+    <div style="font-size:24px;margin-bottom:16px;color:var(--coord)">💎 phext-edit</div>
+    <div style="color:var(--dim);margin-bottom:20px">Enter your access token to continue</div>
+    <input id="auth-input" type="password" placeholder="token" autocomplete="off"
+      style="width:100%;background:var(--panel);border:1px solid var(--border);color:var(--text);
+      font-family:inherit;font-size:14px;padding:10px 14px;border-radius:6px;outline:none;text-align:center" />
+    <div id="auth-error" style="color:var(--danger);margin-top:8px;font-size:12px"></div>
+  </div>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -765,9 +925,11 @@ let mode = 'lattice';
 let lastNav = null;
 let dirty = false;
 let statusTimeout = null;
-let treeData = null; // cached tree from /api/tree
-let treeExpanded = {}; // {zKey: bool, 'zKey/yKey': bool}
+let treeData = null;
+let treeExpanded = {};
 let activePanel = 'sentron';
+let authToken = localStorage.getItem('phext-token') || '';
+let needsAuth = false;
 
 function showMsg(msg) {
   $('status-msg').textContent = msg;
@@ -801,12 +963,19 @@ function showPanel(name) {
 }
 
 async function api(method, path, body) {
-  const opts = { method };
+  const opts = { method, headers: {} };
+  if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
   if (body !== undefined) {
-    opts.headers = { 'Content-Type': (typeof body === 'object' ? 'application/json' : 'text/plain') };
+    opts.headers['Content-Type'] = (typeof body === 'object' ? 'application/json' : 'text/plain');
     opts.body = typeof body === 'object' ? JSON.stringify(body) : body;
   }
-  return (await fetch(path, opts)).json();
+  const res = await fetch(path, opts);
+  if (res.status === 401) {
+    needsAuth = true;
+    showAuthScreen();
+    throw new Error('unauthorized');
+  }
+  return res.json();
 }
 
 // ── Render ──
@@ -1040,8 +1209,10 @@ function openGoto() {
   $('goto-input').value = ''; $('goto-input').focus();
 }
 function closeOverlays() {
-  $('search-overlay').className = 'overlay'; $('goto-overlay').className = 'overlay';
-  if (mode === 'search' || mode === 'goto') setMode('lattice');
+  $('search-overlay').className = 'overlay';
+  $('goto-overlay').className = 'overlay';
+  $('phext-overlay').className = 'overlay';
+  if (mode === 'search' || mode === 'goto' || mode === 'phext-pick') setMode('lattice');
 }
 
 // ── Helpers ──
@@ -1062,6 +1233,7 @@ document.addEventListener('keydown', async (e) => {
   }
   if (mode === 'edit') { if (e.key === 'Escape') { cancelEdit(); e.preventDefault(); } return; }
   if (mode === 'search') { if (e.key === 'Escape') { closeOverlays(); e.preventDefault(); } return; }
+  if (mode === 'phext-pick') { if (e.key === 'Escape') { closeOverlays(); e.preventDefault(); } return; }
   if (mode === 'goto') {
     if (e.key === 'Escape') { closeOverlays(); e.preventDefault(); }
     if (e.key === 'Enter') {
@@ -1108,13 +1280,83 @@ window.addEventListener('hashchange', async () => {
     render(await api('POST', '/api/goto', hash), true);
 });
 
+// ── Auth ──
+function showAuthScreen() {
+  $('auth-screen').style.display = 'flex';
+  $('auth-input').focus();
+}
+$('auth-input').addEventListener('keydown', async (e) => {
+  if (e.key === 'Enter') {
+    authToken = $('auth-input').value.trim();
+    try {
+      await api('GET', '/api/status');
+      // Success — hide auth screen
+      localStorage.setItem('phext-token', authToken);
+      needsAuth = false;
+      $('auth-screen').style.display = 'none';
+      $('auth-error').textContent = '';
+      initApp();
+    } catch {
+      $('auth-error').textContent = 'Invalid token';
+      $('auth-input').value = '';
+      $('auth-input').focus();
+    }
+  }
+});
+
+// ── Phext picker ──
+async function openPhextPicker() {
+  try {
+    const files = await api('GET', '/api/phexts');
+    let html = '';
+    for (const f of files) {
+      const kb = (f.bytes / 1024).toFixed(1);
+      const isCurrent = lastNav && f.path === lastNav.position?.file;
+      html += `<div class="hit" onclick="switchPhext('${escAttr(f.path)}')">
+        <span class="hit-coord">${escHtml(f.name)}</span>
+        <span class="hit-ctx">${kb} KB</span></div>`;
+    }
+    $('phext-list').innerHTML = html || '<div style="color:var(--dim);padding:8px">no phext files</div>';
+    mode = 'phext-pick';
+    $('phext-overlay').className = 'overlay visible';
+  } catch(e) { showMsg('failed to list phexts'); }
+}
+async function switchPhext(path) {
+  try {
+    const res = await api('POST', '/api/open', path);
+    if (res.ok) {
+      closeOverlays();
+      treeData = null; // force tree reload
+      treeExpanded = {};
+      const nav = await api('GET', '/api/nav');
+      render(nav);
+      if (activePanel === 'navtree') loadTree();
+      showMsg('📂 ' + res.message);
+    } else { showMsg(res.message); }
+  } catch(e) { showMsg('failed to open'); }
+}
+
+async function initApp() {
+  try {
+    // Show active file name
+    const status = await api('GET', '/api/status');
+    $('active-file').textContent = '📂 ' + status.file.split('/').pop();
+  } catch { /* auth will catch */ }
+}
+
 // Initial load
 (async () => {
-  const hash = location.hash.replace(/^#/, '');
-  if (hash && /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash))
-    render(await api('POST', '/api/goto', hash));
-  else
-    render(await api('GET', '/api/nav'));
+  try {
+    const hash = location.hash.replace(/^#/, '');
+    if (hash && /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash))
+      render(await api('POST', '/api/goto', hash));
+    else
+      render(await api('GET', '/api/nav'));
+    initApp();
+  } catch(e) {
+    // If unauthorized, auth screen is already shown by api()
+    if (!needsAuth) console.error(e);
+  }
 })();
 </script>
 </body>
