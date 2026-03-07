@@ -11,6 +11,7 @@ pub mod index;
 pub mod mmap;
 pub mod navigator;
 pub mod search;
+pub mod stats;
 
 // Re-exports for convenience
 pub use coordinate_ext::{Dimension, CoordinateNav};
@@ -18,3 +19,4 @@ pub use index::{LatticeIndex, ScrollSpan};
 pub use mmap::MappedLattice;
 pub use navigator::Navigator;
 pub use search::{search_lattice, search_lattice_parallel, search_lattice_auto, search_coordinates, SearchHit};
+pub use stats::{ScrollStats, DimensionDensity, LatticeOverview, Neighborhood};
