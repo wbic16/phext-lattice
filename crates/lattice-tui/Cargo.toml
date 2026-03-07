@@ -11,7 +11,7 @@ name = "phext-nav"
 path = "src/main.rs"
 
 [dependencies]
-lattice-core = { path = "../lattice-core" }
+lattice-core = { path = "../lattice-core", version = "0.1.0" }
 libphext.workspace = true
 crossterm = "0.28"
 ratatui = "0.29"
