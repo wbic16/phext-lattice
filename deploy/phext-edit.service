@@ -1,0 +1,15 @@
+[Unit]
+Description=phext-edit — web-served phext editor
+After=network.target
+
+[Service]
+Type=simple
+User=wbic16
+ExecStart=/source/phext-lattice/target/release/phext-edit --dir /source/human --port 8080 --token REPLACE_WITH_TOKEN
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
