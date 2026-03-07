@@ -7,18 +7,26 @@
 /// - `navigator` — 9D cursor model for lattice navigation
 
 pub mod coordinate_ext;
+pub mod cursor;
+pub mod editor;
 pub mod index;
 pub mod mmap;
+pub mod modes;
 pub mod navigator;
 pub mod search;
 pub mod sentron;
 pub mod stats;
+pub mod undo;
 
 // Re-exports for convenience
 pub use coordinate_ext::{Dimension, CoordinateNav};
+pub use cursor::{ScrollCursor, Position, Selection};
+pub use editor::{EditorMode, EditContext, EditKey, EditKeyCode, EditResult, CursorStyle};
 pub use index::{LatticeIndex, ScrollSpan};
 pub use mmap::MappedLattice;
+pub use modes::VimMode;
 pub use navigator::Navigator;
 pub use search::{search_lattice, search_lattice_parallel, search_lattice_auto, search_coordinates, SearchHit};
 pub use sentron::{Sentron, Neuron, Axon, AxisGroup, SENTRON_CAPACITY};
 pub use stats::{ScrollStats, DimensionDensity, LatticeOverview, Neighborhood};
+pub use undo::{UndoEngine, EditOp, UndoRecord};
