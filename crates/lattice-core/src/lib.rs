@@ -11,6 +11,7 @@ pub mod index;
 pub mod mmap;
 pub mod navigator;
 pub mod search;
+pub mod sentron;
 pub mod stats;
 
 // Re-exports for convenience
@@ -19,4 +20,5 @@ pub use index::{LatticeIndex, ScrollSpan};
 pub use mmap::MappedLattice;
 pub use navigator::Navigator;
 pub use search::{search_lattice, search_lattice_parallel, search_lattice_auto, search_coordinates, SearchHit};
+pub use sentron::{Sentron, Neuron, Axon, AxisGroup, SENTRON_CAPACITY};
 pub use stats::{ScrollStats, DimensionDensity, LatticeOverview, Neighborhood};

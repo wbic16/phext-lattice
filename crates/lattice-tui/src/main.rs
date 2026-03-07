@@ -40,6 +40,7 @@ use lattice_core::{
     MappedLattice, Navigator, Dimension, CoordinateNav,
     search_lattice_auto, SearchHit,
     ScrollStats, DimensionDensity, LatticeOverview,
+    Sentron,
 };
 use libphext::phext::to_coordinate;
 
@@ -72,6 +73,8 @@ struct App {
     show_preview: bool,
     overview: LatticeOverview,
     dimension_densities: Vec<DimensionDensity>,
+    sentron: Sentron,
+    sentron_stale: bool,
     file_path: String,
 }
 
@@ -90,6 +93,8 @@ impl App {
             nav.next_populated(lattice.index());
         }
 
+        let sentron = Sentron::build(&nav.position(), lattice.index());
+
         App {
             lattice,
             nav,
@@ -104,7 +109,16 @@ impl App {
             show_preview: true,
             overview,
             dimension_densities,
+            sentron,
+            sentron_stale: false,
             file_path,
+        }
+    }
+
+    fn refresh_sentron(&mut self) {
+        if self.sentron_stale || self.sentron.center != self.nav.position() {
+            self.sentron = Sentron::build(&self.nav.position(), self.lattice.index());
+            self.sentron_stale = false;
         }
     }
 
@@ -195,6 +209,7 @@ fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     loop {
+        app.refresh_sentron();
         terminal.draw(|f| ui(f, &app))?;
 
         if let Event::Key(key) = event::read()? {
@@ -567,95 +582,112 @@ fn render_lattice(f: &mut ratatui::Frame, app: &App, area: Rect) {
 fn render_dimension_map(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let pos = app.nav.position();
     let dim = app.nav.active_dimension();
+    let sentron = &app.sentron;
+    let blocks = ['·', '░', '▒', '▓', '█'];
     let mut lines: Vec<Line> = Vec::new();
 
-    // ── Z arm (dimensions 1-3: Library, Shelf, Series) ──
+    // ── Sentron Header ──
+    lines.push(Line::from(vec![
+        Span::styled(format!(" ◉ sentron [{}/40]", sentron.size()),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("  reach: {}↔{}", sentron.structural_reach, sentron.sequential_reach),
+            Style::default().fg(Color::DarkGray)),
+    ]));
+    lines.push(Line::from(""));
+
+    // ── Spatial Axes (Library, Shelf, Series, Collection) ──
     lines.push(Line::from(Span::styled(
-        " Z  Library.Shelf.Series",
+        " ╭─ spatial ──────────────────╮",
         Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
     )));
 
-    for i in 1..=3u8 {
-        let d = Dimension::from_index(i).unwrap();
+    for (_i, axon) in sentron.structural_axons().iter().enumerate() {
+        let d = axon.dimension;
+        let dim_idx = d as u8;
         let val = pos.dimension_value(d);
-        let density = &app.dimension_densities[(i - 1) as usize];
-        let spark = density.sparkline(12);
-        let distinct = density.distinct_values();
+        let w = axon.weight(sentron.max_axon_total);
+        let block = blocks[(w * 4.0).min(4.0) as usize];
 
-        let (marker, style) = if d == dim {
+        let is_active = d == dim;
+        let (marker, style) = if is_active {
             ("▸", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
         } else {
             (" ", Style::default().fg(Color::Gray))
         };
 
         lines.push(Line::from(vec![
-            Span::styled(format!(" {}{} ", marker, i), style),
+            Span::styled(format!(" │{}{} ", marker, dim_idx), style),
             Span::styled(format!("{:<10}", d.name()), style),
-            Span::styled(format!("{:>4}", val), Style::default().fg(Color::White).add_modifier(if d == dim { Modifier::BOLD } else { Modifier::empty() })),
-            Span::styled(format!("  {}", spark), Style::default().fg(Color::Cyan)),
-            Span::styled(format!(" ({})", distinct), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{:>4}", val),
+                Style::default().fg(Color::White).add_modifier(if is_active { Modifier::BOLD } else { Modifier::empty() })),
+            Span::styled(format!(" −{:>3}", axon.backward_count), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{}", block), Style::default().fg(Color::Cyan)),
+            Span::styled(format!("+{:<3}", axon.forward_count), Style::default().fg(Color::DarkGray)),
+            Span::styled(" │", Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM)),
         ]));
     }
 
+    lines.push(Line::from(Span::styled(
+        " ╰────────────────────────────╯",
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::DIM),
+    )));
     lines.push(Line::from(""));
 
-    // ── Y arm (dimensions 4-6: Collection, Volume, Book) ──
+    // ── Temporal Axes (Volume, Book, Chapter, Section) ──
     lines.push(Line::from(Span::styled(
-        " Y  Collection.Volume.Book",
+        " ╭─ temporal ─────────────────╮",
         Style::default().fg(Color::Magenta).add_modifier(Modifier::DIM),
     )));
 
-    for i in 4..=6u8 {
-        let d = Dimension::from_index(i).unwrap();
+    for (_i, axon) in sentron.sequential_axons().iter().enumerate() {
+        let d = axon.dimension;
+        let dim_idx = d as u8;
         let val = pos.dimension_value(d);
-        let density = &app.dimension_densities[(i - 1) as usize];
-        let spark = density.sparkline(12);
-        let distinct = density.distinct_values();
+        let w = axon.weight(sentron.max_axon_total);
+        let block = blocks[(w * 4.0).min(4.0) as usize];
 
-        let (marker, style) = if d == dim {
+        let is_active = d == dim;
+        let (marker, style) = if is_active {
             ("▸", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
         } else {
             (" ", Style::default().fg(Color::Gray))
         };
 
         lines.push(Line::from(vec![
-            Span::styled(format!(" {}{} ", marker, i), style),
+            Span::styled(format!(" │{}{} ", marker, dim_idx), style),
             Span::styled(format!("{:<10}", d.name()), style),
-            Span::styled(format!("{:>4}", val), Style::default().fg(Color::White).add_modifier(if d == dim { Modifier::BOLD } else { Modifier::empty() })),
-            Span::styled(format!("  {}", spark), Style::default().fg(Color::Magenta)),
-            Span::styled(format!(" ({})", distinct), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{:>4}", val),
+                Style::default().fg(Color::White).add_modifier(if is_active { Modifier::BOLD } else { Modifier::empty() })),
+            Span::styled(format!(" −{:>3}", axon.backward_count), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{}", block), Style::default().fg(Color::Magenta)),
+            Span::styled(format!("+{:<3}", axon.forward_count), Style::default().fg(Color::DarkGray)),
+            Span::styled(" │", Style::default().fg(Color::Magenta).add_modifier(Modifier::DIM)),
         ]));
     }
 
+    lines.push(Line::from(Span::styled(
+        " ╰────────────────────────────╯",
+        Style::default().fg(Color::Magenta).add_modifier(Modifier::DIM),
+    )));
     lines.push(Line::from(""));
 
-    // ── X arm (dimensions 7-9: Chapter, Section, Scroll) ──
-    lines.push(Line::from(Span::styled(
-        " X  Chapter.Section.Scroll",
-        Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
-    )));
-
-    for i in 7..=9u8 {
-        let d = Dimension::from_index(i).unwrap();
-        let val = pos.dimension_value(d);
-        let density = &app.dimension_densities[(i - 1) as usize];
-        let spark = density.sparkline(12);
-        let distinct = density.distinct_values();
-
-        let (marker, style) = if d == dim {
-            ("▸", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
-        } else {
-            (" ", Style::default().fg(Color::Gray))
-        };
-
-        lines.push(Line::from(vec![
-            Span::styled(format!(" {}{} ", marker, i), style),
-            Span::styled(format!("{:<10}", d.name()), style),
-            Span::styled(format!("{:>4}", val), Style::default().fg(Color::White).add_modifier(if d == dim { Modifier::BOLD } else { Modifier::empty() })),
-            Span::styled(format!("  {}", spark), Style::default().fg(Color::Green)),
-            Span::styled(format!(" ({})", distinct), Style::default().fg(Color::DarkGray)),
-        ]));
-    }
+    // ── Scroll (the neuron itself, dimension 9) ──
+    let scroll_density = &app.dimension_densities[8]; // dim 9 = index 8
+    let spark = scroll_density.sparkline(10);
+    let scroll_marker = if dim == Dimension::Scroll { "▸" } else { " " };
+    let scroll_style = if dim == Dimension::Scroll {
+        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(format!(" {}9 ", scroll_marker), scroll_style),
+        Span::styled(format!("{:<10}", "Scroll"), scroll_style),
+        Span::styled(format!("{:>4}", pos.dimension_value(Dimension::Scroll)),
+            Style::default().fg(Color::White).add_modifier(if dim == Dimension::Scroll { Modifier::BOLD } else { Modifier::empty() })),
+        Span::styled(format!("  {}", spark), Style::default().fg(Color::Green)),
+        Span::styled(" ← neuron", Style::default().fg(Color::DarkGray)),
+    ]));
 
     // ── Neighbors ──
     lines.push(Line::from(""));
@@ -663,7 +695,7 @@ fn render_dimension_map(f: &mut ratatui::Frame, app: &App, area: Rect) {
 
     if let Some(prev) = summary.prev {
         let preview = app.lattice.read_scroll(&prev)
-            .map(|s| s.chars().take(30).collect::<String>())
+            .map(|s| s.chars().take(28).collect::<String>())
             .unwrap_or_default();
         lines.push(Line::from(vec![
             Span::styled(" ▴ ", Style::default().fg(Color::Blue)),
@@ -679,7 +711,7 @@ fn render_dimension_map(f: &mut ratatui::Frame, app: &App, area: Rect) {
 
     if let Some(next) = summary.next {
         let preview = app.lattice.read_scroll(&next)
-            .map(|s| s.chars().take(30).collect::<String>())
+            .map(|s| s.chars().take(28).collect::<String>())
             .unwrap_or_default();
         lines.push(Line::from(vec![
             Span::styled(" ▾ ", Style::default().fg(Color::Blue)),
@@ -693,10 +725,11 @@ fn render_dimension_map(f: &mut ratatui::Frame, app: &App, area: Rect) {
         }
     }
 
+    let title = format!(" ◉ Sentron [2×4 × 5×8] ");
     let widget = Paragraph::new(Text::from(lines))
         .block(Block::default()
             .borders(Borders::ALL)
-            .title(Span::styled(" Dimensions ", Style::default().fg(Color::White)))
+            .title(Span::styled(title, Style::default().fg(Color::White)))
             .border_style(Style::default().fg(Color::DarkGray)));
     f.render_widget(widget, area);
 }

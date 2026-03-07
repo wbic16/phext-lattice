@@ -112,6 +112,18 @@ fn bench_search_parallel(c: &mut Criterion) {
     });
 }
 
+fn bench_sentron_build(c: &mut Criterion) {
+    let lattice = MappedLattice::open(PHEXT_PATH).unwrap();
+    let coord = to_coordinate("1.1.1/1.1.1/1.1.1");
+
+    c.bench_function("sentron_build_808_scrolls", |b| {
+        b.iter(|| {
+            let sentron = lattice_core::Sentron::build(black_box(&coord), lattice.index());
+            black_box(sentron.size());
+        });
+    });
+}
+
 fn bench_roundtrip(c: &mut Criterion) {
     let lattice = MappedLattice::open(PHEXT_PATH).unwrap();
 
@@ -130,6 +142,7 @@ criterion_group!(
     bench_navigate_all,
     bench_search_serial,
     bench_search_parallel,
+    bench_sentron_build,
     bench_roundtrip,
 );
 criterion_main!(benches);
