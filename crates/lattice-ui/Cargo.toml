@@ -1,0 +1,16 @@
+[package]
+name = "lattice-ui"
+description = "GPU-rendered phext editor — the body of Zed, the soul of Emacs, the mind of Helix"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "phext-edit"
+path = "src/main.rs"
+
+[dependencies]
+lattice-core = { path = "../lattice-core" }
+libphext.workspace = true
+gpui.workspace = true
