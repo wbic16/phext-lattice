@@ -17,4 +17,4 @@ pub use coordinate_ext::{Dimension, CoordinateNav};
 pub use index::{LatticeIndex, ScrollSpan};
 pub use mmap::MappedLattice;
 pub use navigator::Navigator;
-pub use search::{search_lattice, search_coordinates, SearchHit};
+pub use search::{search_lattice, search_lattice_parallel, search_lattice_auto, search_coordinates, SearchHit};

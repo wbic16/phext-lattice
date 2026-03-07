@@ -30,7 +30,7 @@ impl ScrollSpan {
 }
 
 /// The lattice index: maps every populated coordinate to its byte span.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LatticeIndex {
     /// O(1) coordinate → byte span lookup.
     entries: HashMap<Coordinate, ScrollSpan>,

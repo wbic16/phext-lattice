@@ -32,7 +32,7 @@ use ratatui::{
 };
 use lattice_core::{
     MappedLattice, Navigator, Dimension, CoordinateNav,
-    search_lattice, SearchHit,
+    search_lattice_auto, SearchHit,
 };
 use libphext::phext::to_coordinate;
 
@@ -253,7 +253,7 @@ fn main() -> io::Result<()> {
                             buf = app.lattice.to_phext_bytes();
                             &buf
                         };
-                        let hits = search_lattice(
+                        let hits = search_lattice_auto(
                             buffer,
                             app.lattice.index(),
                             &pattern,

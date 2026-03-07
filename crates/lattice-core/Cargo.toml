@@ -9,3 +9,11 @@ authors.workspace = true
 [dependencies]
 libphext.workspace = true
 memmap2.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "lattice_bench"
+harness = false

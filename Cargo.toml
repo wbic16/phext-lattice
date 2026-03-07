@@ -11,5 +11,7 @@ authors = ["Will Bickford <wbic16@gmail.com>"]
 [workspace.dependencies]
 libphext = { path = "/source/libphext-rs" }
 memmap2 = "0.9"
+rayon = "1.10"
+criterion = { version = "0.5", features = ["html_reports"] }
 crossterm = "0.28"
 ratatui = "0.29"

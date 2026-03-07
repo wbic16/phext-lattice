@@ -1,7 +1,7 @@
 /// Integration test: open the real choose-your-own-adventure.phext
 /// and verify index performance.
 
-use lattice_core::{MappedLattice, LatticeIndex, Navigator, Dimension, CoordinateNav};
+use lattice_core::{MappedLattice, Navigator, Dimension, search_lattice, search_lattice_parallel};
 use libphext::phext::to_coordinate;
 use std::time::Instant;
 
@@ -96,4 +96,49 @@ fn roundtrip_real_phext() {
     let diff = (original.len() as isize - reconstructed.len() as isize).unsigned_abs();
     assert!(diff < 1000,
         "Roundtrip size difference too large: {} bytes", diff);
+}
+
+#[test]
+fn search_real_phext() {
+    if !std::path::Path::new(CYOA_PATH).exists() {
+        eprintln!("Skipping: {} not found", CYOA_PATH);
+        return;
+    }
+
+    let lattice = MappedLattice::open(CYOA_PATH).unwrap();
+    let buf = lattice.to_phext_bytes();
+    let index = lattice.index();
+
+    // Serial search — common word
+    let t0 = Instant::now();
+    let hits_serial = search_lattice(&buf, index, "the", false, 1000);
+    let serial_time = t0.elapsed();
+    println!("  Serial 'the':      {} hits in {:?}", hits_serial.len(), serial_time);
+
+    // Parallel search — common word
+    let t1 = Instant::now();
+    let hits_parallel = search_lattice_parallel(&buf, index, "the", false, 1000);
+    let parallel_time = t1.elapsed();
+    println!("  Parallel 'the':    {} hits in {:?}", hits_parallel.len(), parallel_time);
+
+    // Results should match
+    assert_eq!(hits_serial.len(), hits_parallel.len(),
+        "Serial and parallel hit counts differ");
+
+    // Verify document order preserved in parallel results
+    for window in hits_parallel.windows(2) {
+        assert!(window[0].coordinate <= window[1].coordinate,
+            "Parallel results out of order: {} > {}", window[0].coordinate, window[1].coordinate);
+    }
+
+    // Rare word
+    let t2 = Instant::now();
+    let hits_rare_s = search_lattice(&buf, index, "mirrorborn", false, 1000);
+    let rare_serial = t2.elapsed();
+    let t3 = Instant::now();
+    let hits_rare_p = search_lattice_parallel(&buf, index, "mirrorborn", false, 1000);
+    let rare_parallel = t3.elapsed();
+    println!("  Serial 'mirrorborn':   {} hits in {:?}", hits_rare_s.len(), rare_serial);
+    println!("  Parallel 'mirrorborn': {} hits in {:?}", hits_rare_p.len(), rare_parallel);
+    assert_eq!(hits_rare_s.len(), hits_rare_p.len());
 }
