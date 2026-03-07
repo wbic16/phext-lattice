@@ -1,10 +1,17 @@
-/// lattice-core — the foundation layer for phext-fluent editing.
+/// phext-lattice — the foundation layer for phext-fluent editing.
 ///
 /// Provides:
 /// - `coordinate_ext` — Hash/Eq, Dimension enum, dimensional navigation for Coordinate
 /// - `index` — O(1) coordinate → byte-span lookup built from a single scan
 /// - `mmap` — Memory-mapped phext files with copy-on-write editing
 /// - `navigator` — 9D cursor model for lattice navigation
+/// - `search` — Parallel search with early termination
+/// - `sentron` — 2×4×5×8 neural topology
+/// - `stats` — Density, sparklines, lattice overview
+/// - `cursor` — Sub-scroll cursor with word navigation
+/// - `editor` — Pluggable editor mode trait
+/// - `modes` — Vim-style editor mode
+/// - `undo` — Undo/redo engine with phext serialization
 
 pub mod coordinate_ext;
 pub mod cursor;

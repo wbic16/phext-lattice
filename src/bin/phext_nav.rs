@@ -36,7 +36,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap, List, ListItem, Clear},
     Terminal,
 };
-use lattice_core::{
+use phext_lattice::{
     MappedLattice, Navigator, Dimension, CoordinateNav,
     search_lattice_auto, SearchHit,
     ScrollStats, DimensionDensity, LatticeOverview,

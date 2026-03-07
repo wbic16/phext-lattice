@@ -1,7 +1,7 @@
 /// Integration test: open the real choose-your-own-adventure.phext
 /// and verify index performance.
 
-use lattice_core::{MappedLattice, Navigator, Dimension, search_lattice, search_lattice_parallel};
+use phext_lattice::{MappedLattice, Navigator, Dimension, search_lattice, search_lattice_parallel};
 use libphext::phext::to_coordinate;
 use std::time::Instant;
 

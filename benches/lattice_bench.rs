@@ -2,7 +2,7 @@
 ///
 /// Run: cargo bench -p lattice-core
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use lattice_core::{MappedLattice, LatticeIndex, Navigator, search_lattice};
+use phext_lattice::{MappedLattice, LatticeIndex, Navigator, search_lattice};
 use libphext::phext::to_coordinate;
 
 const PHEXT_PATH: &str = "/source/human/choose-your-own-adventure.phext";
@@ -87,7 +87,7 @@ fn bench_search_parallel(c: &mut Criterion) {
 
     c.bench_function("search_parallel_common_word", |b| {
         b.iter(|| {
-            let hits = lattice_core::search::search_lattice_parallel(
+            let hits = phext_lattice::search::search_lattice_parallel(
                 black_box(&buf),
                 &idx,
                 black_box("the"),
@@ -100,7 +100,7 @@ fn bench_search_parallel(c: &mut Criterion) {
 
     c.bench_function("search_parallel_rare_word", |b| {
         b.iter(|| {
-            let hits = lattice_core::search::search_lattice_parallel(
+            let hits = phext_lattice::search::search_lattice_parallel(
                 black_box(&buf),
                 &idx,
                 black_box("exocortex"),
@@ -118,7 +118,7 @@ fn bench_sentron_build(c: &mut Criterion) {
 
     c.bench_function("sentron_build_808_scrolls", |b| {
         b.iter(|| {
-            let sentron = lattice_core::Sentron::build(black_box(&coord), lattice.index());
+            let sentron = phext_lattice::Sentron::build(black_box(&coord), lattice.index());
             black_box(sentron.size());
         });
     });

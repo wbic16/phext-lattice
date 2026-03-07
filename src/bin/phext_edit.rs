@@ -5,8 +5,6 @@
 ///
 /// Usage: phext-edit <file.phext> [--port 8080]
 
-mod theme;
-
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -14,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
-use lattice_core::{
+use phext_lattice::{
     CoordinateNav, Dimension, LatticeOverview,
     MappedLattice, Navigator, Sentron,
     DimensionDensity,
@@ -533,7 +531,7 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
                 json_response(stream, &Vec::<ApiSearchHit>::new());
             } else {
                 let buf = state.lattice.to_phext_bytes();
-                let hits = lattice_core::search_lattice_auto(&buf, state.lattice.index(), query, false, 50);
+                let hits = phext_lattice::search_lattice_auto(&buf, state.lattice.index(), query, false, 50);
                 let api_hits: Vec<ApiSearchHit> = hits.into_iter().map(|h| ApiSearchHit {
                     coordinate: format!("{}", h.coordinate), context: h.context, offset: h.offset,
                 }).collect();
