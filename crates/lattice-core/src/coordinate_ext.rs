@@ -12,9 +12,7 @@
 use libphext::phext::{Coordinate, YCoordinate, XCoordinate};
 use libphext::phext::{COORDINATE_MINIMUM, COORDINATE_MAXIMUM};
 
-// NOTE: Hash + Eq are now derived upstream in libphext-rs on
-// ZCoordinate, YCoordinate, XCoordinate, and Coordinate.
-// This was the first suggested upstream improvement from phext-lattice.
+// Hash + Eq + Ord derived upstream in libphext-rs v0.3.x.
 
 /// --------------------------------------------------------------------------------------------------------
 /// Dimension enum for editor navigation.
