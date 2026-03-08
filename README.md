@@ -15,46 +15,90 @@ The foundation layer for phext-fluent editing. Memory-mapped 9D lattice with O(1
 ## Architecture
 
 ```
-lattice-core/
+src/
 ├── coordinate_ext.rs  — Dimension enum, dimensional navigation, CoordinateNav trait
 ├── index.rs           — LatticeIndex: sparse coordinate → byte-span HashMap, O(1) lookup
 ├── mmap.rs            — MappedLattice: memory-mapped phext with copy-on-write overlay
-└── navigator.rs       — Navigator: 9D cursor model with history, marks, populated-jump
+├── navigator.rs       — Navigator: 9D cursor model with history, marks, populated-jump
+├── search.rs          — Parallel search with early termination
+├── sentron.rs         — 2×4×5×8 neural topology
+├── stats.rs           — Density, sparklines, lattice overview
+├── cursor.rs          — Sub-scroll cursor with word navigation
+├── editor.rs          — Pluggable editor mode trait
+├── modes/             — Vim-style editor mode
+├── undo.rs            — Undo/redo engine with phext serialization
+└── tts.rs             — 3×5×17+1 coordinate pronunciation system
+
+web/
+├── phext-tts.js       — Browser TTS with Web Speech API
+└── tts-demo.html      — Interactive pronunciation demo
 ```
 
 ### Key Ideas
 
 **Memory-mapped I/O**: The phext file is mmap'd read-only. Scroll content is only materialized when navigated to. A 4 MB phext uses ~4 MB of virtual address space, not heap.
 
-**O(1) index**: One linear scan on load builds a `HashMap<Coordinate, ScrollSpan>`. Every subsequent lookup is a hash lookup, not a linear scan. This is the critical improvement over libphext-rs's `get_subspace_coordinates` which is O(n) per call.
+**O(1) index**: One linear scan on load builds a `HashMap<Coordinate, ScrollSpan>`. Every subsequent lookup is a hash lookup, not a linear scan. This complements libphext's `explode()` function which also returns `HashMap<Coordinate, String>`.
 
 **Copy-on-write overlay**: Edits go into an in-memory `HashMap<Coordinate, String>`. The mmap is never modified. On save, the phext is reconstructed from mmap spans + overlay, re-mapped, and the overlay clears. Byte-perfect roundtrip.
 
 **Navigator**: The 9D cursor model. Tracks position, active dimension, marks (bookmarks), and full navigation history with back/forward. The `next_populated` / `prev_populated` operations use binary search on the sorted coordinate list.
 
+**TTS Pronunciation**: The 3×5×17+1 system converts coordinates to speakable syllables. Zero = "om" (silence). Values 1-255 map to (onset × vowel × coda) syllables. See `web/tts-demo.html` for an interactive demo.
+
 ## Dependencies
 
-- [libphext-rs](https://github.com/wbic16/libphext-rs) — Coordinate types, delimiter constants, phokenize/dephokenize
+- [libphext](https://crates.io/crates/libphext) v0.3.1 — Coordinate types, delimiter constants, phokenize/dephokenize, explode/implode
 - [memmap2](https://crates.io/crates/memmap2) — Cross-platform memory-mapped file I/O
 
-## Upstream Improvements to libphext-rs
+## libphext v0.3.1 Features
 
-This project identified and applied the following improvements to libphext-rs:
+The following features are now available in libphext v0.3.1:
 
-1. **`Hash` + `Eq` derives** on `ZCoordinate`, `YCoordinate`, `XCoordinate`, and `Coordinate`. Without these, coordinates can't be used as HashMap keys, which blocks O(1) indexing.
+- **`Hash` + `Eq` + `Ord`** derives on `Coordinate`, `ZCoordinate`, `YCoordinate`, `XCoordinate` — enables HashMap/BTreeMap keys and sorting
+- **`Copy` + `Clone`** derives — coordinates are now copyable without explicit `.clone()`
+- **`TryFrom<&str>`** for Coordinate — enables `Coordinate::try_from("1.1.1/1.1.1/1.1.1")`
+- **`explode()`** — returns `HashMap<Coordinate, String>` for O(1) content lookup
+- **`implode()`** — reconstructs phext from HashMap
 
 ### Suggested Future Improvements
 
-2. **`Ord` derive** on Coordinate — currently only `PartialOrd`. Full `Ord` would enable `BTreeMap` indexing and `.sort()` without custom comparators.
-
-3. **Dimension-aware navigation** — the `*_break()` methods advance + reset lower dims (correct for parsing), but there's no way to:
+1. **Dimension-aware navigation** — the `*_break()` methods advance + reset lower dims (correct for parsing), but there's no way to:
    - Move *backward* in a dimension
    - Query which dimension a delimiter byte belongs to
    - Get/set a specific dimension's value without knowing the struct field name
 
-4. **Byte-offset index** — `get_subspace_coordinates` does a linear scan every time. An `index()` function exists but returns a phext string, not a usable data structure. A `HashMap<Coordinate, (usize, usize)>` built once and reused would be a major performance win for any application that does multiple lookups.
+2. **`FromStr` impl** — `TryFrom<&str>` exists but `FromStr` would enable `"1.1.1/1.1.1/1.1.1".parse::<Coordinate>()?` with the `?` operator.
 
-5. **`FromStr` impl** — `to_coordinate` is a free function. A `FromStr` impl would enable `"1.1.1/1.1.1/1.1.1".parse::<Coordinate>()`.
+## Binaries
+
+```bash
+# Web editor server (default feature)
+cargo build --bin phext-edit
+
+# TUI navigator (requires --features tui)
+cargo build --bin phext-nav --features tui
+
+# TTS pronunciation tool
+cargo build --bin phext-tts
+```
+
+### phext-tts Usage
+
+```bash
+# Pronounce a coordinate
+phext-tts 1.1.1/1.1.1/1.1.1
+# → Syllables: a a a om a a a om a a a
+
+# Generate SSML for external TTS
+phext-tts ssml 3.1.4/1.5.9/2.6.5 slow
+
+# Extract & pronounce all coords from a phext
+phext-tts extract file.phext > pronunciation.md
+
+# Show special coordinates (origin, pi, boundary, etc.)
+phext-tts special
+```
 
 ## License
 
