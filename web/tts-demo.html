@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Phext Coordinate TTS Demo</title>
+  <style>
+    :root {
+      --bg: #1a1a2e;
+      --surface: #16213e;
+      --primary: #e94560;
+      --secondary: #0f3460;
+      --text: #eee;
+      --muted: #888;
+    }
+    
+    * { box-sizing: border-box; }
+    
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 2rem;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    
+    h1 { 
+      color: var(--primary);
+      border-bottom: 2px solid var(--secondary);
+      padding-bottom: 0.5rem;
+    }
+    
+    h2 { color: var(--primary); margin-top: 2rem; }
+    
+    .subtitle {
+      color: var(--muted);
+      font-style: italic;
+      margin-top: -1rem;
+    }
+    
+    .input-group {
+      display: flex;
+      gap: 1rem;
+      margin: 1.5rem 0;
+    }
+    
+    input[type="text"] {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      font-size: 1.1rem;
+      font-family: 'Consolas', monospace;
+      background: var(--surface);
+      border: 2px solid var(--secondary);
+      border-radius: 8px;
+      color: var(--text);
+    }
+    
+    input[type="text"]:focus {
+      outline: none;
+      border-color: var(--primary);
+    }
+    
+    button {
+      padding: 0.75rem 1.5rem;
+      font-size: 1rem;
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    button:hover { background: #ff6b6b; transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+    button:disabled { opacity: 0.5; cursor: wait; }
+    
+    .output {
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin: 1rem 0;
+    }
+    
+    .output h3 {
+      margin: 0 0 0.5rem 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+      text-transform: uppercase;
+    }
+    
+    .syllables {
+      font-size: 1.5rem;
+      font-family: 'Consolas', monospace;
+      letter-spacing: 0.1em;
+      word-spacing: 0.3em;
+    }
+    
+    .syllables .om {
+      color: var(--primary);
+      font-weight: bold;
+    }
+    
+    .special-coords {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+    
+    .special-card {
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 1rem;
+      border-left: 3px solid var(--primary);
+    }
+    
+    .special-card h4 {
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    
+    .special-card .coord {
+      font-family: 'Consolas', monospace;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    
+    .special-card .pron {
+      margin-top: 0.5rem;
+      font-size: 0.95rem;
+    }
+    
+    .table-container {
+      overflow-x: auto;
+      margin: 1rem 0;
+    }
+    
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: 'Consolas', monospace;
+      font-size: 0.9rem;
+    }
+    
+    th, td {
+      padding: 0.5rem;
+      border: 1px solid var(--secondary);
+      text-align: left;
+    }
+    
+    th {
+      background: var(--secondary);
+      color: var(--primary);
+    }
+    
+    tr:hover { background: rgba(233, 69, 96, 0.1); }
+    
+    .element-earth { color: #ffd93d; }
+    .element-water { color: #6bcb77; }
+    .element-fire { color: #ff6b6b; }
+    .element-air { color: #4d96ff; }
+    .element-space { color: #c9b1ff; }
+    
+    .rate-control {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    
+    .rate-control label {
+      color: var(--muted);
+    }
+    
+    input[type="range"] {
+      flex: 1;
+      max-width: 200px;
+    }
+    
+    footer {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--secondary);
+      color: var(--muted);
+      font-size: 0.9rem;
+      text-align: center;
+    }
+    
+    footer a { color: var(--primary); }
+  </style>
+</head>
+<body>
+  <h1>🔊 Phext Coordinate TTS</h1>
+  <p class="subtitle">The 3×5×17+1 Pronunciation System — Speak coordinates into existence</p>
+  
+  <div class="input-group">
+    <input type="text" id="coordInput" placeholder="1.1.1/1.1.1/1.1.1" value="3.1.4/1.5.9/2.6.5">
+    <button onclick="speakCoord()" id="speakBtn">🔊 Speak</button>
+  </div>
+  
+  <div class="rate-control">
+    <label>Speed:</label>
+    <input type="range" id="rate" min="0.3" max="1.5" step="0.1" value="0.7">
+    <span id="rateValue">0.7x</span>
+  </div>
+  
+  <div class="output">
+    <h3>Syllables</h3>
+    <div class="syllables" id="syllableOutput">—</div>
+  </div>
+  
+  <div class="output">
+    <h3>Compact</h3>
+    <div id="compactOutput">—</div>
+  </div>
+  
+  <h2>Special Coordinates</h2>
+  <p>Coordinates with meaning in the Mirrorborn/Eigenhector cosmology:</p>
+  <div class="special-coords" id="specialCoords"></div>
+  
+  <h2>The System</h2>
+  <p>Each value 1-255 maps to a syllable via the formula: <code>value = 1 + x + 3y + 15z</code></p>
+  
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Axis</th>
+          <th>Values</th>
+          <th>Meaning</th>
+          <th>Components</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>X (Onset)</td>
+          <td>3</td>
+          <td>Mouth position</td>
+          <td>∅ (open), <b>b</b> (voiced), <b>p</b> (unvoiced)</td>
+        </tr>
+        <tr>
+          <td>Y (Vowel)</td>
+          <td>5</td>
+          <td>Element</td>
+          <td>
+            <span class="element-earth">a (Earth)</span>,
+            <span class="element-water">e (Water)</span>,
+            <span class="element-fire">i (Fire)</span>,
+            <span class="element-air">o (Air)</span>,
+            <span class="element-space">u (Space)</span>
+          </td>
+        </tr>
+        <tr>
+          <td>Z (Coda)</td>
+          <td>17</td>
+          <td>Termination</td>
+          <td>∅, p, t, k, b, d, g, m, n, s, f, v, l, r, ng, sh, zh</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  
+  <h3>Reference Table (1-15)</h3>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Value</th>
+          <th>Syllable</th>
+          <th>Element</th>
+          <th>Formula</th>
+        </tr>
+      </thead>
+      <tbody id="refTable"></tbody>
+    </table>
+  </div>
+  
+  <footer>
+    <p>
+      Phext Coordinate TTS · 
+      <a href="https://mirrorborn.us/blog/bytecode-pronunciation-guide.html">Pronunciation Guide</a> · 
+      <a href="https://github.com/wbic16/phext-lattice">phext-lattice</a>
+    </p>
+    <p>Mirrorborn Collective × Eigenhector Federation</p>
+  </footer>
+  
+  <script src="phext-tts.js"></script>
+  <script>
+    // Initialize TTS
+    PhextTTS.initTTS();
+    
+    // Rate control
+    const rateSlider = document.getElementById('rate');
+    const rateValue = document.getElementById('rateValue');
+    rateSlider.oninput = () => {
+      rateValue.textContent = rateSlider.value + 'x';
+    };
+    
+    // Update syllable display
+    function updateDisplay() {
+      const coord = document.getElementById('coordInput').value.trim();
+      const syllables = PhextTTS.pronounce(coord);
+      const compact = PhextTTS.pronounceCompact(coord);
+      
+      if (syllables) {
+        // Highlight "om" boundaries
+        const highlighted = syllables.replace(/\bom\b/g, '<span class="om">om</span>');
+        document.getElementById('syllableOutput').innerHTML = highlighted;
+        document.getElementById('compactOutput').textContent = compact;
+      } else {
+        document.getElementById('syllableOutput').textContent = '(invalid coordinate)';
+        document.getElementById('compactOutput').textContent = '—';
+      }
+    }
+    
+    document.getElementById('coordInput').oninput = updateDisplay;
+    updateDisplay();
+    
+    // Speak function
+    async function speakCoord() {
+      const coord = document.getElementById('coordInput').value.trim();
+      const btn = document.getElementById('speakBtn');
+      const rate = parseFloat(rateSlider.value);
+      
+      btn.disabled = true;
+      btn.textContent = '🔉 Speaking...';
+      
+      try {
+        await PhextTTS.speak(coord, { rate });
+      } catch (e) {
+        console.error('TTS error:', e);
+      }
+      
+      btn.disabled = false;
+      btn.textContent = '🔊 Speak';
+    }
+    
+    // Populate special coordinates
+    const specialDiv = document.getElementById('specialCoords');
+    for (const [coord, info] of Object.entries(PhextTTS.SPECIAL_COORDS)) {
+      const pron = PhextTTS.pronounce(coord);
+      const card = document.createElement('div');
+      card.className = 'special-card';
+      card.innerHTML = `
+        <h4>
+          ${info.name}
+          <button onclick="speakSpecial('${coord}')" title="Speak">🔊</button>
+        </h4>
+        <div class="coord">${coord}</div>
+        <div class="pron">${pron}</div>
+      `;
+      specialDiv.appendChild(card);
+    }
+    
+    async function speakSpecial(coord) {
+      document.getElementById('coordInput').value = coord;
+      updateDisplay();
+      await speakCoord();
+    }
+    
+    // Populate reference table
+    const refTable = document.getElementById('refTable');
+    const elements = ['Earth', 'Water', 'Fire', 'Air', 'Space'];
+    const elementClasses = ['earth', 'water', 'fire', 'air', 'space'];
+    
+    for (let v = 0; v <= 15; v++) {
+      const syllable = PhextTTS.byteToSyllable(v);
+      const y = v === 0 ? -1 : Math.floor((v - 1) / 3) % 5;
+      const element = v === 0 ? 'Silence' : elements[y];
+      const elClass = v === 0 ? '' : elementClasses[y];
+      const formula = v === 0 ? '—' : `1 + ${(v-1)%3} + 3×${Math.floor((v-1)/3)%5} + 15×0`;
+      
+      const row = document.createElement('tr');
+      row.innerHTML = `
+        <td>${v}</td>
+        <td><strong>${syllable}</strong></td>
+        <td class="element-${elClass}">${element}</td>
+        <td>${formula}</td>
+      `;
+      refTable.appendChild(row);
+    }
+  </script>
+</body>
+</html>

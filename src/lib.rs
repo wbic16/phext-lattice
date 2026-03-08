@@ -23,6 +23,7 @@ pub mod navigator;
 pub mod search;
 pub mod sentron;
 pub mod stats;
+pub mod tts;
 pub mod undo;
 
 // Re-exports for convenience
@@ -37,3 +38,4 @@ pub use search::{search_lattice, search_lattice_parallel, search_lattice_auto, s
 pub use sentron::{Sentron, Neuron, Axon, AxisGroup, SENTRON_CAPACITY};
 pub use stats::{ScrollStats, DimensionDensity, LatticeOverview, Neighborhood};
 pub use undo::{UndoEngine, EditOp, UndoRecord};
+pub use tts::{CoordPronunciation, byte_to_syllable, dim_to_syllables, to_ssml, generate_pronunciation_doc, special_coords};

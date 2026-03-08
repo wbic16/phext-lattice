@@ -40,6 +40,10 @@ name = "phext-nav"
 path = "src/bin/phext_nav.rs"
 required-features = ["tui"]
 
+[[bin]]
+name = "phext-tts"
+path = "src/bin/phext_tts.rs"
+
 [[bench]]
 name = "lattice_bench"
 harness = false
