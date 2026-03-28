@@ -18,6 +18,7 @@ tui = ["dep:ratatui", "dep:crossterm"]
 libphext = "0.3"
 memmap2 = "0.9"
 rayon = "1.10"
+tempfile = "3"
 
 # Web UI deps (default)
 serde = { version = "1", features = ["derive"], optional = true }

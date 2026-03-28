@@ -11,8 +11,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::io;
+use std::io::{self, Write};
 use memmap2::Mmap;
+use tempfile::NamedTempFile;
 use libphext::phext::Coordinate;
 use crate::index::LatticeIndex;
 
@@ -167,12 +168,23 @@ impl MappedLattice {
     }
 
     /// Save to the backing file. Reconstructs the phext from mmap + overlay.
+    ///
+    /// Uses an atomic write: content is written to a temp file in the same
+    /// directory, fsync'd, then renamed into place. On POSIX, rename(2) is
+    /// atomic — readers never see a partial write. (Aetheris, P4 patch)
     pub fn save(&mut self) -> io::Result<()> {
         if self.path.as_os_str().is_empty() {
             return Err(io::Error::new(io::ErrorKind::Other, "No backing file path"));
         }
         let content = self.to_phext_bytes();
-        std::fs::write(&self.path, &content)?;
+
+        // Write to a temp file in the same directory so rename stays on one fs
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        let mut tmp = NamedTempFile::new_in(parent)?;
+        tmp.write_all(&content)?;
+        tmp.as_file().sync_all()?;
+        tmp.persist(&self.path)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
         // Re-map the file and rebuild index
         let file = std::fs::File::open(&self.path)?;
