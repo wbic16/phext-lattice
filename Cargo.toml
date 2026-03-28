@@ -15,7 +15,7 @@ web = ["dep:serde", "dep:serde_json"]
 tui = ["dep:ratatui", "dep:crossterm"]
 
 [dependencies]
-libphext = "0.3"
+libphext = "0.3.1"
 memmap2 = "0.9"
 rayon = "1.10"
 tempfile = "3"
