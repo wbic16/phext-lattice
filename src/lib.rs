@@ -24,6 +24,7 @@ pub mod search;
 pub mod sentron;
 pub mod stats;
 pub mod tts;
+pub mod uml6d;
 pub mod undo;
 
 // Re-exports for convenience
@@ -39,3 +40,4 @@ pub use sentron::{Sentron, Neuron, Axon, AxisGroup, SENTRON_CAPACITY};
 pub use stats::{ScrollStats, DimensionDensity, LatticeOverview, Neighborhood};
 pub use undo::{UndoEngine, EditOp, UndoRecord};
 pub use tts::{CoordPronunciation, byte_to_syllable, dim_to_syllables, to_ssml, generate_pronunciation_doc, special_coords};
+pub use uml6d::{Phase, ArtifactAddr, UmlContext, trace_artifact, artifacts_in_phase};

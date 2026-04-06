@@ -45,6 +45,11 @@ required-features = ["tui"]
 name = "phext-tts"
 path = "src/bin/phext_tts.rs"
 
+[[bin]]
+name = "uml6d-edit"
+path = "src/bin/uml6d_edit.rs"
+required-features = ["web"]
+
 [[bench]]
 name = "lattice_bench"
 harness = false
