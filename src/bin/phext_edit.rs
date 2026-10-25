@@ -588,6 +588,7 @@ fn main() {
         eprintln!();
         eprintln!("Options:");
         eprintln!("  --port <port>     HTTP port (default: 8080)");
+        eprintln!("  --host <addr>     Listen address (default: 0.0.0.0; use 127.0.0.1 behind nginx)");
         eprintln!("  --dir <path>      Serve all .phext files in directory");
         eprintln!("  --token <token>   Require auth token for API access");
         eprintln!();
@@ -598,6 +599,7 @@ fn main() {
     }
 
     let port: u16 = get_flag(&args, "--port").and_then(|p| p.parse().ok()).unwrap_or(8080);
+    let host = get_flag(&args, "--host").unwrap_or_else(|| "0.0.0.0".to_string());
     let token = get_flag(&args, "--token");
     let dir = get_flag(&args, "--dir");
 
@@ -631,15 +633,15 @@ fn main() {
 
     let state = Arc::new(Mutex::new(app_state));
     let gate = Arc::new(Gate::from_env(token));
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).unwrap_or_else(|e| {
-        eprintln!("Failed to bind port {}: {}", port, e);
+    let listener = TcpListener::bind(format!("{}:{}", host, port)).unwrap_or_else(|e| {
+        eprintln!("Failed to bind {}:{}: {}", host, port, e);
         std::process::exit(1);
     });
 
     let scroll_count = state.lock().unwrap().overview.total_scrolls;
     let phext_count = state.lock().unwrap().list_phexts().len();
 
-    println!("💎 phext-edit on http://0.0.0.0:{}", port);
+    println!("💎 phext-edit on http://{}:{}", host, port);
     if let Some(ref d) = dir {
         println!("   directory: {} ({} phext files)", d, phext_count);
     }

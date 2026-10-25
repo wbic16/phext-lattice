@@ -1,4 +1,23 @@
-# Deploying phext-edit to mirrorborn.us
+# Deploying phext-edit
+
+## edit.phext.io (current)
+
+phext-edit runs on the mc.phext.io host (44.248.235.76) behind its own nginx
+site. `deploy.sh` rebuilds `exo`, keeps secrets in `/etc/phext-edit/*.env`,
+binds the service to 127.0.0.1, adds `/etc/nginx/sites-available/edit.phext.io`,
+runs certbot once DNS points here, and redirects `mirrorborn.us/editor` to the
+new site. It is safe to rerun.
+
+```bash
+ssh ubuntu@mc.phext.io
+bash /source/phext-lattice/deploy/deploy.sh
+```
+
+Sign-in settings live in `/etc/phext-edit/oauth.env` (see step 4b below; use
+`https://edit.phext.io` as the homepage and
+`https://edit.phext.io/api/auth/<provider>/callback` as the callback).
+
+## mirrorborn.us/editor (previous setup)
 
 ## Architecture
 
