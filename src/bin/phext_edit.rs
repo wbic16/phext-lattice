@@ -17,6 +17,7 @@ use phext_lattice::{
     MappedLattice, Navigator, Sentron,
     DimensionDensity,
 };
+use phext_lattice::oauth::Gate;
 
 // ── API Types ──────────────────────────────────────────────────────────
 
@@ -134,8 +135,6 @@ struct AppState {
     dirty: bool,
     /// Directory of phext files available
     phext_dir: Option<String>,
-    /// Auth token (None = no auth required)
-    auth_token: Option<String>,
 }
 
 impl AppState {
@@ -150,7 +149,7 @@ impl AppState {
             nav.next_populated(lattice.index());
         }
 
-        AppState { lattice, nav, overview, file_path, dirty: false, phext_dir: None, auth_token: None }
+        AppState { lattice, nav, overview, file_path, dirty: false, phext_dir: None }
     }
 
     fn rebuild_overview(&mut self) {
@@ -411,7 +410,7 @@ fn json_response(stream: &mut std::net::TcpStream, value: &impl Serialize) {
     send(stream, 200, "application/json", body.as_bytes());
 }
 
-fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>) {
+fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>, gate: &Gate) {
     let cloned = match stream.try_clone() { Ok(s) => s, Err(_) => return };
     let mut reader = BufReader::new(cloned);
     let (method, path, headers) = match parse_request(&mut reader) { Some(v) => v, None => return };
@@ -422,23 +421,17 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
         return;
     }
 
-    let mut state = state.lock().unwrap();
-
-    // Auth check — skip for GET / (the UI page itself)
-    if path != "/" && path != "/index.html" {
-        if let Some(ref token) = state.auth_token {
-            let auth_header = headers.get("authorization").cloned().unwrap_or_default();
-            let provided = if auth_header.to_lowercase().starts_with("bearer ") {
-                auth_header[7..].trim().to_string()
-            } else {
-                auth_header.trim().to_string()
-            };
-            if &provided != token {
-                send(stream, 401, "text/plain", b"unauthorized");
-                return;
-            }
-        }
+    // Sign-in endpoints, then auth check (token or session) — GET / stays open
+    if let Some(reply) = gate.route(&method, &path, &headers) {
+        reply.write_to(stream);
+        return;
     }
+    if let Err(reply) = gate.admit(&method, &path, &headers) {
+        reply.write_to(stream);
+        return;
+    }
+
+    let mut state = state.lock().unwrap();
 
     match (method.as_str(), path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => {
@@ -597,6 +590,10 @@ fn main() {
         eprintln!("  --port <port>     HTTP port (default: 8080)");
         eprintln!("  --dir <path>      Serve all .phext files in directory");
         eprintln!("  --token <token>   Require auth token for API access");
+        eprintln!();
+        eprintln!("GitHub/Google sign-in (environment):");
+        eprintln!("  PHEXT_PUBLIC_URL, PHEXT_SESSION_SECRET, PHEXT_EDITORS, PHEXT_COOKIE_SECURE=1");
+        eprintln!("  GITHUB_CLIENT_ID/SECRET, GOOGLE_CLIENT_ID/SECRET");
         std::process::exit(1);
     }
 
@@ -631,9 +628,9 @@ fn main() {
 
     let mut app_state = AppState::new(lattice, file_path.clone());
     app_state.phext_dir = dir.clone();
-    app_state.auth_token = token.clone();
 
     let state = Arc::new(Mutex::new(app_state));
+    let gate = Arc::new(Gate::from_env(token));
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).unwrap_or_else(|e| {
         eprintln!("Failed to bind port {}: {}", port, e);
         std::process::exit(1);
@@ -647,8 +644,8 @@ fn main() {
         println!("   directory: {} ({} phext files)", d, phext_count);
     }
     println!("   active: {} ({} scrolls)", file_path, scroll_count);
-    if token.is_some() {
-        println!("   auth: token required");
+    for line in gate.describe() {
+        println!("   {}", line);
     }
     println!("   Open in browser: http://localhost:{}", port);
 
@@ -656,7 +653,8 @@ fn main() {
         match stream {
             Ok(mut stream) => {
                 let state = Arc::clone(&state);
-                std::thread::spawn(move || { handle_request(&mut stream, &state); });
+                let gate = Arc::clone(&gate);
+                std::thread::spawn(move || { handle_request(&mut stream, &state, &gate); });
             }
             Err(e) => eprintln!("connection error: {}", e),
         }
@@ -854,6 +852,9 @@ body {
 #search-results .hit:hover { background: #ffffff10; }
 #search-results .hit .hit-coord { color: var(--coord); min-width: 160px; }
 #search-results .hit .hit-ctx { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auth-btn { display:block; background:var(--panel); border:1px solid var(--border); color:var(--text);
+  font-family:inherit; font-size:14px; padding:10px 14px; border-radius:6px; text-decoration:none; cursor:pointer; }
+.auth-btn:hover { border-color:var(--coord); }
 </style>
 </head>
 <body>
@@ -889,6 +890,7 @@ body {
 <div id="status-bar">
   <span class="mode lattice" id="mode-label">LATTICE</span>
   <span id="active-file" style="color:var(--dim);cursor:pointer;font-size:11px" onclick="openPhextPicker()" title="Click to switch phext"></span>
+  <span id="signout" style="display:none;color:var(--dim);cursor:pointer;font-size:11px" onclick="signOut()" title="Sign out"></span>
   <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  t:tree  /:search  g:goto  Home:BASE</span>
   <span class="msg" id="status-msg"></span>
 </div>
@@ -907,7 +909,8 @@ body {
 <div id="auth-screen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:100;display:flex;align-items:center;justify-content:center">
   <div style="text-align:center;max-width:400px">
     <div style="font-size:24px;margin-bottom:16px;color:var(--coord)">💎 phext-edit</div>
-    <div style="color:var(--dim);margin-bottom:20px">Enter your access token to continue</div>
+    <div id="auth-prompt" style="color:var(--dim);margin-bottom:20px">Enter your access token to continue</div>
+    <div id="auth-providers" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
     <input id="auth-input" type="password" placeholder="token" autocomplete="off"
       style="width:100%;background:var(--panel);border:1px solid var(--border);color:var(--text);
       font-family:inherit;font-size:14px;padding:10px 14px;border-radius:6px;outline:none;text-align:center" />
@@ -928,6 +931,8 @@ let treeExpanded = {};
 let activePanel = 'sentron';
 let authToken = localStorage.getItem('phext-token') || '';
 let needsAuth = false;
+let csrf = '';
+let session = null;
 
 function showMsg(msg) {
   $('status-msg').textContent = msg;
@@ -963,14 +968,17 @@ function showPanel(name) {
 async function api(method, path, body) {
   const opts = { method, headers: {} };
   if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
+  if (csrf && method !== 'GET') opts.headers['x-csrf-token'] = csrf;
   if (body !== undefined) {
     opts.headers['Content-Type'] = (typeof body === 'object' ? 'application/json' : 'text/plain');
     opts.body = typeof body === 'object' ? JSON.stringify(body) : body;
   }
   const res = await fetch(path, opts);
-  if (res.status === 401) {
+  if (res.status === 401 || res.status === 403) {
     needsAuth = true;
-    showAuthScreen();
+    let msg = '';
+    try { msg = (await res.json()).error || ''; } catch {}
+    await showAuthScreen(res.status === 403 ? msg : '');
     throw new Error('unauthorized');
   }
   return res.json();
@@ -1279,9 +1287,47 @@ window.addEventListener('hashchange', async () => {
 });
 
 // ── Auth ──
-function showAuthScreen() {
+// Sign-in state lives in an HttpOnly cookie; /api/session reports it and the CSRF token.
+async function loadSession() {
+  try { session = await (await fetch('api/session')).json(); } catch { session = null; }
+  csrf = (session && session.csrf) || '';
+  const so = $('signout');
+  if (session && session.signed_in) {
+    so.textContent = '⏏ ' + (session.handle || 'sign out');
+    so.style.display = '';
+  } else {
+    so.style.display = 'none';
+  }
+}
+async function showAuthScreen(message) {
+  await loadSession();
+  const s = session || {};
+  // Older servers have no /api/session: fall back to the token prompt.
+  const tokenOk = !session || s.token;
+  let html = '';
+  if (s.signed_in) {
+    html += `<div style="color:var(--text)">Signed in as ${escHtml(s.name || s.handle)} <span style="color:var(--dim)">(${escHtml(s.who)})</span></div>`;
+    html += `<button class="auth-btn" onclick="signOut()">Sign out</button>`;
+  } else {
+    const next = encodeURIComponent('/' + location.hash);
+    const label = { github: 'Sign in with GitHub', google: 'Sign in with Google' };
+    for (const p of (s.providers || []))
+      html += `<a class="auth-btn" href="api/auth/${p}?next=${next}">${label[p] || p}</a>`;
+  }
+  $('auth-providers').innerHTML = html;
+  $('auth-prompt').textContent =
+    s.signed_in && !s.editor ? 'This account is not on the editor list.'
+    : s.ready && tokenOk ? 'Sign in, or enter your access token'
+    : s.ready ? 'Sign in to continue'
+    : 'Enter your access token to continue';
+  $('auth-input').style.display = tokenOk ? '' : 'none';
+  $('auth-error').textContent = message || '';
   $('auth-screen').style.display = 'flex';
-  $('auth-input').focus();
+  if (tokenOk) $('auth-input').focus();
+}
+async function signOut() {
+  try { await fetch('api/auth/logout', { method: 'POST', headers: { 'x-csrf-token': csrf } }); } catch {}
+  location.reload();
 }
 $('auth-input').addEventListener('keydown', async (e) => {
   if (e.key === 'Enter') {
@@ -1345,6 +1391,7 @@ async function initApp() {
 // Initial load
 (async () => {
   try {
+    await loadSession();
     const hash = location.hash.replace(/^#/, '');
     if (hash && /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash))
       render(await api('POST', '/api/goto', hash));

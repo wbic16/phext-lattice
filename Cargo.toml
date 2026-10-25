@@ -11,7 +11,7 @@ categories = ["text-editors", "command-line-utilities"]
 
 [features]
 default = ["web"]
-web = ["dep:serde", "dep:serde_json"]
+web = ["dep:serde", "dep:serde_json", "dep:hmac", "dep:sha2", "dep:getrandom", "dep:ureq"]
 tui = ["dep:ratatui", "dep:crossterm"]
 
 [dependencies]
@@ -23,6 +23,11 @@ tempfile = "3"
 # Web UI deps (default)
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+# Sign-in (GitHub / Google OAuth) for the web editors
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
+getrandom = { version = "0.4", optional = true }
+ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
 
 # TUI deps
 ratatui = { version = "0.29", optional = true }

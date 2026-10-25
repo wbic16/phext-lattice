@@ -53,6 +53,45 @@ sudo systemctl status phext-edit
 curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/status
 ```
 
+### 4b. GitHub / Google sign-in (optional)
+
+The token keeps working. Sign-in adds a second way in for the people you list.
+Create `/etc/phext-edit/oauth.env` (mode `0600`, owned by root):
+
+```bash
+sudo mkdir -p /etc/phext-edit
+sudo install -m 600 /dev/null /etc/phext-edit/oauth.env
+sudo tee /etc/phext-edit/oauth.env >/dev/null <<ENV
+PHEXT_PUBLIC_URL=https://mirrorborn.us/editor
+PHEXT_SESSION_SECRET=$(openssl rand -hex 32)
+PHEXT_COOKIE_SECURE=1
+# Who may edit once signed in: github:<numeric id>, google:<sub>, or a verified email
+PHEXT_EDITORS=github:REPLACE_ME
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+ENV
+sudo systemctl restart phext-edit
+```
+
+Signing in does not grant access by itself: the account must be in `PHEXT_EDITORS`.
+A signed-in account that is not listed sees its `github:<id>` on the sign-in screen,
+so you can copy it into the list. Every POST from a session also needs the CSRF
+token from `/api/session` (the UI handles this).
+
+GitHub: Settings → Developer settings → OAuth Apps → New OAuth App. Homepage
+`https://mirrorborn.us/editor`. Callback URL
+`https://mirrorborn.us/editor/api/auth/github/callback`.
+
+Google: Cloud Console → APIs & Services → Credentials → OAuth client ID → Web
+application. Authorized redirect URI
+`https://mirrorborn.us/editor/api/auth/google/callback`. Scopes: `openid`,
+`email`, `profile`.
+
+The auth routes live under `/api/auth/`, so the existing `/editor/api/` proxy
+already reaches them. The startup log lists which methods are active.
+
 ### 5. Nginx config
 
 Add to the HTTPS server block in `/etc/nginx/sites-enabled/mirrorborn.us`:

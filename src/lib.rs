@@ -20,6 +20,8 @@ pub mod index;
 pub mod mmap;
 pub mod modes;
 pub mod navigator;
+#[cfg(feature = "web")]
+pub mod oauth;
 pub mod search;
 pub mod sentron;
 pub mod stats;
