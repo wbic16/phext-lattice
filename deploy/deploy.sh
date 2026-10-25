@@ -84,7 +84,9 @@ main() {
   [[ -d "$APP_DIR/.git" ]] || die "${APP_DIR} is not a git checkout."
   [[ -d "$PHEXT_DIR" ]] || die "${PHEXT_DIR} does not exist."
 
-  sudo -v
+  # sudo -v asks for a password whenever any sudoers rule needs one, even
+  # with NOPASSWD: ALL alongside it, so try a no-op first.
+  sudo -n true 2>/dev/null || sudo -v
   command -v nginx >/dev/null 2>&1 || [[ -x /usr/sbin/nginx ]] || die "nginx is not installed."
   sudo nginx -t || die "nginx -t fails on the existing config. Nothing was changed."
 
