@@ -84,8 +84,9 @@ sudo tee /etc/phext-edit/oauth.env >/dev/null <<ENV
 PHEXT_PUBLIC_URL=https://mirrorborn.us/editor
 PHEXT_SESSION_SECRET=$(openssl rand -hex 32)
 PHEXT_COOKIE_SECURE=1
-# Who may edit once signed in: github:<numeric id>, google:<sub>, or a verified email
-PHEXT_EDITORS=github:REPLACE_ME
+# Empty: any signed-in account gets in. To restrict: github:<numeric id>,
+# google:<sub>, or a verified email, comma-separated.
+PHEXT_EDITORS=
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
 GOOGLE_CLIENT_ID=
@@ -94,9 +95,10 @@ ENV
 sudo systemctl restart phext-edit
 ```
 
-Signing in does not grant access by itself: the account must be in `PHEXT_EDITORS`.
-A signed-in account that is not listed sees its `github:<id>` on the sign-in screen,
-so you can copy it into the list. Every POST from a session also needs the CSRF
+Signing in with GitHub or Google skips the token prompt. With `PHEXT_EDITORS`
+empty, any account that signs in can read and edit every phext in the served
+directory. To restrict it, list the accounts; one that is not listed sees its
+`github:<id>` on the sign-in screen, so you can copy it into the list. Every POST from a session also needs the CSRF
 token from `/api/session` (the UI handles this).
 
 GitHub: Settings → Developer settings → OAuth Apps → New OAuth App. Homepage

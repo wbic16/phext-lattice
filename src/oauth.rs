@@ -5,8 +5,9 @@
 /// `state` value kept in a second short-lived cookie. Writes (any POST)
 /// also need the session's CSRF token in `x-csrf-token`.
 ///
-/// Signing in is not enough to edit: the account must be listed in
-/// `PHEXT_EDITORS` (comma-separated `github:<id>`, `google:<sub>`, or email).
+/// A signed-in account skips the token prompt. When `PHEXT_EDITORS` is set
+/// (comma-separated `github:<id>`, `google:<sub>`, or email), only those
+/// accounts get in; when it is empty, any signed-in account does.
 /// The `--token` bearer token keeps working alongside sign-in for scripts.
 ///
 /// `Gate` is the piece the HTTP servers use: `route()` answers the
@@ -466,6 +467,11 @@ impl Editors {
             Editor::Email(expected) => !email.is_empty() && expected == &email,
         })
     }
+
+    /// An empty list admits every signed-in account.
+    pub fn allows(&self, who: &str, email: &str) -> bool {
+        self.is_empty() || self.matches(who, email)
+    }
 }
 
 // ── Limiter ────────────────────────────────────────────────────────────
@@ -607,14 +613,12 @@ impl Gate {
             lines.push("auth: token accepted".to_string());
         }
         if self.oauth.ready() {
-            lines.push(format!(
-                "auth: sign-in via {} ({} editors)",
-                self.oauth.providers().join(", "),
-                self.editors.len()
-            ));
-            if self.editors.is_empty() {
-                lines.push("auth: PHEXT_EDITORS is empty; signed-in accounts cannot edit".to_string());
-            }
+            let who = if self.editors.is_empty() {
+                "any signed-in account".to_string()
+            } else {
+                format!("{} listed editors", self.editors.len())
+            };
+            lines.push(format!("auth: sign-in via {} ({})", self.oauth.providers().join(", "), who));
         }
         if !self.locked() {
             lines.push("auth: open (no token, sign-in not configured)".to_string());
@@ -662,7 +666,7 @@ impl Gate {
         let Some(session) = self.oauth.read_session(&cookies(headers)) else {
             return Err(Reply::error(401, "unauthorized"));
         };
-        if !self.editors.matches(&session.who, &session.email) {
+        if !self.editors.allows(&session.who, &session.email) {
             return Err(Reply::error(403, "This account is not on the editor list."));
         }
         if method != "GET" && method != "HEAD" {
@@ -678,7 +682,7 @@ impl Gate {
         let session = self.oauth.read_session(&cookies(headers));
         let editor = session
             .as_ref()
-            .map(|s| self.editors.matches(&s.who, &s.email))
+            .map(|s| self.editors.allows(&s.who, &s.email))
             .unwrap_or(false);
         let field = |f: fn(&Session) -> &str| session.as_ref().map(f).unwrap_or("").to_string();
         Reply::json(200, json!({
@@ -1261,6 +1265,18 @@ mod tests {
         assert!(gate
             .admit("POST", "/api/update", &headers(&[("cookie", &cookie), ("x-csrf-token", TEST_CSRF)]))
             .is_ok());
+    }
+
+    #[test]
+    fn an_empty_editor_list_admits_any_signed_in_account() {
+        let cookie = format!("phext_session={}", Oauth::test_session_cookie());
+        let gate = gate(Some("s3cret-token"), "");
+        assert_eq!(gate.admit("GET", "/api/nav", &headers(&[])).unwrap_err().status, 401);
+        assert!(gate.admit("GET", "/api/nav", &headers(&[("cookie", &cookie)])).is_ok());
+        assert!(gate
+            .admit("POST", "/api/update", &headers(&[("cookie", &cookie), ("x-csrf-token", TEST_CSRF)]))
+            .is_ok());
+        assert_eq!(gate.admit("POST", "/api/update", &headers(&[("cookie", &cookie)])).unwrap_err().status, 403);
     }
 
     #[test]

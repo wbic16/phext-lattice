@@ -124,14 +124,15 @@ main() {
 PHEXT_PUBLIC_URL=https://${DOMAIN}
 PHEXT_SESSION_SECRET=$(random_hex)
 PHEXT_COOKIE_SECURE=1
-# Who may edit once signed in: github:<numeric id>, google:<sub>, or email
+# Signing in skips the token prompt. Empty: any GitHub/Google account gets in.
+# To restrict, list github:<numeric id>, google:<sub>, or email, comma-separated.
 PHEXT_EDITORS=
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 EOF
-    printf 'Wrote %s/oauth.env (session secret not printed). Fill in the client lines and PHEXT_EDITORS.\n' "$CONF_DIR"
+    printf 'Wrote %s/oauth.env (session secret not printed). Fill in the client lines (and PHEXT_EDITORS to restrict who gets in).\n' "$CONF_DIR"
   fi
 
   # ── systemd ──
