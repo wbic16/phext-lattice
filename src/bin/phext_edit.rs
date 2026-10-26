@@ -835,17 +835,23 @@ body {
 
 /* ── Status bar ── */
 #status-bar {
-  height: 24px; background: #101010; border-top: 1px solid var(--border);
-  display: flex; align-items: center; padding: 0 12px; font-size: 11px; flex-shrink: 0; gap: 12px;
+  height: 34px; background: #101010; border-top: 1px solid var(--border);
+  display: flex; align-items: center; padding: 0 14px; font-size: 13px; flex-shrink: 0; gap: 14px;
 }
 #status-bar .mode {
-  padding: 1px 8px; border-radius: 2px; font-weight: bold; color: #000;
+  padding: 3px 10px; border-radius: 3px; font-weight: bold; color: #000;
   transition: background var(--trans-fast);
 }
 #status-bar .mode.lattice { background: var(--z-color); }
 #status-bar .mode.edit { background: var(--x-color); }
 #status-bar .help { color: var(--dim); }
 #status-bar .msg { color: var(--active); }
+#status-bar .signout {
+  margin-left: auto; padding: 3px 10px; border: 1px solid var(--coord); border-radius: 4px;
+  background: #2a2312; color: var(--coord); cursor: pointer; white-space: nowrap;
+  transition: background var(--trans-fast), color var(--trans-fast);
+}
+#status-bar .signout:hover { background: var(--coord); color: #000; }
 
 /* ── Overlays ── */
 .overlay {
@@ -907,10 +913,10 @@ body {
 
 <div id="status-bar">
   <span class="mode lattice" id="mode-label">LATTICE</span>
-  <span id="active-file" style="color:var(--dim);cursor:pointer;font-size:11px" onclick="openPhextPicker()" title="Click to switch phext"></span>
-  <span id="signout" style="display:none;color:var(--dim);cursor:pointer;font-size:11px" onclick="signOut()" title="Sign out"></span>
+  <span id="active-file" style="color:var(--dim);cursor:pointer" onclick="openPhextPicker()" title="Click to switch phext"></span>
   <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  t:tree  /:search  g:goto  Home:BASE</span>
   <span class="msg" id="status-msg"></span>
+  <span id="signout" class="signout" style="display:none" onclick="signOut()" title="Sign out"></span>
 </div>
 
 <div class="overlay" id="search-overlay">
@@ -1311,11 +1317,11 @@ async function loadSession() {
   csrf = (session && session.csrf) || '';
   const so = $('signout');
   if (session && session.signed_in) {
-    so.textContent = '⏏ ' + (session.handle || 'sign out');
+    so.textContent = '⏏ sign out' + (session.handle ? ' ' + session.handle : '');
     so.title = 'Sign out';
     so.style.display = '';
   } else if (authToken) {
-    so.textContent = '⏏ token';
+    so.textContent = '⏏ forget token';
     so.title = 'Forget the saved access token';
     so.style.display = '';
   } else {
