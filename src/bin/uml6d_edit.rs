@@ -475,6 +475,11 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
         return;
     }
 
+    if path == "/favicon.ico" {
+        send(stream, 200, "image/svg+xml", FAVICON_SVG.as_bytes());
+        return;
+    }
+
     // Sign-in endpoints, then auth check (token or session) — GET / stays open
     if let Some(reply) = gate.route(&method, &path, &headers) {
         reply.write_to(stream);
@@ -728,6 +733,8 @@ fn main() {
     }
 }
 
+const FAVICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90" fill="#d4a855">⬡</text></svg>"##;
+
 // ── Embedded Frontend ──────────────────────────────────────────────────
 
 const INDEX_HTML: &str = r##"<!DOCTYPE html>
@@ -736,6 +743,7 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>⬡ 6D UML</title>
+<link rel="icon" type="image/svg+xml" href="favicon.ico">
 <style>
 :root {
   --bg: #171717; --panel: #131313; --bar: #1c1c1c; --border: #2e2e2e;
@@ -1027,7 +1035,7 @@ body {
   <div style="color:var(--dim);font-size:11px;margin-bottom:6px">Select a phext file:</div>
   <div id="phext-list" style="max-height:400px;overflow-y:auto"></div>
 </div>
-<div id="auth-screen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:100;display:flex;align-items:center;justify-content:center">
+<div id="auth-screen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:100;align-items:center;justify-content:center">
   <div style="text-align:center;max-width:400px">
     <div style="font-size:24px;margin-bottom:16px;color:var(--coord)">6D UML</div>
     <div id="auth-prompt" style="color:var(--dim);margin-bottom:20px">Enter your access token to continue</div>
@@ -1493,6 +1501,11 @@ async function loadSession() {
   const so = $('signout');
   if (session && session.signed_in) {
     so.textContent = '⏏ ' + (session.handle || 'sign out');
+    so.title = 'Sign out';
+    so.style.display = '';
+  } else if (authToken) {
+    so.textContent = '⏏ token';
+    so.title = 'Forget the saved access token';
     so.style.display = '';
   } else {
     so.style.display = 'none';
@@ -1525,7 +1538,10 @@ async function showAuthScreen(message) {
   if (tokenOk) $('auth-input').focus();
 }
 async function signOut() {
-  try { await fetch('api/auth/logout', { method: 'POST', headers: { 'x-csrf-token': csrf } }); } catch {}
+  localStorage.removeItem('phext-token');
+  if (session && session.signed_in) {
+    try { await fetch('api/auth/logout', { method: 'POST', headers: { 'x-csrf-token': csrf } }); } catch {}
+  }
   location.reload();
 }
 $('auth-input').addEventListener('keydown', async (e) => {
