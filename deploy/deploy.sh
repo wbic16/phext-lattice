@@ -254,20 +254,36 @@ EOF
     redirect="no ${old}"
   elif sudo grep -qF "return 301 https://${DOMAIN}/;" "$old"; then
     redirect="already in place"
+    if ! sudo grep -qF 'Clear-Site-Data' "$old"; then
+      # Older redirect without the cache wipe: browsers kept serving the
+      # stale /editor page from cache and never saw the 301.
+      local old_backup="${old}.bak-${stamp}"
+      sudo cp -a "$old" "$old_backup"
+      sudo sed -i "s|{ return 301 https://${DOMAIN}/; }|{ add_header Clear-Site-Data '\"cache\"' always; return 301 https://${DOMAIN}/; }|" "$old"
+      if sudo nginx -t && sudo systemctl reload nginx; then
+        redirect="added Clear-Site-Data to the redirect (backup ${old_backup})"
+      else
+        sudo cp -a "$old_backup" "$old"
+        sudo systemctl reload nginx || true
+        die "nginx rejected Clear-Site-Data on the ${OLD_SITE} redirect; restored ${old_backup}"
+      fi
+    fi
   elif sudo grep -qE 'location /editor/(api/)? \{' "$old"; then
     local old_backup="${old}.bak-${stamp}" old_tmp
     sudo cp -a "$old" "$old_backup"
     old_tmp=$(mktemp)
     # Drop the /editor/api/ proxy and swap the static /editor/ block for a
-    # redirect. These blocks have no nested braces.
+    # redirect. These blocks have no nested braces. Clear-Site-Data evicts the
+    # old page, which browsers cached and would otherwise keep showing.
     sudo awk -v domain="$DOMAIN" '
       /^[[:space:]]*# Phext Editor/ { next }
       /^[[:space:]]*location \/editor\/api\/ \{/ { skip = 1; next }
       /^[[:space:]]*location \/editor\/ \{/ {
         skip = 1
+        hdr = "add_header Clear-Site-Data \047\"cache\"\047 always; "
         print "    # Phext Editor moved to https://" domain "/"
-        print "    location = /editor { return 301 https://" domain "/; }"
-        print "    location ^~ /editor/ { return 301 https://" domain "/; }"
+        print "    location = /editor { " hdr "return 301 https://" domain "/; }"
+        print "    location ^~ /editor/ { " hdr "return 301 https://" domain "/; }"
         next
       }
       skip && /^[[:space:]]*\}/ { skip = 0; next }

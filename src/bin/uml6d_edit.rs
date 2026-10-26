@@ -21,7 +21,7 @@ use phext_lattice::{
     DimensionDensity,
     Phase, UmlContext,
 };
-use phext_lattice::oauth::Gate;
+use phext_lattice::oauth::{status_text, Gate};
 
 // ── API Types ──────────────────────────────────────────────────────────
 
@@ -443,13 +443,18 @@ fn read_body(reader: &mut BufReader<std::net::TcpStream>, headers: &HashMap<Stri
     String::from_utf8_lossy(&buf).to_string()
 }
 
-fn send(stream: &mut std::net::TcpStream, status: u16, content_type: &str, body: &[u8]) {
-    let status_text = match status { 200 => "OK", 400 => "Bad Request", 404 => "Not Found", _ => "Error" };
+/// Status line and headers only. `no-store` keeps browsers from holding on to
+/// an old copy of the page or a stale API response.
+fn send_head(stream: &mut std::net::TcpStream, status: u16, content_type: &str, len: usize) {
     let header = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
-        status, status_text, content_type, body.len()
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+        status, status_text(status), content_type, len
     );
     let _ = stream.write_all(header.as_bytes());
+}
+
+fn send(stream: &mut std::net::TcpStream, status: u16, content_type: &str, body: &[u8]) {
+    send_head(stream, status, content_type, body.len());
     let _ = stream.write_all(body);
     let _ = stream.flush();
 }
@@ -485,6 +490,9 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
     match (method.as_str(), path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => {
             send(stream, 200, "text/html; charset=utf-8", INDEX_HTML.as_bytes());
+        }
+        ("HEAD", "/") | ("HEAD", "/index.html") => {
+            send_head(stream, 200, "text/html; charset=utf-8", INDEX_HTML.len());
         }
 
         ("GET", "/api/phexts") => { json_response(stream, &state.list_phexts()); }
