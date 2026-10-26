@@ -924,19 +924,20 @@ body {
 
 /* ── Status bar ── */
 #status-bar {
-  height: 34px; background: #101010; border-top: 1px solid var(--border);
-  display: flex; align-items: center; padding: 0 14px; font-size: 13px; flex-shrink: 0; gap: 14px;
+  height: 68px; background: #101010; border-top: 1px solid var(--border);
+  display: flex; align-items: center; padding: 0 18px; font-size: 15px; flex-shrink: 0; gap: 18px;
 }
 #status-bar .mode {
-  padding: 3px 10px; border-radius: 3px; font-weight: bold; color: #000;
+  padding: 6px 14px; border-radius: 4px; font-weight: bold; color: #000;
   transition: background var(--trans-fast);
 }
 #status-bar .mode.lattice { background: var(--z-color); }
 #status-bar .mode.edit { background: var(--x-color); }
-#status-bar .help { color: var(--dim); }
+#status-bar > * { white-space: nowrap; flex-shrink: 0; }
+#status-bar .help { color: var(--dim); flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 #status-bar .msg { color: var(--active); }
 #status-bar .signout {
-  margin-left: auto; padding: 3px 10px; border: 1px solid var(--coord); border-radius: 4px;
+  margin-left: auto; padding: 8px 16px; border: 1px solid var(--coord); border-radius: 6px;
   background: #2a2312; color: var(--coord); cursor: pointer; white-space: nowrap;
   transition: background var(--trans-fast), color var(--trans-fast);
 }
