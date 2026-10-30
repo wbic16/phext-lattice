@@ -12,6 +12,17 @@ The foundation layer for phext-fluent editing. Memory-mapped 9D lattice with O(1
 | Full roundtrip rebuild | ~4.3ms |
 | **Roundtrip fidelity** | **byte-perfect** |
 
+## Offline Wikipedia benchmark
+
+`bench/wiki/` compares phext (via libphext, phext-lattice, and SQ) against plain files, SQLite,
+and Kiwix ZIM on a real Wikipedia ZIM, covering lookup latency, storage overhead, link traversal,
+incremental updates, and agent retrieval quality. See [`bench/wiki/FINDINGS.md`](bench/wiki/FINDINGS.md)
+for the tooling scorecard and [`bench/wiki/RESULTS.md`](bench/wiki/RESULTS.md) for the raw tables.
+
+```bash
+bench/wiki/run_all.sh /tmp/wikibench 1 10
+```
+
 ## Architecture
 
 ```

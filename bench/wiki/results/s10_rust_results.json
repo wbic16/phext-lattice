@@ -1,0 +1,219 @@
+{
+  "articles": 38200,
+  "backlinks": {
+    "files_scan": {
+      "mean_us": 114237.25,
+      "n": 5,
+      "p50_us": 112728.88,
+      "p90_us": 118119.52,
+      "p99_us": 118119.52
+    },
+    "phext_lattice_scan": {
+      "mean_us": 8525.81,
+      "n": 20,
+      "p50_us": 7877.15,
+      "p90_us": 8971.82,
+      "p99_us": 14588.46
+    },
+    "sqlite": {
+      "mean_us": 2.52,
+      "n": 100,
+      "p50_us": 2.19,
+      "p90_us": 2.74,
+      "p99_us": 6.8
+    }
+  },
+  "cold_cache": true,
+  "edges": 120370,
+  "lookup_warm": {
+    "files": {
+      "mean_us": 11.63,
+      "n": 2000,
+      "p50_us": 4.59,
+      "p90_us": 6.12,
+      "p99_us": 11.31
+    },
+    "phext_lattice": {
+      "mean_us": 2.36,
+      "n": 2000,
+      "p50_us": 2.13,
+      "p90_us": 3.01,
+      "p99_us": 4.24
+    },
+    "phext_lattice_by_coord": {
+      "mean_us": 0.81,
+      "n": 2000,
+      "p50_us": 0.71,
+      "p90_us": 1.29,
+      "p99_us": 2.15
+    },
+    "phext_libphext_explode": {
+      "mean_us": 1.98,
+      "n": 2000,
+      "p50_us": 1.89,
+      "p90_us": 2.41,
+      "p99_us": 3.2
+    },
+    "phext_libphext_fetch": {
+      "mean_us": 13323.95,
+      "n": 50,
+      "p50_us": 12758.6,
+      "p90_us": 26508.9,
+      "p99_us": 28382.5
+    },
+    "sq_http_by_coord": {
+      "mean_us": 103.61,
+      "n": 500,
+      "p50_us": 85.53,
+      "p90_us": 121.97,
+      "p99_us": 348.74
+    },
+    "sqlite": {
+      "mean_us": 4.44,
+      "n": 2000,
+      "p50_us": 4.07,
+      "p90_us": 5.72,
+      "p99_us": 8.31
+    },
+    "sqlite_by_id": {
+      "mean_us": 2.28,
+      "n": 2000,
+      "p50_us": 2.22,
+      "p90_us": 2.53,
+      "p99_us": 3.23
+    }
+  },
+  "open": {
+    "files": {
+      "open_first_ms": 2.59,
+      "rss_kb": 0
+    },
+    "phext_lattice": {
+      "index_build_ms": 67.3,
+      "index_rebuild_warm_ms": 72.03,
+      "name_map_ms": 63.35,
+      "open_first_ms": 130.65,
+      "rss_kb": 100224,
+      "scrolls": 135220
+    },
+    "phext_libphext_explode": {
+      "note": "file already read",
+      "open_first_ms": 96.22,
+      "rss_kb": 75216
+    },
+    "phext_libphext_fetch": {
+      "open_first_ms": 35.74,
+      "rss_kb": 47808
+    },
+    "sq_http": {
+      "note": "process start + explode on first request",
+      "open_first_ms": 171.19
+    },
+    "sqlite": {
+      "open_first_ms": 3.86,
+      "rss_kb": 1360
+    }
+  },
+  "payload_bytes": 40777000,
+  "scale": 10,
+  "traversal_2hop": {
+    "files": {
+      "mean_us": 165.87,
+      "n": 200,
+      "p50_us": 132.59,
+      "p90_us": 367.82,
+      "p99_us": 542.93
+    },
+    "mean_nodes": 39.57,
+    "phext_lattice": {
+      "mean_us": 60.2,
+      "n": 200,
+      "p50_us": 43.46,
+      "p90_us": 139.41,
+      "p99_us": 214.12
+    },
+    "phext_libphext_explode": {
+      "mean_us": 13.42,
+      "n": 200,
+      "p50_us": 8.83,
+      "p90_us": 28.25,
+      "p99_us": 84.24
+    },
+    "sq_http_query_api": {
+      "mean_us": 885.1,
+      "n": 50,
+      "p50_us": 777.45,
+      "p90_us": 1619.7,
+      "p99_us": 3100.72
+    },
+    "sqlite": {
+      "mean_us": 105.46,
+      "n": 200,
+      "p50_us": 83.49,
+      "p90_us": 222.67,
+      "p99_us": 353.09
+    }
+  },
+  "updates": {
+    "append_new_article": {
+      "files": {
+        "mean_us": 994.41,
+        "n": 50,
+        "p50_us": 375.94,
+        "p90_us": 453.49,
+        "p99_us": 30582.69
+      },
+      "phext_lattice_reopen_after_append_ms": 56.84,
+      "phext_raw_append": {
+        "mean_us": 170.27,
+        "n": 50,
+        "p50_us": 164.78,
+        "p90_us": 181.84,
+        "p99_us": 296.08
+      },
+      "sqlite_with_fts": {
+        "mean_us": 457.42,
+        "n": 50,
+        "p50_us": 176.67,
+        "p90_us": 310.66,
+        "p99_us": 9425.83
+      }
+    },
+    "files": {
+      "mean_us": 323.42,
+      "n": 100,
+      "p50_us": 288.17,
+      "p90_us": 403.54,
+      "p99_us": 982.59
+    },
+    "phext_lattice_batch_100_ms": 228.06,
+    "phext_lattice_save_each": {
+      "mean_us": 262907.85,
+      "n": 5,
+      "p50_us": 237446.48,
+      "p90_us": 368515.07,
+      "p99_us": 368515.07
+    },
+    "phext_libphext_replace_rewrite": {
+      "mean_us": 142804.89,
+      "n": 5,
+      "p50_us": 123493.38,
+      "p90_us": 229774.12,
+      "p99_us": 229774.12
+    },
+    "sq_http_update": {
+      "mean_us": 95516.21,
+      "n": 5,
+      "p50_us": 72007.44,
+      "p90_us": 175797.7,
+      "p99_us": 175797.7
+    },
+    "sqlite_with_fts": {
+      "mean_us": 352.19,
+      "n": 100,
+      "p50_us": 315.07,
+      "p90_us": 388.25,
+      "p99_us": 1043.24
+    }
+  }
+}

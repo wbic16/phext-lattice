@@ -1,0 +1,173 @@
+{
+  "scale": 1,
+  "articles": 3820,
+  "build_ms": 2295.39,
+  "build_nofts_ms": 985.41,
+  "size_bytes": 3870391,
+  "size_nofts_bytes": 2485894,
+  "cold_cache": true,
+  "open_first_ms": 4.95,
+  "lookup_warm": {
+    "zim_by_title": {
+      "n": 2000,
+      "p50_us": 8.29,
+      "p90_us": 10.21,
+      "p99_us": 26.6,
+      "mean_us": 14.6
+    },
+    "zim_by_path": {
+      "n": 2000,
+      "p50_us": 6.55,
+      "p90_us": 7.33,
+      "p99_us": 10.96,
+      "mean_us": 6.42
+    },
+    "py_sqlite_by_title": {
+      "n": 2000,
+      "p50_us": 4.03,
+      "p90_us": 5.22,
+      "p99_us": 7.78,
+      "mean_us": 4.99
+    },
+    "py_file_read": {
+      "n": 2000,
+      "p50_us": 6.74,
+      "p90_us": 7.35,
+      "p99_us": 12.32,
+      "mean_us": 6.97
+    }
+  },
+  "python_overhead_note": "compare py_sqlite_by_title here with sqlite in rust_results.json to calibrate",
+  "traversal_2hop": {
+    "n": 200,
+    "p50_us": 174.4,
+    "p90_us": 576.45,
+    "p99_us": 1408.4,
+    "mean_us": 265.43
+  },
+  "backlinks_scan": {
+    "n": 5,
+    "p50_us": 8930.99,
+    "p90_us": 9286.75,
+    "p99_us": 9286.75,
+    "mean_us": 8978.14
+  },
+  "retrieval": {
+    "alias": {
+      "zim_title_index": {
+        "queries": 500,
+        "hit_rate": 1.0,
+        "latency": {
+          "n": 500,
+          "p50_us": 8.7,
+          "p90_us": 10.97,
+          "p99_us": 18.86,
+          "mean_us": 8.96
+        }
+      },
+      "zim_suggestion_top1": {
+        "queries": 500,
+        "hit_rate": 1.0,
+        "latency": {
+          "n": 500,
+          "p50_us": 14.97,
+          "p90_us": 17.74,
+          "p99_us": 26.01,
+          "mean_us": 15.64
+        }
+      },
+      "zim_xapian_fulltext_top1": {
+        "queries": 500,
+        "hit_rate": 0.414,
+        "latency": {
+          "n": 500,
+          "p50_us": 62.86,
+          "p90_us": 137.25,
+          "p99_us": 228.06,
+          "mean_us": 100.9
+        }
+      }
+    },
+    "alias_lower": {
+      "zim_title_index": {
+        "queries": 500,
+        "hit_rate": 0.0,
+        "latency": {
+          "n": 500,
+          "p50_us": 4.52,
+          "p90_us": 4.8,
+          "p99_us": 14.66,
+          "mean_us": 5.38
+        }
+      },
+      "zim_suggestion_top1": {
+        "queries": 500,
+        "hit_rate": 0.0,
+        "latency": {
+          "n": 500,
+          "p50_us": 2.66,
+          "p90_us": 2.75,
+          "p99_us": 3.33,
+          "mean_us": 2.71
+        }
+      },
+      "zim_xapian_fulltext_top1": {
+        "queries": 500,
+        "hit_rate": 0.396,
+        "latency": {
+          "n": 500,
+          "p50_us": 66.2,
+          "p90_us": 142.62,
+          "p99_us": 221.87,
+          "mean_us": 77.75
+        }
+      }
+    },
+    "keywords": {
+      "zim_xapian": {
+        "queries": 500,
+        "recall@1": 0.962,
+        "recall@10": 0.996,
+        "mrr@10": 0.977,
+        "context_bytes_p50": 1226,
+        "latency": {
+          "n": 500,
+          "p50_us": 63.21,
+          "p90_us": 73.78,
+          "p99_us": 112.35,
+          "mean_us": 65.82
+        }
+      }
+    },
+    "keywords_hard": {
+      "zim_xapian": {
+        "queries": 500,
+        "recall@1": 0.274,
+        "recall@10": 0.666,
+        "mrr@10": 0.387,
+        "context_bytes_p50": 7520,
+        "latency": {
+          "n": 500,
+          "p50_us": 146.05,
+          "p90_us": 245.6,
+          "p99_us": 404.09,
+          "mean_us": 154.54
+        }
+      }
+    }
+  },
+  "original_zim": {
+    "path": "wikipedia_en_climate_change_mini_2024-06.zim",
+    "size_bytes": 8978471,
+    "entries": 20568,
+    "articles": 3821,
+    "open_first_ms": 11.53,
+    "lookup_warm_by_path_html": {
+      "n": 2000,
+      "p50_us": 7.64,
+      "p90_us": 10.48,
+      "p99_us": 731.13,
+      "mean_us": 29.84
+    }
+  }
+}
