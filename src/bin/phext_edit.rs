@@ -27,6 +27,8 @@ struct ApiStatus {
     scrolls: usize,
     bytes: usize,
     file: String,
+    /// File selected by `/` and `/#coordinate`. Named URLs do not change it.
+    default_file: String,
     dirty: bool,
 }
 
@@ -133,6 +135,8 @@ struct AppState {
     nav: Navigator,
     overview: LatticeOverview,
     file_path: String,
+    /// Phext opened at startup (or `--home`). `/` returns to this file.
+    default_file: String,
     dirty: bool,
     /// Directory of phext files available
     phext_dir: Option<String>,
@@ -154,7 +158,7 @@ impl AppState {
             nav.next_populated(lattice.index());
         }
 
-        AppState { lattice, nav, overview, file_path, dirty: false, phext_dir: None, home_file: None, home_coord: None }
+        AppState { lattice, nav, overview, default_file: file_path.clone(), file_path, dirty: false, phext_dir: None, home_file: None, home_coord: None }
     }
 
     fn rebuild_overview(&mut self) {
@@ -295,12 +299,21 @@ impl AppState {
         Ok(())
     }
 
+    /// `<name>.phext` inside the hosting directory, and nowhere else.
+    /// A symlink that resolves outside that directory is not a hosted file.
+    fn hosted_phext(&self, name: &str) -> Option<std::path::PathBuf> {
+        hosted_phext_file(self.phext_dir.as_deref(), &self.file_path, name)
+    }
+
     fn open_phext(&mut self, path: &str) -> Result<(), String> {
         // Validate path is within allowed directory
         if let Some(dir) = &self.phext_dir {
             let canonical = std::fs::canonicalize(path).map_err(|e| format!("{}", e))?;
             let dir_canonical = std::fs::canonicalize(dir).map_err(|e| format!("{}", e))?;
             if !canonical.starts_with(&dir_canonical) {
+                return Err("path outside allowed directory".into());
+            }
+            if canonical.file_name().and_then(|n| n.to_str()).map(|n| n.ends_with(".phext")) != Some(true) {
                 return Err("path outside allowed directory".into());
             }
         }
@@ -599,6 +612,27 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
         }
         return;
     }
+    // `/<name>/` is the same editor shell as `/`, aimed at `<name>.phext`.
+    // The shell HTML has no scroll text. Bytes still go through `/api/*`,
+    // which `admit` gates the same way as every other file. Signed-out
+    // visitors therefore get the sign-in shell, not the phext.
+    if let Some(link) = phext_link(&path) {
+        let hosted = state.lock().unwrap().hosted_phext(&link.name).is_some();
+        if !hosted {
+            send_not_found(stream, &method, &headers);
+            return;
+        }
+        if !link.slash {
+            send_redirect(stream, &link.location(), &headers);
+            return;
+        }
+        match method.as_str() {
+            "GET" => send_response(stream, 200, HTML, INDEX_HTML.as_bytes(), CacheClass::Shell, &headers, false),
+            "HEAD" => send_response(stream, 200, HTML, INDEX_HTML.as_bytes(), CacheClass::Shell, &headers, true),
+            _ => send_response(stream, 405, "text/plain; charset=utf-8", b"method not allowed", CacheClass::NoStore, &headers, false),
+        }
+        return;
+    }
     if !is_editor_shell(&path) && !is_api_path(&path) {
         match method.as_str() {
             "HEAD" => send_response(stream, 404, HTML, NOT_FOUND_HTML.as_bytes(), CacheClass::NoStore, &headers, true),
@@ -633,7 +667,20 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
         }
         ("POST", "/api/open") => {
             let body = read_body(&mut reader, &headers);
-            let path_str = body.trim().to_string();
+            let requested = body.trim();
+            // A bare library name (`jonas`) resolves only to `<dir>/jonas.phext`.
+            // Anything else stays on the existing path check inside open_phext.
+            let path_str = if phext_name_ok(requested) {
+                match state.hosted_phext(requested) {
+                    Some(path) => path.to_string_lossy().into_owned(),
+                    None => {
+                        json_response(stream, &headers, &ApiOk { ok: false, message: "phext not found".into() });
+                        return;
+                    }
+                }
+            } else {
+                requested.to_string()
+            };
             match state.open_phext(&path_str) {
                 Ok(()) => json_response(stream, &headers, &ApiOk { ok: true, message: format!("opened {}", state.file_path) }),
                 Err(e) => json_response(stream, &headers, &ApiOk { ok: false, message: e }),
@@ -645,7 +692,9 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
             let buf = state.lattice.to_phext_bytes();
             json_response(stream, &headers, &ApiStatus {
                 scrolls: state.overview.total_scrolls, bytes: buf.len(),
-                file: state.file_path.clone(), dirty: state.dirty,
+                file: state.file_path.clone(),
+                default_file: state.default_file.clone(),
+                dirty: state.dirty,
             });
         }
         ("GET", "/api/tree") => { json_response(stream, &headers, &state.tree_json()); }
@@ -758,18 +807,271 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
     }
 }
 
+/// Canonical scroll address: `LB.SF.SR/CN.VM.BK/CH.SN.SC`.
+/// That is the 9-number form of the 11D phext address (line and column sit
+/// inside the scroll). libphext also accepts `;` in place of `/` in URLs.
+/// A fragment that does not parse falls back to this coordinate.
+#[cfg_attr(not(test), allow(dead_code))]
+const DEFAULT_COORD: &str = "1.1.1/1.1.1/1.1.1";
+
+fn parse_dimension(bit: &str) -> Option<usize> {
+    if bit.is_empty() || !bit.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: usize = bit.parse().ok()?;
+    (libphext::phext::COORDINATE_MINIMUM..=libphext::phext::COORDINATE_MAXIMUM)
+        .contains(&n)
+        .then_some(n)
+}
+
+fn coordinate_from(nums: [usize; 9]) -> libphext::phext::Coordinate {
+    libphext::phext::Coordinate {
+        z: libphext::phext::ZCoordinate {
+            library: nums[0],
+            shelf: nums[1],
+            series: nums[2],
+        },
+        y: libphext::phext::YCoordinate {
+            collection: nums[3],
+            volume: nums[4],
+            book: nums[5],
+        },
+        x: libphext::phext::XCoordinate {
+            chapter: nums[6],
+            section: nums[7],
+            scroll: nums[8],
+        },
+    }
+}
+
 fn parse_coordinate(s: &str) -> Option<libphext::phext::Coordinate> {
-    let parts: Vec<&str> = s.split('/').collect();
-    if parts.len() != 3 { return None; }
-    let z: Vec<usize> = parts[0].split('.').filter_map(|n| n.parse().ok()).collect();
-    let y: Vec<usize> = parts[1].split('.').filter_map(|n| n.parse().ok()).collect();
-    let x: Vec<usize> = parts[2].split('.').filter_map(|n| n.parse().ok()).collect();
-    if z.len() != 3 || y.len() != 3 || x.len() != 3 { return None; }
-    Some(libphext::phext::Coordinate {
-        z: libphext::phext::ZCoordinate { library: z[0], shelf: z[1], series: z[2] },
-        y: libphext::phext::YCoordinate { collection: y[0], volume: y[1], book: y[2] },
-        x: libphext::phext::XCoordinate { chapter: x[0], section: x[1], scroll: x[2] },
+    let s = s.trim();
+    if s.is_empty() || s.len() > 80 {
+        return None;
+    }
+    // Nine dimensions separated by `/`: 1/2/3/4/5/6/7/8/9
+    if !s.contains('.') && !s.contains(';') && s.matches('/').count() == 8 {
+        let mut nums = [0usize; 9];
+        for (i, bit) in s.split('/').enumerate() {
+            nums[i] = parse_dimension(bit)?;
+        }
+        return Some(coordinate_from(nums));
+    }
+    // Canonical LB.SF.SR/CN.VM.BK/CH.SN.SC, or the same with `;` (libphext URL form).
+    let normalized = s.replace(';', "/");
+    let parts: Vec<&str> = normalized.split('/').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let mut nums = [0usize; 9];
+    for (group, part) in parts.iter().enumerate() {
+        let bits: Vec<&str> = part.split('.').collect();
+        if bits.len() != 3 {
+            return None;
+        }
+        for (i, bit) in bits.iter().enumerate() {
+            nums[group * 3 + i] = parse_dimension(bit)?;
+        }
+    }
+    Some(coordinate_from(nums))
+}
+
+/// Library names that are already pages. `/terms` stays the terms page;
+/// `/terms/` is not a phext link either.
+fn reserved_phext_name(name: &str) -> bool {
+    matches!(name, "about" | "api" | "index" | "privacy" | "terms")
+}
+
+/// `[A-Za-z0-9_-]+`. Dots, slashes, and `..` never match.
+fn phext_name_ok(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 128
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Decode one URL path segment. `.`, `/`, `\`, and NUL are rejected so a
+/// decoded name cannot be a traversal. Invalid `%` sequences are rejected.
+fn decode_phext_segment(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                if i + 2 >= bytes.len() {
+                    return None;
+                }
+                let hi = hex_nibble(bytes[i + 1])?;
+                let lo = hex_nibble(bytes[i + 2])?;
+                let b = (hi << 4) | lo;
+                if b == 0 || b == b'/' || b == b'\\' || b == b'.' || b == b'%' {
+                    return None;
+                }
+                out.push(b);
+                i += 3;
+            }
+            b'.' | b'/' | b'\\' | 0 => return None,
+            b if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' => {
+                out.push(b);
+                i += 1;
+            }
+            _ => return None,
+        }
+    }
+    let name = String::from_utf8(out).ok()?;
+    if phext_name_ok(&name) && !reserved_phext_name(&name) {
+        Some(name)
+    } else {
+        None
+    }
+}
+
+struct PhextLink {
+    name: String,
+    /// `/name` redirects; `/name/` is the shell.
+    slash: bool,
+    query: String,
+}
+
+impl PhextLink {
+    fn location(&self) -> String {
+        let mut loc = format!("/{}/", self.name);
+        if !self.query.is_empty() {
+            loc.push('?');
+            loc.push_str(&self.query);
+        }
+        loc
+    }
+}
+
+fn safe_link_query(query: &str) -> String {
+    if query.is_empty() || query.len() > 200 {
+        return String::new();
+    }
+    if query
+        .bytes()
+        .any(|b| b < 0x20 || b == 0x7f || b == b' ' || b == b'\\' || b == b'#')
+    {
+        return String::new();
+    }
+    query.to_string()
+}
+
+/// `Some` only for a single safe segment: `/jonas` or `/jonas/`.
+/// Public assets, `/api/*`, and traversal attempts are `None` so the
+/// existing routes and the HTML 404 keep them.
+fn phext_link(path: &str) -> Option<PhextLink> {
+    let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let route = path_route(path);
+    if !route.starts_with('/') || route.starts_with("//") {
+        return None;
+    }
+    let mut rest = &route[1..];
+    let slash = if let Some(stripped) = rest.strip_suffix('/') {
+        rest = stripped;
+        true
+    } else {
+        false
+    };
+    if rest.is_empty() || rest.contains('/') {
+        return None;
+    }
+    let name = decode_phext_segment(rest)?;
+    Some(PhextLink {
+        name,
+        slash,
+        query: safe_link_query(query),
     })
+}
+
+fn hosted_phext_file(
+    dir: Option<&str>,
+    current_file: &str,
+    name: &str,
+) -> Option<std::path::PathBuf> {
+    if !phext_name_ok(name) || reserved_phext_name(name) {
+        return None;
+    }
+    let file_name = format!("{name}.phext");
+    if std::path::Path::new(&file_name).components().count() != 1 {
+        return None;
+    }
+    if let Some(dir) = dir {
+        let dir_canon = std::fs::canonicalize(dir).ok()?;
+        let candidate = dir_canon.join(&file_name);
+        if candidate.parent() != Some(dir_canon.as_path()) {
+            return None;
+        }
+        let file_canon = std::fs::canonicalize(&candidate).ok()?;
+        if !file_canon.starts_with(&dir_canon) {
+            return None;
+        }
+        if file_canon.file_name().and_then(|n| n.to_str()) != Some(file_name.as_str()) {
+            return None;
+        }
+        return file_canon.is_file().then_some(file_canon);
+    }
+    let current = std::path::Path::new(current_file);
+    if current.file_name().and_then(|n| n.to_str()) != Some(file_name.as_str()) {
+        return None;
+    }
+    let canon = std::fs::canonicalize(current).ok()?;
+    canon.is_file().then_some(canon)
+}
+
+fn send_not_found(
+    stream: &mut std::net::TcpStream,
+    method: &str,
+    headers: &HashMap<String, String>,
+) {
+    let accept = headers
+        .get("accept")
+        .map(|v| v.to_ascii_lowercase())
+        .unwrap_or_default();
+    let json = accept.contains("application/json") && !accept.contains("text/html");
+    let (content_type, body): (&str, &[u8]) = if json {
+        ("application/json", API_NOT_FOUND)
+    } else {
+        (HTML, NOT_FOUND_HTML.as_bytes())
+    };
+    send_response(
+        stream,
+        404,
+        content_type,
+        body,
+        CacheClass::NoStore,
+        headers,
+        method == "HEAD",
+    );
+}
+
+fn send_redirect(
+    stream: &mut std::net::TcpStream,
+    location: &str,
+    headers: &HashMap<String, String>,
+) {
+    let https = forwarded_https(headers);
+    let body = format!("Redirecting to {location}\n");
+    let head = format!(
+        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n{}\r\n",
+        body.len(),
+        security_header_block(https)
+    );
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(body.as_bytes());
+    let _ = stream.flush();
 }
 
 fn get_flag(args: &[String], flag: &str) -> Option<String> {
@@ -995,6 +1297,9 @@ fn main() {
         eprintln!("Usage: phext-edit <file.phext> [options]");
         eprintln!("       phext-edit --dir <directory> [options]");
         eprintln!("       phext-edit --local [options]");
+        eprintln!();
+        eprintln!("Links: /#1.1.1/1.1.1/1.1.1");
+        eprintln!("       /<name>/#1.1.1/1.1.1/1.1.1  (<name>.phext in --dir)");
         eprintln!();
         eprintln!("Options:");
         eprintln!("  --port <port>     HTTP port (default: 8080)");
@@ -1466,7 +1771,8 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="phext-edit: browse and edit phext files, plain text arranged in 11 dimensions, from your browser.">
 <title>💎 phext-edit</title>
-<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<!-- Also served at /<name>/. Asset and API URLs in this shell are absolute. -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
 :root {
   --bg: #171717; --panel: #131313; --bar: #1c1c1c; --border: #2e2e2e;
@@ -1723,7 +2029,7 @@ body {
     <div style="color:var(--dim);margin-top:28px;font-size:12px;line-height:1.6">
       A web editor for phext: plain text arranged in 11 dimensions.<br>
       Sign-in only checks who you are; nothing is shared or sold.<br>
-      <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a>
+      <a href="/about" style="color:var(--coord)">About</a> · <a href="/privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="/terms" style="color:var(--coord)">Terms of Service</a>
     </div>
   </div>
 </div>
@@ -1776,6 +2082,7 @@ function showPanel(name) {
 }
 
 async function api(method, path, body) {
+  if (path.charAt(0) !== '/') path = '/' + path;
   const opts = { method, headers: {} };
   if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
   if (csrf && method !== 'GET') opts.headers['x-csrf-token'] = csrf;
@@ -1794,8 +2101,70 @@ async function api(method, path, body) {
   return res.json();
 }
 
-// ── Render ──
-let suppressHashChange = false;
+// ── Shareable URL: /<name>/#LB.SF.SR/CN.VM.BK/CH.SN.SC ──
+// The 11D scroll address is the canonical 9-number coordinate. `;` is the
+// libphext URL form of `/`. A fragment that does not parse falls back to origin.
+const DEFAULT_COORD = '1.1.1/1.1.1/1.1.1';
+const PHEXT_NAME_RE = /^[A-Za-z0-9_-]+$/;
+const RESERVED_PHEXT = { about: 1, api: 1, index: 1, privacy: 1, terms: 1 };
+let defaultStem = '';
+let defaultPath = '';
+let urlSync = false;
+// The first fragment write replaces the loaded URL. Later moves push, so
+// back/forward walk coordinates. A link that already has a fragment is the
+// first history entry.
+let urlReady = location.hash.length > 1;
+
+function canonicalCoord(nums) {
+  if (!nums || nums.length !== 9 || nums.some(n => !Number.isInteger(n) || n < 1 || n > 1000)) return null;
+  const [a,b,c,d,e,f,g,h,i] = nums;
+  return a+'.'+b+'.'+c+'/'+d+'.'+e+'.'+f+'/'+g+'.'+h+'.'+i;
+}
+function normalizeCoord(raw) {
+  if (!raw) return null;
+  let s = String(raw).trim();
+  try { s = decodeURIComponent(s.replace(/\+/g, '%2B')); } catch { return null; }
+  if (/^\d{1,4}(?:\/\d{1,4}){8}$/.test(s)) return canonicalCoord(s.split('/').map(n => Number(n)));
+  s = s.replace(/;/g, '/');
+  if (!/^\d{1,4}(?:\.\d{1,4}){2}\/\d{1,4}(?:\.\d{1,4}){2}\/\d{1,4}(?:\.\d{1,4}){2}$/.test(s)) return null;
+  return canonicalCoord(s.split(/[./]/).map(n => Number(n)));
+}
+
+function readFragment() {
+  const raw = location.hash.startsWith('#') ? location.hash.slice(1) : '';
+  if (!raw) return { present: false, malformed: false, coord: DEFAULT_COORD };
+  const coord = normalizeCoord(raw);
+  if (!coord) return { present: true, malformed: true, coord: DEFAULT_COORD };
+  return { present: true, malformed: false, coord };
+}
+
+function phextNameFromLocation() {
+  const parts = location.pathname.split('/').filter(Boolean);
+  if (parts.length === 1 && PHEXT_NAME_RE.test(parts[0]) && !RESERVED_PHEXT[parts[0]]) return parts[0];
+  return '';
+}
+
+function sharePath(name) {
+  return (name && PHEXT_NAME_RE.test(name) && !RESERVED_PHEXT[name]) ? '/' + name + '/' : '/';
+}
+
+function fileStem(file) {
+  const base = String(file || '').split('/').pop() || '';
+  return base.replace(/\.phext$/, '');
+}
+
+function publishCoord(coord) {
+  const name = phextNameFromLocation();
+  const path = sharePath(name);
+  const next = path + location.search + '#' + coord;
+  const now = location.pathname + location.search + location.hash;
+  if (now !== next) {
+    urlSync = true;
+    history[urlReady ? 'pushState' : 'replaceState'](null, '', next);
+    urlSync = false;
+  }
+  urlReady = true;
+}
 
 function render(nav, skipHash) {
   lastNav = nav;
@@ -1805,11 +2174,7 @@ function render(nav, skipHash) {
   $('scroll-count').textContent = `[${p.total_scrolls} scrolls]`;
   $('dirty-flag').textContent = dirty ? '● unsaved' : '';
 
-  if (!skipHash) {
-    suppressHashChange = true;
-    location.hash = p.coordinate;
-    suppressHashChange = false;
-  }
+  if (!skipHash && p.coordinate) publishCoord(p.coordinate);
 
   renderSentron(nav);
   renderContent(nav);
@@ -2089,17 +2454,25 @@ $('search-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') { const q = e.target.value.trim(); if (q) doSearch(q); e.preventDefault(); }
 });
 
-window.addEventListener('hashchange', async () => {
-  if (suppressHashChange) return;
-  const hash = location.hash.replace(/^#/, '');
-  if (hash && /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash))
-    render(await api('POST', '/api/goto', hash), true);
-});
+function scheduleFollow() {
+  if (urlSync) { urlSync = false; return; }
+  if (scheduleFollow.queued) return;
+  scheduleFollow.queued = true;
+  setTimeout(async () => {
+    scheduleFollow.queued = false;
+    if ($('auth-screen').style.display === 'flex') return;
+    try { await openFromLocation(true); }
+    catch (e) { if (!needsAuth) console.error(e); }
+  }, 0);
+}
+window.addEventListener('hashchange', scheduleFollow);
+window.addEventListener('popstate', scheduleFollow);
+
 
 // ── Auth ──
 // Sign-in state lives in an HttpOnly cookie; /api/session reports it and the CSRF token.
 async function loadSession() {
-  try { session = await (await fetch('api/session')).json(); } catch { session = null; }
+  try { session = await (await fetch('/api/session')).json(); } catch { session = null; }
   csrf = (session && session.csrf) || '';
   const so = $('signout');
   if (session && session.signed_in) {
@@ -2124,10 +2497,10 @@ async function showAuthScreen(message, sessionFresh) {
     html += `<div style="color:var(--text)">Signed in as ${escHtml(s.name || s.handle)} <span style="color:var(--dim)">(${escHtml(s.who)})</span></div>`;
     html += `<button class="auth-btn" onclick="signOut()">Sign out</button>`;
   } else {
-    const next = encodeURIComponent('/' + location.hash);
+    const next = encodeURIComponent(location.pathname + location.search + location.hash);
     const label = { github: 'Sign in with GitHub', google: 'Sign in with Google' };
     for (const p of (s.providers || []))
-      html += `<a class="auth-btn" href="api/auth/${p}?next=${next}">${label[p] || p}</a>`;
+      html += `<a class="auth-btn" href="/api/auth/${p}?next=${next}">${label[p] || p}</a>`;
   }
   $('auth-providers').innerHTML = html;
   $('auth-prompt').textContent =
@@ -2143,7 +2516,7 @@ async function showAuthScreen(message, sessionFresh) {
 async function signOut() {
   localStorage.removeItem('phext-token');
   if (session && session.signed_in) {
-    try { await fetch('api/auth/logout', { method: 'POST', headers: { 'x-csrf-token': csrf } }); } catch {}
+    try { await fetch('/api/auth/logout', { method: 'POST', headers: { 'x-csrf-token': csrf } }); } catch {}
   }
   location.reload();
 }
@@ -2157,9 +2530,8 @@ $('auth-input').addEventListener('keydown', async (e) => {
       needsAuth = false;
       $('auth-screen').style.display = 'none';
       $('auth-error').textContent = '';
-      if (!/^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(location.hash.replace(/^#/, '')))
-        render(await api('POST', '/api/home'));
-      initApp();
+      await loadSession();
+      await openFromLocation(false);
     } catch {
       $('auth-error').textContent = 'Invalid token';
       $('auth-input').value = '';
@@ -2175,8 +2547,7 @@ async function openPhextPicker() {
     let html = '';
     for (const f of files) {
       const kb = (f.bytes / 1024).toFixed(1);
-      const isCurrent = lastNav && f.path === lastNav.position?.file;
-      html += `<div class="hit" onclick="switchPhext('${escAttr(f.path)}')">
+      html += `<div class="hit" onclick="switchPhext('${escAttr(f.name)}','${escAttr(f.path)}')">
         <span class="hit-coord">${escHtml(f.name)}</span>
         <span class="hit-ctx">${kb} KB</span></div>`;
     }
@@ -2185,27 +2556,67 @@ async function openPhextPicker() {
     $('phext-overlay').className = 'overlay visible';
   } catch(e) { showMsg('failed to list phexts'); }
 }
-async function switchPhext(path) {
+async function switchPhext(name, path) {
   try {
-    const res = await api('POST', '/api/open', path);
+    const stem = fileStem(name);
+    const target = (PHEXT_NAME_RE.test(stem) && !RESERVED_PHEXT[stem]) ? stem : path;
+    const res = await api('POST', '/api/open', target);
     if (res.ok) {
       closeOverlays();
-      treeData = null; // force tree reload
+      treeData = null;
       treeExpanded = {};
       const nav = await api('GET', '/api/nav');
-      render(nav);
+      $('active-file').textContent = '📂 ' + (name || stem);
+      if (PHEXT_NAME_RE.test(stem) && !RESERVED_PHEXT[stem]) {
+        const url = '/' + stem + '/' + location.search + '#' + nav.position.coordinate;
+        history.pushState(null, '', url);
+        urlReady = true;
+      }
+      render(nav, true);
       if (activePanel === 'navtree') loadTree();
       showMsg('📂 ' + res.message);
     } else { showMsg(res.message); }
   } catch(e) { showMsg('failed to open'); }
 }
 
+async function ensurePhext(name) {
+  const status = await api('GET', '/api/status');
+  const current = fileStem(status.file);
+  // `/` is the startup (or --home) phext, not whichever file was opened last.
+  if (status.default_file) { defaultPath = status.default_file; defaultStem = fileStem(status.default_file); }
+  else if (!defaultPath) { defaultPath = status.file; defaultStem = current; }
+  const want = name || defaultStem;
+  let switched = false;
+  if (current !== want) {
+    const body = (PHEXT_NAME_RE.test(want) && !RESERVED_PHEXT[want]) ? want : defaultPath;
+    const res = await api('POST', '/api/open', body);
+    if (!res.ok) { showMsg(res.message || 'phext not found'); return false; }
+    treeData = null;
+    treeExpanded = {};
+    switched = true;
+  }
+  $('active-file').textContent = '📂 ' + want + '.phext';
+  return switched ? 'switched' : 'same';
+}
+
+async function openFromLocation(fromHistory) {
+  const name = phextNameFromLocation();
+  const parsed = readFragment();
+  const opened = await ensurePhext(name);
+  if (!opened) return;
+  if (parsed.present) {
+    const canonical = '#' + parsed.coord;
+    if (location.hash !== canonical) {
+      history.replaceState(null, '', sharePath(name) + location.search + canonical);
+    }
+    if (opened === 'same' && lastNav && lastNav.position.coordinate === parsed.coord) return;
+    render(await api('POST', '/api/goto', parsed.coord), true);
+  } else if (!name && !fromHistory) render(await api('POST', '/api/home'));
+  else render(await api('GET', '/api/nav'));
+}
+
 async function initApp() {
-  try {
-    // Show active file name
-    const status = await api('GET', '/api/status');
-    $('active-file').textContent = '📂 ' + status.file.split('/').pop();
-  } catch { /* auth will catch */ }
+  try { await openFromLocation(false); } catch { /* auth will catch */ }
 }
 
 // Initial load
@@ -2218,12 +2629,7 @@ async function initApp() {
       await showAuthScreen('', true);
       return;
     }
-    const hash = location.hash.replace(/^#/, '');
-    if (hash && /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash))
-      render(await api('POST', '/api/goto', hash));
-    else
-      render(await api('POST', '/api/home'));
-    initApp();
+    await openFromLocation(false);
   } catch(e) {
     // If unauthorized, auth screen is already shown by api()
     if (!needsAuth) console.error(e);
@@ -2238,7 +2644,7 @@ async function initApp() {
 mod public_route_tests {
     use super::{
         handle_request, is_api_path, is_editor_shell, public_document, AppState, ABOUT_HTML,
-        INDEX_HTML, NOT_FOUND_HTML, PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE, SITEMAP_XML,
+        DEFAULT_COORD, INDEX_HTML, NOT_FOUND_HTML, PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE, SITEMAP_XML,
         STATIC_CACHE, TERMS_HTML,
     };
     use phext_lattice::oauth::{Editors, Gate, Oauth};
@@ -2318,9 +2724,18 @@ mod public_route_tests {
 
     #[test]
     fn public_pages_name_each_other_and_the_contact() {
-        for page in [ABOUT_HTML, PRIVACY_HTML, INDEX_HTML] {
+        for page in [ABOUT_HTML, PRIVACY_HTML] {
             assert!(page.contains("href=\"terms\""), "missing terms link");
         }
+        // The shell is also served under /<name>/, so its links are absolute.
+        assert!(INDEX_HTML.contains("href=\"/terms\""));
+        assert!(INDEX_HTML.contains("fetch('/api/session')"));
+        assert!(INDEX_HTML.contains("href=\"/api/auth/"));
+        assert!(INDEX_HTML.contains("history.replaceState"));
+        assert!(INDEX_HTML.contains("history.pushState"));
+        assert!(INDEX_HTML.contains("hashchange"));
+        assert!(INDEX_HTML.contains("popstate"));
+        assert!(INDEX_HTML.contains(DEFAULT_COORD));
         assert!(TERMS_HTML.contains("href=\"about\""));
         assert!(TERMS_HTML.contains("href=\"privacy\""));
         assert!(TERMS_HTML.contains("will+support@phext.io"));
@@ -2373,6 +2788,7 @@ mod public_route_tests {
             ("/robots.txt", "text/plain", "Sitemap: https://edit.phext.io/sitemap.xml"),
             ("/sitemap.xml", "application/xml", "https://edit.phext.io/terms"),
             ("/?utm=1", "text/html", "phext-edit"),
+            ("/?demo", "text/html", "phext-edit"),
             ("/index.html?x=1", "text/html", "phext-edit"),
         ];
         for (path, kind, marker) in pages {
@@ -2610,14 +3026,428 @@ mod http_tests {
 
     #[test]
     fn pages_name_the_svg_icon() {
-        for page in [INDEX_HTML, ABOUT_HTML, PRIVACY_HTML] {
+        for page in [ABOUT_HTML, PRIVACY_HTML] {
             assert!(page.contains("type=\"image/svg+xml\" href=\"favicon.svg\""));
             assert!(!page.contains("favicon.ico"));
         }
+        assert!(INDEX_HTML.contains("type=\"image/svg+xml\" href=\"/favicon.svg\""));
+        assert!(!INDEX_HTML.contains("href=\"favicon.svg\""));
+        assert!(!INDEX_HTML.contains("favicon.ico"));
         assert!(TERMS_HTML.contains("type=\"image/svg+xml\" href=\"favicon.svg\""));
         assert!(!TERMS_HTML.contains("favicon.ico"));
         // Served at arbitrary paths, so the icon URL is absolute.
         assert!(NOT_FOUND_HTML.contains("type=\"image/svg+xml\" href=\"/favicon.svg\""));
         assert!(!NOT_FOUND_HTML.contains("favicon.ico"));
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+    use phext_lattice::oauth::{Editors, Gate, Oauth};
+    use phext_lattice::MappedLattice;
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    fn coord_scroll(s: &str) -> usize {
+        parse_coordinate(s).unwrap().x.scroll
+    }
+
+    #[test]
+    fn coordinates_accept_canonical_semicolon_and_slash_forms() {
+        assert_eq!(DEFAULT_COORD, "1.1.1/1.1.1/1.1.1");
+        assert!(parse_coordinate(DEFAULT_COORD)
+            .unwrap()
+            .validate_coordinate());
+        assert_eq!(coord_scroll("1.1.1;1.1.1;1.1.2"), 2);
+        assert_eq!(coord_scroll("1/1/1/1/1/1/1/1/2"), 2);
+        assert_eq!(coord_scroll("01.1.1/1.1.1/1.1.2"), 2);
+        for bad in [
+            "",
+            "nope",
+            "1.1.1",
+            "1.1.1/1.1.1",
+            "0.1.1/1.1.1/1.1.1",
+            "1.1.1/1.1.1/1.1.1001",
+            "../etc",
+            "1.1.1/1.1.1/1.1.1/1.1",
+            "1.2.3.4/1.1.1/1.1.1",
+            "1.1.1/1.1.1/1.1",
+            "1/1/1/1/1/1/1/1",
+            "1.1.1/1.1.1/1.1.2/extra",
+        ] {
+            assert!(parse_coordinate(bad).is_none(), "{bad} should be rejected");
+        }
+    }
+
+    #[test]
+    fn phext_link_rejects_traversal_and_public_routes() {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../etc",
+            "..\\etc",
+            "jonas.phext",
+            "foo/bar",
+            "foo\\bar",
+            "has space",
+            "a.b",
+            "%2e%2e",
+            "%2e%2e%2fetc",
+            "jonas%2f..%2fetc",
+            "%252e%252e",
+            "jonas/../../etc",
+            ".%2e",
+            "jonas%00",
+        ] {
+            assert!(phext_link(&format!("/{bad}")).is_none(), "/{bad}");
+            assert!(phext_link(&format!("/{bad}/")).is_none(), "/{bad}/");
+        }
+        for path in [
+            "/../etc/passwd",
+            "/%2e%2e/etc/passwd",
+            "/%2e%2e/%2e%2e/etc/passwd",
+            "/jonas/../../etc/passwd",
+            "/jonas/%2e%2e/%2e%2e/etc/passwd",
+            "/./../../etc/passwd",
+            "//etc/passwd",
+            "/og.png",
+            "/favicon.ico",
+            "/favicon.svg",
+            "/robots.txt",
+            "/sitemap.xml",
+            "/api/nav",
+            "/api/demo/nav",
+            "/api/status",
+            "/?demo",
+            "/",
+            "/index.html",
+            "/terms",
+            "/terms/",
+            "/about",
+            "/privacy",
+            "/index",
+            "/index/",
+        ] {
+            assert!(phext_link(path).is_none(), "{path}");
+        }
+        let bare = phext_link("/jonas").unwrap();
+        assert_eq!(bare.name, "jonas");
+        assert!(!bare.slash);
+        assert_eq!(bare.location(), "/jonas/");
+        let slashed = phext_link("/jonas/?demo=1").unwrap();
+        assert!(slashed.slash);
+        assert_eq!(slashed.name, "jonas");
+        let named = phext_link("/My_File-1?demo=1").unwrap();
+        assert_eq!(named.location(), "/My_File-1/?demo=1");
+        assert!(phext_link("/jonas/extra").is_none());
+        assert!(phext_link("/jonas/extra/").is_none());
+    }
+
+    fn sample_library() -> (tempfile::TempDir, std::path::PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("library");
+        std::fs::create_dir(&dir).unwrap();
+        let aaa = dir.join("aaa.phext");
+        std::fs::write(&aaa, b"AAA-ORIGIN").unwrap();
+        let mut jonas = Vec::new();
+        jonas.extend_from_slice(b"JONAS-ORIGIN");
+        jonas.push(0x17);
+        jonas.extend_from_slice(b"JONAS-TARGET");
+        std::fs::write(dir.join("jonas.phext"), &jonas).unwrap();
+        std::fs::write(dir.join("terms.phext"), b"TERMS-FILE-SECRET").unwrap();
+        std::fs::write(root.path().join("secret.phext"), b"SECRET-OUTSIDE-CONTENT").unwrap();
+        std::os::unix::fs::symlink(root.path().join("secret.phext"), dir.join("escape.phext"))
+            .unwrap();
+        (root, dir)
+    }
+
+    fn serve_library(local: bool) -> (u16, tempfile::TempDir) {
+        let (root, dir) = sample_library();
+        let aaa = dir.join("aaa.phext");
+        let lattice = MappedLattice::open(&aaa).unwrap();
+        let mut app = AppState::new(lattice, aaa.to_string_lossy().to_string());
+        app.phext_dir = Some(dir.to_string_lossy().to_string());
+        let state = Arc::new(Mutex::new(app));
+        let gate = Gate::new(
+            Some("s3cret-token".into()),
+            Oauth::closed(),
+            Editors::default(),
+        );
+        if local {
+            gate.enable_local();
+        }
+        let gate = Arc::new(gate);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for incoming in listener.incoming() {
+                let Ok(mut stream) = incoming else { break };
+                let state = Arc::clone(&state);
+                let gate = Arc::clone(&gate);
+                handle_request(&mut stream, &state, &gate);
+            }
+        });
+        (port, root)
+    }
+
+    fn http(port: u16, request: &str) -> (u16, String, String) {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).unwrap();
+        let raw = String::from_utf8_lossy(&raw).into_owned();
+        let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((&raw, ""));
+        let status = head
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or(0);
+        (status, head.to_string(), body.to_string())
+    }
+
+    fn get(port: u16, path: &str, extra: &str) -> (u16, String, String) {
+        http(
+            port,
+            &format!(
+                "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n{extra}\r\n"
+            ),
+        )
+    }
+
+    fn header<'a>(head: &'a str, name: &str) -> &'a str {
+        head.lines()
+            .find_map(|line| {
+                let (n, value) = line.split_once(':')?;
+                n.eq_ignore_ascii_case(name).then(|| value.trim())
+            })
+            .unwrap_or("")
+    }
+
+    #[test]
+    fn named_links_stay_inside_the_library_and_do_not_leak() {
+        let (port, _root) = serve_library(false);
+        let secret = "SECRET-OUTSIDE-CONTENT";
+        let marker = "JONAS-ORIGIN";
+
+        let (status, head, body) = get(port, "/jonas/", "");
+        assert_eq!(status, 200, "{head}");
+        assert!(body.contains("phext-edit"), "{body}");
+        assert!(body.contains("href=\"/favicon.svg\""));
+        assert!(body.contains("fetch('/api/session')"));
+        assert!(!body.contains(marker), "shell leaked scroll text");
+        assert!(!body.contains(secret));
+        assert!(head.contains("ETag:"));
+
+        let (status, _, body) = http(
+            port,
+            &format!(
+                "HEAD /jonas/ HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+            ),
+        );
+        assert_eq!(status, 200);
+        assert!(body.is_empty());
+
+        let (status, head, body) = get(port, "/jonas", "");
+        assert_eq!(status, 302, "{head} {body}");
+        assert_eq!(header(&head, "Location"), "/jonas/");
+        assert!(!body.contains(marker) && !body.contains(secret));
+
+        let (status, head, _) = get(port, "/jonas?demo=1", "");
+        assert_eq!(status, 302, "{head}");
+        assert_eq!(header(&head, "Location"), "/jonas/?demo=1");
+
+        let (status, _, body) = get(port, "/nope/", "");
+        assert_eq!(status, 404);
+        assert!(body.contains("Page not found"));
+        assert!(!body.contains(secret));
+
+        let (status, _, body) = get(port, "/nope/", "Accept: application/json\r\n");
+        assert_eq!(status, 404);
+        assert!(body.contains("\"error\":\"not found\""));
+        assert!(!body.contains("<html"));
+        assert!(!body.contains(secret));
+
+        let traversals = [
+            "/../etc/passwd",
+            "/..%2f..%2fetc/passwd",
+            "/%2e%2e/etc/passwd",
+            "/%2e%2e/%2e%2e/etc/passwd",
+            "/%2e%2e",
+            "/jonas/../../etc/passwd",
+            "/jonas/%2e%2e/%2e%2e/etc/passwd",
+            "/./../../etc/passwd",
+            "/%2e%2e%2fetc%2fpasswd",
+            "/jonas%2f..%2f..%2fetc%2fpasswd",
+            "/foo/../../../etc/passwd",
+            "/%252e%252e/etc/passwd",
+            "/escape/",
+            "/escape",
+            "/secret/",
+            "/jonas.phext",
+            "/jonas.phext/",
+            "/aaa/../jonas/",
+            "/terms/",
+            "/about/",
+        ];
+        for path in traversals {
+            let (status, _, body) = get(port, path, "");
+            assert_eq!(status, 404, "{path} -> {status} {body}");
+            assert!(!body.contains(secret), "{path} leaked secret");
+            assert!(!body.contains(marker), "{path} leaked jonas");
+            assert!(
+                !body.contains("TERMS-FILE-SECRET"),
+                "{path} leaked terms.phext"
+            );
+        }
+
+        let (status, _, body) = get(port, "/terms", "");
+        assert_eq!(status, 200);
+        assert!(body.contains("Terms of Service"));
+        assert!(!body.contains("TERMS-FILE-SECRET"));
+        let (status, _, body) = get(port, "/robots.txt", "");
+        assert_eq!(status, 200);
+        assert!(body.contains("Sitemap:"));
+        let (status, _, body) = get(port, "/sitemap.xml", "");
+        assert_eq!(status, 200);
+        assert!(body.contains("edit.phext.io"));
+        let (status, _, body) = get(port, "/?demo", "");
+        assert_eq!(status, 200);
+        assert!(body.contains("phext-edit"));
+        let (status, head, _) = get(port, "/favicon.ico", "");
+        assert_eq!(status, 200);
+        assert!(header(&head, "Content-Type").starts_with("image/"));
+        let (status, _, body) = get(port, "/og.png", "");
+        assert_eq!(status, 404);
+        assert!(!body.contains(secret));
+        let (status, _, body) = get(port, "/api/nav", "");
+        assert_eq!(status, 401);
+        assert!(body.contains("unauthorized"));
+        assert!(!body.contains(marker));
+
+        let auth = "Authorization: Bearer s3cret-token\r\n";
+        let (status, _, body) = get(port, "/api/status", auth);
+        assert_eq!(status, 200, "{body}");
+        assert!(
+            body.contains("aaa.phext"),
+            "shell GET must not switch files: {body}"
+        );
+        assert!(!body.contains(secret));
+
+        let open = |target: &str| {
+            let req = format!(
+                "POST /api/open HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer s3cret-token\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{target}",
+                target.len()
+            );
+            http(port, &req)
+        };
+        let (status, _, body) = open("jonas");
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("\"ok\":true"), "{body}");
+        let (status, _, body) = get(port, "/api/nav", auth);
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains(marker), "{body}");
+        assert!(!body.contains(secret));
+
+        let goto = |coord: &str| {
+            let req = format!(
+                "POST /api/goto HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer s3cret-token\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{coord}",
+                coord.len()
+            );
+            let (status, _, body) = http(port, &req);
+            assert_eq!(status, 200, "{coord} {body}");
+            body
+        };
+        assert!(goto("1.1.1/1.1.1/1.1.2").contains("JONAS-TARGET"));
+        assert!(goto("1.1.1;1.1.1;1.1.2").contains("JONAS-TARGET"));
+        assert!(goto("1/1/1/1/1/1/1/1/2").contains("JONAS-TARGET"));
+        let stayed = goto("not-a-coordinate");
+        assert!(
+            stayed.contains("JONAS-TARGET"),
+            "malformed goto moved: {stayed}"
+        );
+
+        for bad in [
+            "../secret",
+            "../secret.phext",
+            "..",
+            "escape",
+            "secret",
+            "/etc/passwd",
+            "jonas/../../secret.phext",
+        ] {
+            let (status, _, body) = open(bad);
+            assert_eq!(status, 200, "{bad} {body}");
+            assert!(body.contains("\"ok\":false"), "{bad} opened: {body}");
+            assert!(!body.contains(secret), "{bad} leaked: {body}");
+        }
+        let outside = _root.path().join("secret.phext");
+        let (status, _, body) = open(&outside.to_string_lossy());
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("\"ok\":false"), "{body}");
+        assert!(!body.contains(secret));
+        let escape = _root.path().join("library").join("escape.phext");
+        let (status, _, body) = open(&escape.to_string_lossy());
+        assert!(body.contains("\"ok\":false"), "{status} {body}");
+        assert!(!body.contains(secret));
+
+        let (status, _, body) = get(port, "/api/status", auth);
+        assert!(body.contains("jonas.phext"), "{status} {body}");
+        assert!(!body.contains("secret"));
+    }
+
+    #[test]
+    fn local_mode_serves_a_named_shell_and_still_blocks_traversal() {
+        let (port, _root) = serve_library(true);
+        let (status, _, body) = get(port, "/api/status", "");
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("aaa.phext"));
+        let (status, _, body) = get(port, "/jonas/", "");
+        assert_eq!(status, 200);
+        assert!(body.contains("fetch('/api/session')"));
+        assert!(!body.contains("JONAS-ORIGIN"));
+        let (status, _, body) = get(port, "/%2e%2e/%2e%2e/etc/passwd", "");
+        assert_eq!(status, 404);
+        assert!(!body.contains("SECRET-OUTSIDE-CONTENT"));
+        let (status, _, body) = get(port, "/api/nav", "");
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("AAA-ORIGIN"), "{body}");
+        assert!(!body.contains("JONAS-ORIGIN"));
+    }
+
+    #[test]
+    fn hosted_phext_file_does_not_follow_links_out_of_the_directory() {
+        let (root, dir) = sample_library();
+        let dir_s = dir.to_string_lossy().to_string();
+        assert!(hosted_phext_file(Some(&dir_s), "", "jonas")
+            .unwrap()
+            .ends_with("jonas.phext"));
+        assert!(hosted_phext_file(Some(&dir_s), "", "escape").is_none());
+        assert!(hosted_phext_file(Some(&dir_s), "", "..").is_none());
+        assert!(hosted_phext_file(Some(&dir_s), "", "../secret").is_none());
+        assert!(hosted_phext_file(Some(&dir_s), "", "secret").is_none());
+        assert!(hosted_phext_file(Some(&dir_s), "", "nope").is_none());
+        assert!(
+            hosted_phext_file(Some(&dir_s), "", "terms").is_none(),
+            "reserved name"
+        );
+        let outside = root
+            .path()
+            .join("secret.phext")
+            .to_string_lossy()
+            .to_string();
+        assert!(hosted_phext_file(None, &outside, "secret").is_some());
+        assert!(hosted_phext_file(None, &outside, "jonas").is_none());
     }
 }
