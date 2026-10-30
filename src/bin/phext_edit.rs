@@ -451,8 +451,14 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
         return;
     }
 
-    if path == "/favicon.ico" {
-        send(stream, 200, "image/svg+xml", FAVICON_SVG.as_bytes());
+    // Icons and the share image. Exact paths, before the auth gate, so a
+    // browser or an ad crawler can fetch them without signing in.
+    if let Some((content_type, body)) = public_asset(&path) {
+        match method.as_str() {
+            "GET" => send(stream, 200, content_type, body),
+            "HEAD" => send_head(stream, 200, content_type, body.len()),
+            _ => send(stream, 405, "text/plain", b"method not allowed"),
+        }
         return;
     }
 
@@ -744,7 +750,25 @@ fn main() {
     }
 }
 
-const FAVICON_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">💎</text></svg>"#;
+const FAVICON_ICO: &[u8] = include_bytes!("../../web/favicon.ico");
+const FAVICON_SVG: &[u8] = include_bytes!("../../web/favicon.svg");
+const APPLE_TOUCH_PNG: &[u8] = include_bytes!("../../web/apple-touch-icon.png");
+const OG_PNG: &[u8] = include_bytes!("../../web/og.png");
+
+/// Public icon and share-image routes. `path` may include a query string.
+/// Anything else (including `/robots.txt`, `/sitemap.xml`) is left for other routes.
+fn public_asset(path: &str) -> Option<(&'static str, &'static [u8])> {
+    let route = path.split('?').next().unwrap_or(path);
+    match route {
+        "/favicon.ico" => Some(("image/x-icon", FAVICON_ICO)),
+        "/favicon.svg" => Some(("image/svg+xml", FAVICON_SVG)),
+        "/apple-touch-icon.png" | "/apple-touch-icon-precomposed.png" => {
+            Some(("image/png", APPLE_TOUCH_PNG))
+        }
+        "/og.png" => Some(("image/png", OG_PNG)),
+        _ => None,
+    }
+}
 
 // ── Public pages (no sign-in) ──────────────────────────────────────────
 
@@ -767,7 +791,9 @@ const ABOUT_HTML: &str = concat!(r#"<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="Phext Edit is a web editor for phext files: plain text arranged in 11 dimensions.">
 <title>Phext Edit: about</title>
-<link rel="icon" type="image/svg+xml" href="favicon.ico">
+<link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 "#, public_style!(), r#"
 </head>
 <body>
@@ -817,7 +843,9 @@ const PRIVACY_HTML: &str = concat!(r#"<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="How Phext Edit handles the information it gets when you sign in.">
 <title>Phext Edit: privacy policy</title>
-<link rel="icon" type="image/svg+xml" href="favicon.ico">
+<link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 "#, public_style!(), r#"
 </head>
 <body>
@@ -896,9 +924,26 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="phext-edit: browse and edit phext files, plain text arranged in 11 dimensions, from your browser.">
-<title>💎 phext-edit</title>
-<link rel="icon" type="image/svg+xml" href="favicon.ico">
+<title>Phext Edit: an editor for 11-dimensional plain text</title>
+<meta name="description" content="Browse and edit phext files in the browser. Phext is plain text arranged in 11 dimensions, and the files stay plain text, with no lock-in.">
+<link rel="canonical" href="https://edit.phext.io/">
+<meta name="theme-color" content="#171717">
+<link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta property="og:title" content="Phext Edit: an editor for 11-dimensional plain text">
+<meta property="og:description" content="Browse and edit phext files in the browser. Phext is plain text arranged in 11 dimensions, and the files stay plain text, with no lock-in.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://edit.phext.io/">
+<meta property="og:site_name" content="Phext Edit">
+<meta property="og:image" content="https://edit.phext.io/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Phext Edit: an editor for plain text arranged in 11 dimensions">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Phext Edit: an editor for 11-dimensional plain text">
+<meta name="twitter:description" content="Browse and edit phext files in the browser. Phext is plain text arranged in 11 dimensions, and the files stay plain text, with no lock-in.">
+<meta name="twitter:image" content="https://edit.phext.io/og.png">
 <style>
 :root {
   --bg: #171717; --panel: #131313; --bar: #1c1c1c; --border: #2e2e2e;
@@ -1665,3 +1710,253 @@ async function initApp() {
 </body>
 </html>
 "##;
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        handle_request, public_asset, AppState, Gate, MappedLattice, ABOUT_HTML, APPLE_TOUCH_PNG,
+        INDEX_HTML, OG_PNG, PRIVACY_HTML,
+    };
+    use phext_lattice::oauth::{Editors, Oauth};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::net::TcpStream;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    const TITLE: &str = "Phext Edit: an editor for 11-dimensional plain text";
+    const DESCRIPTION: &str = "Browse and edit phext files in the browser. Phext is plain text arranged in 11 dimensions, and the files stay plain text, with no lock-in.";
+
+    fn png_size(bytes: &[u8]) -> (u32, u32) {
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"), "not a png");
+        assert_eq!(&bytes[12..16], b"IHDR");
+        let w = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+        let h = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
+        (w, h)
+    }
+
+    fn assert_icon_links(html: &str) {
+        assert!(
+            html.contains("<link rel=\"icon\" href=\"favicon.ico\" sizes=\"16x16 32x32 48x48\">")
+        );
+        assert!(html.contains("<link rel=\"icon\" type=\"image/svg+xml\" href=\"favicon.svg\">"));
+        assert!(html.contains("<link rel=\"apple-touch-icon\" href=\"apple-touch-icon.png\">"));
+        assert!(
+            !html.contains("image/svg+xml\" href=\"favicon.ico\""),
+            "favicon.ico must not be labeled as SVG"
+        );
+    }
+
+    #[test]
+    fn editor_page_has_share_metadata() {
+        assert!(INDEX_HTML.contains("<html lang=\"en\">"));
+        assert!(INDEX_HTML.contains(&format!("<title>{TITLE}</title>")));
+        assert!(!INDEX_HTML.contains("<title>💎 phext-edit</title>"));
+        assert_eq!(INDEX_HTML.matches(TITLE).count(), 3);
+        assert_eq!(INDEX_HTML.matches(DESCRIPTION).count(), 3);
+        assert!(INDEX_HTML.contains("<link rel=\"canonical\" href=\"https://edit.phext.io/\">"));
+        assert!(INDEX_HTML.contains("<meta name=\"theme-color\" content=\"#171717\">"));
+        assert!(INDEX_HTML.contains("<meta property=\"og:type\" content=\"website\">"));
+        assert!(
+            INDEX_HTML.contains("<meta property=\"og:url\" content=\"https://edit.phext.io/\">")
+        );
+        assert!(INDEX_HTML.contains("<meta property=\"og:site_name\" content=\"Phext Edit\">"));
+        assert!(INDEX_HTML
+            .contains("<meta property=\"og:image\" content=\"https://edit.phext.io/og.png\">"));
+        assert!(INDEX_HTML.contains("<meta property=\"og:image:width\" content=\"1200\">"));
+        assert!(INDEX_HTML.contains("<meta property=\"og:image:height\" content=\"630\">"));
+        assert!(INDEX_HTML.contains("<meta property=\"og:image:alt\" content=\"Phext Edit: an editor for plain text arranged in 11 dimensions\">"));
+        assert!(INDEX_HTML.contains("<meta name=\"twitter:card\" content=\"summary_large_image\">"));
+        assert!(INDEX_HTML
+            .contains("<meta name=\"twitter:image\" content=\"https://edit.phext.io/og.png\">"));
+        assert_eq!(
+            INDEX_HTML.matches("https://edit.phext.io/og.png").count(),
+            2
+        );
+        assert_icon_links(INDEX_HTML);
+        assert_icon_links(ABOUT_HTML);
+        assert_icon_links(PRIVACY_HTML);
+    }
+
+    #[test]
+    fn share_assets_are_real_files_with_honest_types() {
+        let (ty, ico) = public_asset("/favicon.ico").unwrap();
+        assert_eq!(ty, "image/x-icon");
+        assert_eq!(&ico[..4], &[0, 0, 1, 0]);
+        assert!(!ico.starts_with(b"<svg") && !ico.starts_with(b"<?xml"));
+        assert_eq!(u16::from_le_bytes([ico[4], ico[5]]), 3);
+
+        let (ty, svg) = public_asset("/favicon.svg").unwrap();
+        assert_eq!(ty, "image/svg+xml");
+        assert!(svg.windows(4).any(|w| w == b"<svg"));
+
+        let (ty, apple) = public_asset("/apple-touch-icon.png").unwrap();
+        assert_eq!(ty, "image/png");
+        assert_eq!(png_size(apple), (180, 180));
+        let (ty, alias) = public_asset("/apple-touch-icon-precomposed.png").unwrap();
+        assert_eq!(ty, "image/png");
+        assert_eq!(alias, apple);
+
+        let (ty, og) = public_asset("/og.png?fbclid=1").unwrap();
+        assert_eq!(ty, "image/png");
+        assert_eq!(png_size(og), (1200, 630));
+        assert!(
+            og.len() < 100_000,
+            "share image should stay small, got {} bytes",
+            og.len()
+        );
+
+        assert!(public_asset("/api/status").is_none());
+        assert!(public_asset("/robots.txt").is_none());
+        assert!(public_asset("/og.svg").is_none());
+    }
+
+    fn http(port: u16, request: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).unwrap();
+        let sep = buf
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("response headers");
+        let head = String::from_utf8_lossy(&buf[..sep]);
+        let mut lines = head.split("\r\n");
+        let status: u16 = lines
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse()
+            .unwrap();
+        let headers = lines
+            .filter_map(|line| {
+                let (k, v) = line.split_once(':')?;
+                Some((k.trim().to_ascii_lowercase(), v.trim().to_string()))
+            })
+            .collect();
+        (status, headers, buf[sep + 4..].to_vec())
+    }
+
+    fn header<'a>(headers: &'a [(String, String)], name: &str) -> &'a str {
+        headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("")
+    }
+
+    #[test]
+    fn share_assets_are_public_when_the_api_is_locked() {
+        let lattice = MappedLattice::from_bytes(b"scroll");
+        let state = Arc::new(Mutex::new(AppState::new(lattice, "test.phext".into())));
+        let gate = Arc::new(Gate::new(
+            Some("secret-token".into()),
+            Oauth::closed(),
+            Editors::parse(""),
+        ));
+        assert!(gate.locked());
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let state_bg = Arc::clone(&state);
+        let gate_bg = Arc::clone(&gate);
+        let server = std::thread::spawn(move || {
+            for _ in 0..12 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
+                handle_request(&mut stream, &state_bg, &gate_bg);
+            }
+        });
+
+        let (status, headers, body) = http(
+            port,
+            "GET /og.png HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(header(&headers, "content-type"), "image/png");
+        assert_eq!(body, OG_PNG);
+
+        let (status, _, body) = http(
+            port,
+            "GET /og.png?x=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(body, OG_PNG);
+
+        let (status, headers, body) = http(
+            port,
+            "HEAD /og.png HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(header(&headers, "content-type"), "image/png");
+        assert_eq!(header(&headers, "content-length"), OG_PNG.len().to_string());
+        assert!(body.is_empty());
+
+        let (status, headers, body) = http(
+            port,
+            "GET /favicon.ico HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(header(&headers, "content-type"), "image/x-icon");
+        assert_eq!(&body[..4], &[0, 0, 1, 0]);
+
+        let (status, headers, body) = http(
+            port,
+            "GET /favicon.svg HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(header(&headers, "content-type"), "image/svg+xml");
+        assert!(body.windows(4).any(|w| w == b"<svg"));
+
+        let (status, _, body) = http(
+            port,
+            "GET /apple-touch-icon.png HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        assert_eq!(png_size(&body), (180, 180));
+
+        let (status, _, body) = http(port, "GET /apple-touch-icon-precomposed.png HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 200);
+        assert_eq!(body, APPLE_TOUCH_PNG);
+
+        let (status, _, body) = http(
+            port,
+            "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        let page = String::from_utf8(body).unwrap();
+        assert!(page.contains(&format!("<title>{TITLE}</title>")));
+        assert!(page.contains("rel=\"canonical\" href=\"https://edit.phext.io/\""));
+
+        let (status, _, _) = http(
+            port,
+            "GET /about HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+        let (status, _, _) = http(
+            port,
+            "GET /privacy HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 200);
+
+        let (status, _, _) = http(
+            port,
+            "GET /api/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 401);
+
+        let (status, _, _) = http(port, "POST /og.png HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 405);
+
+        server.join().unwrap();
+    }
+}
