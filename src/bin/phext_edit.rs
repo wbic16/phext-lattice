@@ -804,7 +804,7 @@ not post anything for you, and it does not share or sell your information. The
 <a href="privacy">Privacy Policy</a> gives the details.</p>
 
 <footer>Phext Edit · <a href="privacy">Privacy Policy</a> ·
-<a href="https://github.com/wbic16/phext-lattice/issues">Contact</a></footer>
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
 </main>
 </body>
 </html>
@@ -875,15 +875,15 @@ User Data Policy</a>, including the Limited Use requirements.</p>
   <li>Remove Phext Edit's access from your
     <a href="https://myaccount.google.com/connections">Google account</a> or your
     <a href="https://github.com/settings/applications">GitHub settings</a>.</li>
-  <li>Questions or requests can go to the
-    <a href="https://github.com/wbic16/phext-lattice/issues">project's issue tracker</a>.</li>
+  <li>Email questions or requests about your data to
+    <a href="mailto:will+support@phext.io">will+support@phext.io</a>.</li>
 </ul>
 
 <h2>Changes</h2>
 <p>If this policy changes, the new version will be posted on this page with a new effective date.</p>
 
 <footer>Phext Edit · <a href="about">About</a> ·
-<a href="https://github.com/wbic16/phext-lattice/issues">Contact</a></footer>
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
 </main>
 </body>
 </html>
