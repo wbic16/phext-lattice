@@ -642,8 +642,13 @@ const GATE_OPEN: &str = "data-open=\"1\" style=\"display:flex;";
 const GATE_SHUT: &str = "data-open=\"0\" style=\"display:none;";
 
 /// Signed-out visitors on a locked server get the intro. A signed-in editor,
-/// and a server with no auth configured, get the editor shell directly.
+/// a server with no auth configured, and `--local` get the editor shell.
+/// `--local` stays loopback-only: it skips the intro, and `/about`, `/privacy`,
+/// and `/api/demo` stay on their public paths.
 fn show_signed_out_gate(gate: &Gate, headers: &HashMap<String, String>) -> bool {
+    if gate.is_local() {
+        return false;
+    }
     gate.locked() && !editor_signed_in(gate, headers)
 }
 
@@ -1653,7 +1658,7 @@ fn ensure_local_data_dir(dir: &std::path::Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+mod local_mode_tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
@@ -1685,6 +1690,7 @@ mod tests {
             gate.enable_local();
         }
         let gate = Arc::new(gate);
+        let demo = DemoCatalog::load();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server_gate = Arc::clone(&gate);
@@ -1693,7 +1699,7 @@ mod tests {
                 let Ok(mut stream) = incoming else { break };
                 let state = Arc::clone(&state);
                 let gate = Arc::clone(&server_gate);
-                handle_request(&mut stream, &state, &gate, &DemoCatalog::load());
+                handle_request(&mut stream, &state, &gate, &demo);
             }
         });
         (port, dir, gate)
@@ -1731,6 +1737,21 @@ mod tests {
         assert_eq!(code, 200, "{body}");
         assert!(body.contains("\"signed_in\":false"));
         assert!(!body.contains("local:developer"));
+        let (code, body) = http(port, "GET", "/", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("data-open=\"1\""), "signed-out intro stays up without --local");
+        assert!(body.contains("Try the demo"));
+        let (code, body) = http(port, "GET", "/?demo", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("const wantDemo"));
+        let (code, body) = http(port, "GET", "/api/demo/nav", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("Welcome to the sample phext"));
+        assert!(!body.contains("local note"));
+        let (code, _) = http(port, "GET", "/about", "");
+        assert_eq!(code, 200);
+        let (code, _) = http(port, "GET", "/privacy", "");
+        assert_eq!(code, 200);
     }
 
     #[test]
@@ -1749,6 +1770,20 @@ mod tests {
         assert_eq!(code, 403);
         let (code, _) = http(port, "GET", "/api/status", "Host: edit.phext.io\r\n");
         assert_eq!(code, 403);
+        let (code, body) = http(port, "GET", "/", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("data-open=\"0\""), "--local opens the editor");
+        assert!(!body.contains("data-open=\"1\""));
+        let (code, body) = http(port, "GET", "/?demo", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("const wantDemo"));
+        let (code, body) = http(port, "GET", "/api/demo/nav", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("Welcome to the sample phext"));
+        let (code, _) = http(port, "GET", "/about", "");
+        assert_eq!(code, 200);
+        let (code, _) = http(port, "GET", "/privacy", "");
+        assert_eq!(code, 200);
     }
 
     #[test]
@@ -4799,6 +4834,15 @@ mod demo_tests {
         let gate = Gate::new(None, Oauth::closed(), Editors::default());
         let page = index_page(&gate, &HashMap::new());
         assert!(page.contains(GATE_SHUT));
+    }
+
+    #[test]
+    fn local_mode_skips_the_intro_even_when_the_server_is_locked() {
+        let gate = locked_gate();
+        gate.enable_local();
+        let page = index_page(&gate, &HashMap::new());
+        assert!(page.contains(GATE_SHUT));
+        assert!(!page.contains(GATE_OPEN));
     }
 
     #[test]
