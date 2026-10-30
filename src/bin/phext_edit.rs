@@ -37,6 +37,8 @@ struct ApiPosition {
     dimension_index: u8,
     has_scroll: bool,
     total_scrolls: usize,
+    /// Open phext. The file switcher matches this against `/api/phexts`.
+    file: String,
 }
 
 #[derive(Serialize)]
@@ -170,6 +172,7 @@ impl AppState {
             dimension_index: self.nav.active_dimension() as u8,
             has_scroll: self.lattice.has_scroll(&pos),
             total_scrolls: self.overview.total_scrolls,
+            file: self.file_path.clone(),
         }
     }
 
@@ -913,6 +916,30 @@ mod local_mode_tests {
         (code, String::from_utf8_lossy(&raw).into_owned())
     }
 
+    /// `POST` the way the file switcher does: the phext path is the `text/plain` body.
+    /// `headers` is extra header lines, each already ending in `\r\n`.
+    fn http_with_body(port: u16, method: &str, path: &str, headers: &str, body: &str) -> (u16, String) {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        stream.set_write_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let req = format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n{headers}Content-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut status = String::new();
+        reader.read_line(&mut status).unwrap();
+        let code: u16 = status.split_whitespace().nth(1).unwrap().parse().unwrap();
+        let mut raw = Vec::new();
+        reader.read_to_end(&mut raw).unwrap();
+        (code, String::from_utf8_lossy(&raw).into_owned())
+    }
+
+    fn response_body(raw: &str) -> &str {
+        raw.split_once("\r\n\r\n").map(|(_, body)| body).unwrap_or(raw)
+    }
+
     #[test]
     fn protected_routes_require_auth_without_local() {
         let (port, _dir) = serve(false);
@@ -1024,6 +1051,71 @@ mod local_mode_tests {
         assert!(sitemap.contains("https://edit.phext.io/terms"));
         let (code, nav) = http(port, "GET", "/api/nav", "");
         assert_eq!(code, 200, "{nav}");
+    }
+
+    fn open_phext(port: u16, path: &std::path::Path, headers: &str) -> (u16, String) {
+        http_with_body(port, "POST", "/api/open", headers, &path.to_string_lossy())
+    }
+
+    /// The editor switches files with `POST /api/open` (path as text) and then
+    /// reads `GET /api/nav`. Both the open file and the scroll must change.
+    fn assert_switch_changes_scroll(port: u16, dir: &std::path::Path, headers: &str) {
+        let note = dir.join("note.phext");
+        let other = dir.join("other.phext");
+        std::fs::write(&other, b"other scroll\n").unwrap();
+
+        let (code, status) = http(port, "GET", "/api/status", headers);
+        assert_eq!(code, 200, "{status}");
+        let status_body = response_body(&status);
+        assert!(status_body.contains("note.phext"), "{status_body}");
+        let (code, nav) = http(port, "GET", "/api/nav", headers);
+        assert_eq!(code, 200, "{nav}");
+        let nav_body = response_body(&nav);
+        assert!(nav_body.contains("local note"), "{nav_body}");
+        assert!(nav_body.contains(&note.to_string_lossy().to_string()), "{nav_body}");
+
+        let (code, opened) = open_phext(port, &other, headers);
+        assert_eq!(code, 200, "{opened}");
+        assert!(response_body(&opened).contains("\"ok\":true"), "{opened}");
+        assert!(response_body(&opened).contains("other.phext"), "{opened}");
+
+        let (code, status) = http(port, "GET", "/api/status", headers);
+        assert_eq!(code, 200, "{status}");
+        let status_body = response_body(&status);
+        assert!(status_body.contains("other.phext"), "{status_body}");
+        assert!(!status_body.contains("note.phext"), "{status_body}");
+        let (code, nav) = http(port, "GET", "/api/nav", headers);
+        assert_eq!(code, 200, "{nav}");
+        let nav_body = response_body(&nav);
+        assert!(nav_body.contains("other scroll"), "{nav_body}");
+        assert!(!nav_body.contains("local note"), "{nav_body}");
+        assert!(nav_body.contains(&other.to_string_lossy().to_string()), "{nav_body}");
+
+        let (code, opened) = open_phext(port, &note, headers);
+        assert_eq!(code, 200, "{opened}");
+        let (code, nav) = http(port, "GET", "/api/nav", headers);
+        assert_eq!(code, 200, "{nav}");
+        assert!(response_body(&nav).contains("local note"), "{nav}");
+    }
+
+    #[test]
+    fn switching_phexts_changes_nav_in_local_and_token_mode() {
+        assert!(INDEX_HTML.contains("p.file"));
+        assert!(INDEX_HTML.contains("await initApp();"));
+        assert!(INDEX_HTML.contains("lastNav.position?.file"));
+
+        let (port, dir) = serve(true);
+        assert_switch_changes_scroll(port, dir.path(), "");
+
+        let (port, dir) = serve(false);
+        let other = dir.path().join("other.phext");
+        std::fs::write(&other, b"other scroll\n").unwrap();
+        let (code, denied) = open_phext(port, &other, "");
+        assert_eq!(code, 401, "{denied}");
+        let (code, status) = http(port, "GET", "/api/status", "Authorization: Bearer test-token\r\n");
+        assert_eq!(code, 200, "{status}");
+        assert!(response_body(&status).contains("note.phext"), "{status}");
+        assert_switch_changes_scroll(port, dir.path(), "Authorization: Bearer test-token\r\n");
     }
 }
 
@@ -1682,6 +1774,13 @@ body {
 #search-results .hit:hover { background: #ffffff10; }
 #search-results .hit .hit-coord { color: var(--coord); min-width: 160px; }
 #search-results .hit .hit-ctx { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#phext-list .hit {
+  padding: 4px 8px; cursor: pointer; border-radius: 3px; display: flex; gap: 10px;
+}
+#phext-list .hit:hover { background: #ffffff10; }
+#phext-list .hit .hit-coord { color: var(--coord); min-width: 160px; }
+#phext-list .hit .hit-ctx { color: var(--dim); }
+#phext-list .hit.current { background: #ffffff10; }
 .auth-btn { display:block; background:var(--panel); border:1px solid var(--border); color:var(--text);
   font-family:inherit; font-size:14px; padding:10px 14px; border-radius:6px; text-decoration:none; cursor:pointer; }
 .auth-btn:hover { border-color:var(--coord); }
@@ -1829,6 +1928,7 @@ function render(nav, skipHash) {
   $('coord-text').textContent = `💎 ${p.coordinate} ◆ ${p.dimension} ${indicator}`;
   $('scroll-count').textContent = `[${p.total_scrolls} scrolls]`;
   $('dirty-flag').textContent = dirty ? '● unsaved' : '';
+  if (p.file) $('active-file').textContent = '📂 ' + p.file.split('/').pop();
 
   if (!skipHash) {
     suppressHashChange = true;
@@ -2201,7 +2301,7 @@ async function openPhextPicker() {
     for (const f of files) {
       const kb = (f.bytes / 1024).toFixed(1);
       const isCurrent = lastNav && f.path === lastNav.position?.file;
-      html += `<div class="hit" onclick="switchPhext('${escAttr(f.path)}')">
+      html += `<div class="hit${isCurrent ? ' current' : ''}" onclick="switchPhext('${escAttr(f.path)}')">
         <span class="hit-coord">${escHtml(f.name)}</span>
         <span class="hit-ctx">${kb} KB</span></div>`;
     }
@@ -2220,6 +2320,7 @@ async function switchPhext(path) {
       const nav = await api('GET', '/api/nav');
       render(nav);
       if (activePanel === 'navtree') loadTree();
+      await initApp();
       showMsg('📂 ' + res.message);
     } else { showMsg(res.message); }
   } catch(e) { showMsg('failed to open'); }
