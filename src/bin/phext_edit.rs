@@ -5,6 +5,7 @@
 ///
 /// Usage: phext-edit <file.phext> [--port 8080]
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -162,84 +163,8 @@ impl AppState {
         self.overview = LatticeOverview::build(&buf, self.lattice.index());
     }
 
-    fn position_json(&self) -> ApiPosition {
-        let pos = self.nav.position();
-        ApiPosition {
-            coordinate: format!("{}", pos),
-            dimension: self.nav.active_dimension().name().to_string(),
-            dimension_index: self.nav.active_dimension() as u8,
-            has_scroll: self.lattice.has_scroll(&pos),
-            total_scrolls: self.overview.total_scrolls,
-        }
-    }
-
-    fn scroll_json(&self) -> ApiScroll {
-        let pos = self.nav.position();
-        let content = self.lattice.read_scroll(&pos).unwrap_or_default();
-        let bytes = content.len();
-        ApiScroll { coordinate: format!("{}", pos), content, bytes }
-    }
-
-    fn sentron_json(&self) -> ApiSentron {
-        let sentron = Sentron::build(&self.nav.position(), self.lattice.index());
-        let pos = self.nav.position();
-        let mut axons = Vec::new();
-
-        for axon in sentron.structural_axons() {
-            axons.push(ApiAxon {
-                dimension: axon.dimension as u8,
-                name: axon.dimension.name().to_string(),
-                group: "spatial".into(),
-                value: pos.dimension_value(axon.dimension),
-                backward: axon.backward_count,
-                forward: axon.forward_count,
-            });
-        }
-        for axon in sentron.sequential_axons() {
-            axons.push(ApiAxon {
-                dimension: axon.dimension as u8,
-                name: axon.dimension.name().to_string(),
-                group: "temporal".into(),
-                value: pos.dimension_value(axon.dimension),
-                backward: axon.backward_count,
-                forward: axon.forward_count,
-            });
-        }
-        axons.push(ApiAxon {
-            dimension: 9, name: "Scroll".into(), group: "neuron".into(),
-            value: pos.dimension_value(Dimension::Scroll), backward: 0, forward: 0,
-        });
-
-        ApiSentron {
-            center: format!("{}", sentron.center),
-            size: sentron.size(),
-            structural_reach: sentron.structural_reach,
-            sequential_reach: sentron.sequential_reach,
-            axons,
-        }
-    }
-
-    fn densities_json(&self) -> Vec<ApiDensity> {
-        (1..=9u8).map(|i| {
-            let dim = Dimension::from_index(i).unwrap();
-            let d = DimensionDensity::build(dim, self.lattice.index());
-            ApiDensity {
-                dimension: i,
-                name: dim.name().to_string(),
-                extent: d.distribution.len(),
-                populated: d.total,
-                sparkline: d.sparkline(20),
-            }
-        }).collect()
-    }
-
     fn nav_json(&self) -> ApiNav {
-        ApiNav {
-            position: self.position_json(),
-            sentron: self.sentron_json(),
-            scroll: self.scroll_json(),
-            densities: self.densities_json(),
-        }
+        nav_view(&self.lattice, &self.nav, self.overview.total_scrolls)
     }
 
     fn list_phexts(&self) -> Vec<PhextFile> {
@@ -320,12 +245,7 @@ impl AppState {
     }
 
     fn tree_json(&self) -> ApiTree {
-        let mut coords = self.lattice.populated_coordinates();
-        coords.sort();
-        ApiTree {
-            total_scrolls: coords.len(),
-            coordinates: coords.iter().map(|c| format!("{}", c)).collect(),
-        }
+        tree_view(&self.lattice)
     }
 
     fn zoom_z(&self) -> ApiZoom {
@@ -391,6 +311,345 @@ impl AppState {
 }
 
 // ── HTTP Server ────────────────────────────────────────────────────────
+
+/// The same nav payload the signed-in editor renders, for any lattice.
+fn nav_view(lattice: &MappedLattice, nav: &Navigator, total_scrolls: usize) -> ApiNav {
+    let pos = nav.position();
+    let content = lattice.read_scroll(&pos).unwrap_or_default();
+    let bytes = content.len();
+    let sentron = Sentron::build(&pos, lattice.index());
+    let mut axons = Vec::new();
+    for axon in sentron.structural_axons() {
+        axons.push(ApiAxon {
+            dimension: axon.dimension as u8,
+            name: axon.dimension.name().to_string(),
+            group: "spatial".into(),
+            value: pos.dimension_value(axon.dimension),
+            backward: axon.backward_count,
+            forward: axon.forward_count,
+        });
+    }
+    for axon in sentron.sequential_axons() {
+        axons.push(ApiAxon {
+            dimension: axon.dimension as u8,
+            name: axon.dimension.name().to_string(),
+            group: "temporal".into(),
+            value: pos.dimension_value(axon.dimension),
+            backward: axon.backward_count,
+            forward: axon.forward_count,
+        });
+    }
+    axons.push(ApiAxon {
+        dimension: 9,
+        name: "Scroll".into(),
+        group: "neuron".into(),
+        value: pos.dimension_value(Dimension::Scroll),
+        backward: 0,
+        forward: 0,
+    });
+    ApiNav {
+        position: ApiPosition {
+            coordinate: format!("{}", pos),
+            dimension: nav.active_dimension().name().to_string(),
+            dimension_index: nav.active_dimension() as u8,
+            has_scroll: lattice.has_scroll(&pos),
+            total_scrolls,
+        },
+        sentron: ApiSentron {
+            center: format!("{}", sentron.center),
+            size: sentron.size(),
+            structural_reach: sentron.structural_reach,
+            sequential_reach: sentron.sequential_reach,
+            axons,
+        },
+        scroll: ApiScroll { coordinate: format!("{}", pos), content, bytes },
+        densities: (1..=9u8).map(|i| {
+            let dim = Dimension::from_index(i).unwrap();
+            let d = DimensionDensity::build(dim, lattice.index());
+            ApiDensity {
+                dimension: i,
+                name: dim.name().to_string(),
+                extent: d.distribution.len(),
+                populated: d.total,
+                sparkline: d.sparkline(20),
+            }
+        }).collect(),
+    }
+}
+
+fn tree_view(lattice: &MappedLattice) -> ApiTree {
+    let mut coords = lattice.populated_coordinates();
+    coords.sort();
+    ApiTree {
+        total_scrolls: coords.len(),
+        coordinates: coords.iter().map(|c| format!("{}", c)).collect(),
+    }
+}
+
+// ── Public demo ────────────────────────────────────────────────────────
+// A small original phext, held in memory and never written back. Navigation
+// is computed per request so visitors do not share a cursor or touch the
+// files the signed-in editor serves.
+
+const DEMO_SCROLLS: &[(&str, &str)] = &[
+    ("1.1.1/1.1.1/1.1.1", "Welcome to the sample phext.\n\nYou are at 1.1.1/1.1.1/1.1.1, the origin scroll. A phext is one plain-text file. Nine numbers name a scroll: library, shelf, series, collection, volume, book, chapter, section, scroll. The scroll itself is a page of lines and columns. That is eleven dimensions, and the file is still just text.\n\nPress j to step to the next scroll that has words. Press k to step back. Keys 1 through 9 pick a dimension (1 is Scroll, 9 is Library); h and l move along it.\n\nNothing you change here is saved. Sign in to edit your own files."),
+    ("1.1.1/1.1.1/1.1.2", "Scroll, dimension 1, and the page.\n\nThis is the next scroll in the same section. A scroll is one page. Lines run down it and characters run across it: those two directions are the tenth and eleventh dimensions. Press 1, then l, to move by scroll. Press t and open the Nav tab to see this page under its address."),
+    ("1.1.1/1.1.1/1.2.1", "Section, dimension 2.\n\nA section holds scrolls. This one sits beside the welcome section, not after it. Press 2, then l or h, to move by section. Moving along a higher dimension resets the numbers inside it, the same way a delimiter does, so the scroll goes back to 1."),
+    ("1.1.1/1.1.1/2.1.1", "Chapter, dimension 3.\n\nChapters group sections. This scroll is chapter 2, section 1, scroll 1 of the same book. Press 3 to select Chapter, then l to step forward. The left panel shows how many neighbors each dimension has from here."),
+    ("1.1.1/1.1.2/1.1.1", "Book, dimension 4.\n\nA book gathers chapters. This is book 2 of volume 1. Its only page is this note. The address reads 1.1.1/1.1.2/1.1.1: the middle group is collection, volume, book."),
+    ("1.1.1/1.2.1/1.1.1", "Volume, dimension 5.\n\nVolumes stack books. This is volume 2 of collection 1. Press t for the tree. 11D is the whole file, 7D is one library-shelf-series group, and 4D is the scrolls inside one book."),
+    ("1.1.1/2.1.1/1.1.1", "Collection, dimension 6.\n\nA collection holds volumes. This is collection 2, still in series 1 of shelf 1. The coordinate bar at the top is the full address. Click a dimension name on the left to select it."),
+    ("1.1.2/1.1.1/1.1.1", "Series, dimension 7.\n\nSeries is the third number of the outer group. This scroll lives in series 2, on shelf 1 of library 1, so the address starts 1.1.2. Press 7, then h, to walk back to series 1."),
+    ("1.2.1/1.1.1/1.1.1", "Shelf, dimension 8.\n\nShelves hold series. You are on shelf 2 of library 1. The coordinate bar should start with 1.2.1. One file can hold many shelves; they are just another number in the address."),
+    ("2.1.1/1.1.1/1.1.1", "Library, dimension 9.\n\nLibraries are the outermost dimension. This is library 2, a second building in the same file. Press 9 and the left panel marks Library. j and k still walk every scroll that has text, in file order, ignoring the empty space between them."),
+    ("2.1.1/1.1.1/1.1.2", "Your own files.\n\nThis sample is read-only. Edits stay in this browser tab and are thrown away when you leave. Signing in with Google or GitHub opens the real editor: you can change scrolls and save them into the phext files on the server. There is no private format and no lock-in. A phext is plain text, and you can take the file with you.\n\nFollow 1.1.1/1.1.1/1.1.1 to return to the welcome scroll."),
+];
+
+struct DemoCatalog {
+    lattice: MappedLattice,
+    scrolls: usize,
+    bytes: usize,
+}
+
+impl DemoCatalog {
+    fn load() -> Self {
+        let raw = demo_bytes();
+        let bytes = raw.len();
+        let lattice = MappedLattice::from_bytes(&raw);
+        let scrolls = lattice.index().scroll_count();
+        Self { lattice, scrolls, bytes }
+    }
+
+    /// Apply one navigation step without keeping the cursor. `at` is where the
+    /// visitor is now; `to` is a coordinate (goto) or a dimension number (dim).
+    fn navigate(&self, at: &str, dim: u8, op: &str, to: &str) -> ApiNav {
+        let origin = libphext::phext::default_coordinate();
+        let mut nav = Navigator::at(parse_coordinate(at).unwrap_or(origin));
+        if (1..=9).contains(&dim) {
+            nav.select_dimension(dim);
+        }
+        match op {
+            "dim" => {
+                if let Ok(next) = to.trim().parse::<u8>() {
+                    nav.select_dimension(next);
+                }
+            }
+            "forward" => { nav.move_forward(); }
+            "backward" => { nav.move_backward(); }
+            "next" => { nav.next_populated(self.lattice.index()); }
+            "prev" => { nav.prev_populated(self.lattice.index()); }
+            "goto" => {
+                if let Some(coord) = parse_coordinate(to.trim()) {
+                    nav.goto(coord);
+                }
+            }
+            "home" => {
+                nav.goto(origin);
+                if !self.lattice.has_scroll(&origin) {
+                    nav.next_populated(self.lattice.index());
+                }
+                nav.select_dimension(1);
+            }
+            "base" => { nav.goto(origin); }
+            _ => {}
+        }
+        nav_view(&self.lattice, &nav, self.scrolls)
+    }
+
+    fn tree(&self) -> ApiTree {
+        tree_view(&self.lattice)
+    }
+
+    fn status(&self) -> ApiStatus {
+        ApiStatus {
+            scrolls: self.scrolls,
+            bytes: self.bytes,
+            file: "demo.phext".into(),
+            dirty: false,
+        }
+    }
+
+    fn search(&self, query: &str) -> Vec<ApiSearchHit> {
+        let query: String = query.trim().chars().take(80).collect();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let buf = self.lattice.to_phext_bytes();
+        phext_lattice::search_lattice_auto(&buf, self.lattice.index(), &query, false, 50)
+            .into_iter()
+            .map(|hit| ApiSearchHit {
+                coordinate: format!("{}", hit.coordinate),
+                context: hit.context,
+                offset: hit.offset,
+            })
+            .collect()
+    }
+}
+
+fn demo_bytes() -> Vec<u8> {
+    use libphext::phext::{
+        BOOK_BREAK, CHAPTER_BREAK, COLLECTION_BREAK, LIBRARY_BREAK, SCROLL_BREAK,
+        SECTION_BREAK, SERIES_BREAK, SHELF_BREAK, VOLUME_BREAK, default_coordinate,
+    };
+    let mut scrolls: Vec<_> = DEMO_SCROLLS
+        .iter()
+        .filter_map(|(coord, text)| parse_coordinate(coord).map(|c| (c, *text)))
+        .collect();
+    scrolls.sort_by_key(|(coord, _)| *coord);
+    let mut output = Vec::new();
+    let mut current = default_coordinate();
+    for (coord, text) in scrolls {
+        while current.z.library < coord.z.library {
+            output.push(LIBRARY_BREAK as u8);
+            current.library_break();
+        }
+        while current.z.shelf < coord.z.shelf {
+            output.push(SHELF_BREAK as u8);
+            current.shelf_break();
+        }
+        while current.z.series < coord.z.series {
+            output.push(SERIES_BREAK as u8);
+            current.series_break();
+        }
+        while current.y.collection < coord.y.collection {
+            output.push(COLLECTION_BREAK as u8);
+            current.collection_break();
+        }
+        while current.y.volume < coord.y.volume {
+            output.push(VOLUME_BREAK as u8);
+            current.volume_break();
+        }
+        while current.y.book < coord.y.book {
+            output.push(BOOK_BREAK as u8);
+            current.book_break();
+        }
+        while current.x.chapter < coord.x.chapter {
+            output.push(CHAPTER_BREAK as u8);
+            current.chapter_break();
+        }
+        while current.x.section < coord.x.section {
+            output.push(SECTION_BREAK as u8);
+            current.section_break();
+        }
+        while current.x.scroll < coord.x.scroll {
+            output.push(SCROLL_BREAK as u8);
+            current.scroll_break();
+        }
+        output.extend_from_slice(text.as_bytes());
+        current = coord;
+    }
+    output
+}
+
+fn serve_demo(
+    stream: &mut std::net::TcpStream,
+    method: &str,
+    path: &str,
+    headers: &HashMap<String, String>,
+    demo: &DemoCatalog,
+) {
+    if method != "GET" && method != "HEAD" {
+        send_response(stream, 405, "text/plain; charset=utf-8", b"demo is read-only", CacheClass::NoStore, headers, false);
+        return;
+    }
+    let (route, query) = path.split_once('?').unwrap_or((path, ""));
+    let q = query_pairs(query);
+    let body = match route {
+        "/api/demo/nav" => {
+            let dim = q.get("dim").and_then(|d| d.parse().ok()).unwrap_or(1);
+            let nav = demo.navigate(
+                q.get("at").map(String::as_str).unwrap_or(""),
+                dim,
+                q.get("op").map(String::as_str).unwrap_or("stay"),
+                q.get("to").map(String::as_str).unwrap_or(""),
+            );
+            serde_json::to_string(&nav).unwrap_or_else(|_| "{}".into())
+        }
+        "/api/demo/tree" => serde_json::to_string(&demo.tree()).unwrap_or_else(|_| "{}".into()),
+        "/api/demo/status" => serde_json::to_string(&demo.status()).unwrap_or_else(|_| "{}".into()),
+        "/api/demo/search" => {
+            let hits = demo.search(q.get("q").map(String::as_str).unwrap_or(""));
+            serde_json::to_string(&hits).unwrap_or_else(|_| "[]".into())
+        }
+        _ => {
+            send_response(stream, 404, "text/plain; charset=utf-8", b"not found", CacheClass::NoStore, headers, false);
+            return;
+        }
+    };
+    send_response(
+        stream,
+        200,
+        "application/json",
+        body.as_bytes(),
+        CacheClass::NoStore,
+        headers,
+        method == "HEAD",
+    );
+}
+
+fn query_pairs(query: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    if query.len() > 2048 {
+        return out;
+    }
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        out.insert(percent_decode(key), percent_decode(value));
+    }
+    out
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn editor_signed_in(gate: &Gate, headers: &HashMap<String, String>) -> bool {
+    let cookie = headers.get("cookie").map(String::as_str).unwrap_or("");
+    match gate.oauth().read_session(cookie) {
+        Some(session) => gate.editors().allows(&session.who, &session.email),
+        None => false,
+    }
+}
+
+const GATE_OPEN: &str = "data-open=\"1\" style=\"display:flex;";
+const GATE_SHUT: &str = "data-open=\"0\" style=\"display:none;";
+
+/// Signed-out visitors on a locked server get the intro. A signed-in editor,
+/// and a server with no auth configured, get the editor shell directly.
+fn show_signed_out_gate(gate: &Gate, headers: &HashMap<String, String>) -> bool {
+    gate.locked() && !editor_signed_in(gate, headers)
+}
+
+fn index_page(gate: &Gate, headers: &HashMap<String, String>) -> Cow<'static, str> {
+    if show_signed_out_gate(gate, headers) {
+        Cow::Borrowed(INDEX_HTML)
+    } else {
+        Cow::Owned(INDEX_HTML.replacen(GATE_OPEN, GATE_SHUT, 1))
+    }
+}
 
 fn parse_request(reader: &mut BufReader<std::net::TcpStream>) -> Option<(String, String, HashMap<String, String>)> {
     let mut request_line = String::new();
@@ -482,8 +741,12 @@ fn response_bytes(
     if status == 200 {
         if let Some(ref tag) = etag {
             if if_none_match(req_headers, tag) {
+                let vary = match class {
+                    CacheClass::Shell => "Vary: Cookie\r\n",
+                    CacheClass::NoStore | CacheClass::Static => "",
+                };
                 let head = format!(
-                    "HTTP/1.1 304 Not Modified\r\nETag: {tag}\r\nCache-Control: {}\r\nContent-Length: 0\r\nConnection: close\r\n{}\r\n",
+                    "HTTP/1.1 304 Not Modified\r\nETag: {tag}\r\nCache-Control: {}\r\nContent-Length: 0\r\n{vary}Connection: close\r\n{}\r\n",
                     cache_control(class),
                     security_header_block(https)
                 );
@@ -492,8 +755,14 @@ fn response_bytes(
         }
     }
     let etag_line = etag.map(|tag| format!("ETag: {tag}\r\n")).unwrap_or_default();
+    // The shell HTML depends on the session cookie (intro vs editor). Shared
+    // caches must not mix those two bodies.
+    let vary = match class {
+        CacheClass::Shell => "Vary: Cookie\r\n",
+        CacheClass::NoStore | CacheClass::Static => "",
+    };
     let mut out = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: {}\r\n{etag_line}Connection: close\r\n{}\r\n",
+        "HTTP/1.1 {} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: {}\r\n{etag_line}{vary}Connection: close\r\n{}\r\n",
         status,
         status_text(status),
         body.len(),
@@ -555,6 +824,8 @@ fn is_editor_shell(path: &str) -> bool {
 }
 
 /// File, search, and sign-in routes. These stay behind the gate and answer JSON.
+/// `/api/demo` is an API path so it is not turned into an HTML 404, and it is
+/// served before `admit` so a signed-out visitor can read the sample.
 fn is_api_path(path: &str) -> bool {
     let route = path_route(path);
     route == "/api" || route.starts_with("/api/")
@@ -562,7 +833,12 @@ fn is_api_path(path: &str) -> bool {
 
 const API_NOT_FOUND: &[u8] = br#"{"ok":false,"error":"not found"}"#;
 
-fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>, gate: &Gate) {
+fn handle_request(
+    stream: &mut std::net::TcpStream,
+    state: &Arc<Mutex<AppState>>,
+    gate: &Gate,
+    demo: &DemoCatalog,
+) {
     let cloned = match stream.try_clone() { Ok(s) => s, Err(_) => return };
     let mut reader = BufReader::new(cloned);
     let (method, path, headers) = match parse_request(&mut reader) { Some(v) => v, None => return };
@@ -607,9 +883,29 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
         return;
     }
 
-    // Sign-in endpoints, then auth check (token or session) — GET / stays open
+    // Sign-in endpoints, then the public shell and the read-only demo.
+    // Demo routes are answered here, before admit(), so a signed-out visitor
+    // never receives a 401 and the real phext files are not in reach.
     if let Some(reply) = gate.route(&method, &path, &headers) {
         reply.write_to(stream);
+        return;
+    }
+    let route = path.split('?').next().unwrap_or(path.as_str());
+    if (method == "GET" || method == "HEAD") && (route == "/" || route == "/index.html") {
+        let page = index_page(gate, &headers);
+        send_response(
+            stream,
+            200,
+            HTML,
+            page.as_bytes(),
+            CacheClass::Shell,
+            &headers,
+            method == "HEAD",
+        );
+        return;
+    }
+    if route.starts_with("/api/demo") {
+        serve_demo(stream, &method, &path, &headers, demo);
         return;
     }
     if let Err(reply) = gate.admit(&method, &path, &headers) {
@@ -620,13 +916,6 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
     let mut state = state.lock().unwrap();
 
     match (method.as_str(), path.as_str()) {
-        ("GET", "/") | ("GET", "/index.html") => {
-            send_response(stream, 200, HTML, INDEX_HTML.as_bytes(), CacheClass::Shell, &headers, false);
-        }
-        ("HEAD", "/") | ("HEAD", "/index.html") => {
-            send_response(stream, 200, HTML, INDEX_HTML.as_bytes(), CacheClass::Shell, &headers, true);
-        }
-
         // ── Phext file management ──
         ("GET", "/api/phexts") => {
             json_response(stream, &headers, &state.list_phexts());
@@ -855,6 +1144,7 @@ fn main() {
 
     let state = Arc::new(Mutex::new(app_state));
     let gate = Arc::new(Gate::from_env(token));
+    let demo = Arc::new(DemoCatalog::load());
     let listener = TcpListener::bind(format!("{}:{}", host, port)).unwrap_or_else(|e| {
         eprintln!("Failed to bind {}:{}: {}", host, port, e);
         std::process::exit(1);
@@ -871,6 +1161,7 @@ fn main() {
     for line in gate.describe() {
         println!("   {}", line);
     }
+    println!("   demo: {} scrolls, read-only, http://localhost:{}/?demo", demo.scrolls, port);
     println!("   Open in browser: http://localhost:{}", port);
 
     for stream in listener.incoming() {
@@ -878,7 +1169,8 @@ fn main() {
             Ok(mut stream) => {
                 let state = Arc::clone(&state);
                 let gate = Arc::clone(&gate);
-                std::thread::spawn(move || { handle_request(&mut stream, &state, &gate); });
+                let demo = Arc::clone(&demo);
+                std::thread::spawn(move || { handle_request(&mut stream, &state, &gate, &demo); });
             }
             Err(e) => eprintln!("connection error: {}", e),
         }
@@ -1182,6 +1474,14 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
 <meta name="twitter:title" content="Phext Edit: an editor for 11-dimensional plain text">
 <meta name="twitter:description" content="Browse and edit phext files in the browser. Phext is plain text arranged in 11 dimensions, and the files stay plain text, with no lock-in.">
 <meta name="twitter:image" content="https://edit.phext.io/og.png">
+<script>
+(function () {
+  try {
+    if (localStorage.getItem('phext-token') && !new URLSearchParams(location.search).has('demo'))
+      document.documentElement.classList.add('editor-ready');
+  } catch (e) {}
+})();
+</script>
 <style>
 :root {
   --bg: #171717; --panel: #131313; --bar: #1c1c1c; --border: #2e2e2e;
@@ -1375,9 +1675,35 @@ body {
 .auth-btn { display:block; background:var(--panel); border:1px solid var(--border); color:var(--text);
   font-family:inherit; font-size:14px; padding:10px 14px; border-radius:6px; text-decoration:none; cursor:pointer; }
 .auth-btn:hover { border-color:var(--coord); }
+.auth-btn.primary { background:var(--coord); color:#1a1408; border-color:var(--coord); font-weight:600; margin-bottom:8px; }
+html.editor-ready #auth-screen { display:none !important; }
+.welcome { max-width:460px; margin:64px 16px; text-align:center; }
+.welcome h1 { color:var(--coord); font-size:26px; font-weight:600; margin-bottom:10px; }
+.welcome .lead { font-size:16px; line-height:1.4; margin-bottom:18px; }
+.welcome .explain, .welcome .hint { color:var(--dim); font-size:13px; line-height:1.55; margin-top:16px; }
+.welcome .links { margin-top:14px; font-size:12px; }
+.welcome .links a { color:var(--coord); }
+#auth-providers { display:flex; flex-direction:column; gap:8px; }
+#token-box { margin-top:16px; color:var(--dim); font-size:12px; text-align:left; }
+#token-box summary { cursor:pointer; text-align:center; }
+#token-box p { margin-top:8px; line-height:1.5; }
+#demo-banner {
+  align-items:center; gap:14px; height:32px; padding:0 16px; flex-shrink:0;
+  background:#241e10; color:var(--coord); font-size:12px; border-bottom:1px solid var(--border);
+}
+#demo-banner a { color:var(--coord); }
 </style>
 </head>
 <body>
+
+<div id="demo-banner" style="display:none">
+  <span>Demo. Walk the 11 dimensions with j and k. Nothing is saved.</span>
+  <span id="demo-signin">
+    <a href="api/auth/google?next=%2F">Google</a>
+    <a href="api/auth/github?next=%2F">GitHub</a>
+  </span>
+  <a id="demo-leave" href="/" style="display:none">Your files</a>
+</div>
 
 <div id="coord-bar">
   <span id="coord-text">loading...</span>
@@ -1426,20 +1752,27 @@ body {
   <div style="color:var(--dim);font-size:11px;margin-bottom:6px">Select a phext file:</div>
   <div id="phext-list" style="max-height:400px;overflow-y:auto"></div>
 </div>
-<div id="auth-screen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:100;align-items:center;justify-content:center">
-  <div style="text-align:center;max-width:400px">
-    <div style="font-size:24px;margin-bottom:16px;color:var(--coord)">💎 phext-edit</div>
-    <div id="auth-prompt" style="color:var(--dim);margin-bottom:20px">Enter your access token to continue</div>
-    <div id="auth-providers" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
-    <input id="auth-input" type="password" placeholder="token" autocomplete="off"
-      style="width:100%;background:var(--panel);border:1px solid var(--border);color:var(--text);
-      font-family:inherit;font-size:14px;padding:10px 14px;border-radius:6px;outline:none;text-align:center" />
-    <div id="auth-error" style="color:var(--danger);margin-top:8px;font-size:12px"></div>
-    <div style="color:var(--dim);margin-top:28px;font-size:12px;line-height:1.6">
-      A web editor for phext: plain text arranged in 11 dimensions.<br>
-      Sign-in only checks who you are; nothing is shared or sold.<br>
-      <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a>
+<div id="auth-screen" data-open="1" style="display:flex;position:fixed;inset:0;overflow:auto;background:var(--bg);z-index:100;justify-content:center">
+  <div class="welcome">
+    <h1>Phext Edit</h1>
+    <p id="auth-prompt" class="lead">Write in 11 dimensions: plain text, no lock-in.</p>
+    <a id="try-demo" class="auth-btn primary" href="/?demo">Try the demo</a>
+    <div id="auth-providers">
+      <a class="auth-btn" data-provider="google" href="api/auth/google?next=%2F">Sign in with Google</a>
+      <a class="auth-btn" data-provider="github" href="api/auth/github?next=%2F">Sign in with GitHub</a>
     </div>
+    <details id="token-box">
+      <summary>use an access token</summary>
+      <input id="auth-input" type="password" placeholder="token" autocomplete="off"
+        style="width:100%;background:var(--panel);border:1px solid var(--border);color:var(--text);
+        font-family:inherit;font-size:14px;padding:10px 14px;border-radius:6px;outline:none;text-align:center" />
+      <p>For scripts and admin access. Press Enter to use it.</p>
+    </details>
+    <div id="auth-error" style="color:var(--danger);margin-top:8px;font-size:12px"></div>
+    <p class="explain">Nine numbers name a scroll: library, shelf, series, collection, volume, book, chapter, section, scroll. The scroll is a page of lines and columns, which makes eleven. The file stays plain text.</p>
+    <p class="hint">Sign in to save and edit your own files. The demo is a sample you can walk through; nothing in it is saved.</p>
+    <p class="links"><a href="about">About</a> · <a href="privacy">Privacy Policy</a> · <a href="terms">Terms of Service</a></p>
+    <noscript>JavaScript opens the demo. Sign in with the Google or GitHub links above works without it.</noscript>
   </div>
 </div>
 
@@ -1458,6 +1791,12 @@ let authToken = localStorage.getItem('phext-token') || '';
 let needsAuth = false;
 let csrf = '';
 let session = null;
+let demoMode = false;
+let demoAt = '1.1.1/1.1.1/1.1.1';
+let demoDim = 1;
+const demoEdits = new Map();
+const wantDemo = new URLSearchParams(location.search).has('demo');
+if (document.documentElement.classList.contains('editor-ready')) $('auth-screen').style.display = 'none';
 
 function showMsg(msg) {
   $('status-msg').textContent = msg;
@@ -1491,6 +1830,7 @@ function showPanel(name) {
 }
 
 async function api(method, path, body) {
+  if (demoMode) return demoApi(method, path, body);
   const opts = { method, headers: {} };
   if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
   if (csrf && method !== 'GET') opts.headers['x-csrf-token'] = csrf;
@@ -1513,6 +1853,11 @@ async function api(method, path, body) {
 let suppressHashChange = false;
 
 function render(nav, skipHash) {
+  if (demoMode && nav && nav.position && demoEdits.has(nav.position.coordinate)) {
+    nav.scroll.content = demoEdits.get(nav.position.coordinate);
+    nav.scroll.bytes = nav.scroll.content.length;
+    nav.position.has_scroll = nav.scroll.content.length > 0;
+  }
   lastNav = nav;
   const p = nav.position;
   const indicator = p.has_scroll ? '●' : '○';
@@ -1698,6 +2043,16 @@ function enterEdit() {
   $('edit-textarea').focus();
 }
 async function saveScroll() {
+  if (demoMode) {
+    const coord = lastNav.position.coordinate;
+    const content = $('edit-textarea').value;
+    demoEdits.set(coord, content);
+    if (lastNav.scroll) lastNav.scroll.content = content;
+    setMode('lattice');
+    render(lastNav, true);
+    showMsg('Kept in this tab only. Sign in to save your own files.');
+    return;
+  }
   const coord = lastNav.position.coordinate;
   const content = $('edit-textarea').value;
   const res = await api('POST', '/api/update', { coordinate: coord, content });
@@ -1711,6 +2066,10 @@ async function saveScroll() {
   } else { showMsg('save failed: ' + res.message); }
 }
 async function saveToDisk() {
+  if (demoMode) {
+    showMsg('Sign in to save your own files.');
+    return;
+  }
   const res = await api('POST', '/api/save');
   if (res.ok) { dirty = false; $('dirty-flag').textContent = ''; showMsg('💾 saved to disk'); }
   else { showMsg('disk save failed: ' + res.message); }
@@ -1756,6 +2115,7 @@ function linkifyCoordinates(html) {
 
 // ── Keyboard ──
 document.addEventListener('keydown', async (e) => {
+  if (!demoMode && $('auth-screen').style.display !== 'none') return;
   if ((e.ctrlKey || e.metaKey) && e.key === 's') {
     e.preventDefault();
     if (mode === 'edit') { await saveScroll(); await saveToDisk(); }
@@ -1806,6 +2166,7 @@ $('search-input').addEventListener('keydown', e => {
 
 window.addEventListener('hashchange', async () => {
   if (suppressHashChange) return;
+  if (!demoMode && $('auth-screen').style.display !== 'none') return;
   const hash = location.hash.replace(/^#/, '');
   if (hash && /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash))
     render(await api('POST', '/api/goto', hash), true);
@@ -1829,31 +2190,40 @@ async function loadSession() {
     so.style.display = 'none';
   }
 }
+function paintProviders() {
+  if (!session) return;
+  const known = session.providers || [];
+  document.querySelectorAll('#auth-providers [data-provider]').forEach(el => {
+    el.style.display = known.indexOf(el.getAttribute('data-provider')) >= 0 ? '' : 'none';
+  });
+  const box = $('token-box');
+  if (!box) return;
+  // The token is for scripts and admin. Sign-in stays the path on the page.
+  box.style.display = session.token ? '' : 'none';
+  if (session.token && !session.ready) box.open = true;
+}
 async function showAuthScreen(message, sessionFresh) {
   if (!sessionFresh) await loadSession();
   const s = session || {};
-  // Older servers have no /api/session: fall back to the token prompt.
   const tokenOk = !session || s.token;
-  let html = '';
   if (s.signed_in) {
-    html += `<div style="color:var(--text)">Signed in as ${escHtml(s.name || s.handle)} <span style="color:var(--dim)">(${escHtml(s.who)})</span></div>`;
-    html += `<button class="auth-btn" onclick="signOut()">Sign out</button>`;
+    $('auth-providers').innerHTML =
+      `<div style="color:var(--text)">Signed in as ${escHtml(s.name || s.handle)} <span style="color:var(--dim)">(${escHtml(s.who)})</span></div>` +
+      `<button class="auth-btn" onclick="signOut()">Sign out</button>`;
   } else {
-    const next = encodeURIComponent('/' + location.hash);
-    const label = { github: 'Sign in with GitHub', google: 'Sign in with Google' };
-    for (const p of (s.providers || []))
-      html += `<a class="auth-btn" href="api/auth/${p}?next=${next}">${label[p] || p}</a>`;
+    paintProviders();
   }
-  $('auth-providers').innerHTML = html;
   $('auth-prompt').textContent =
     s.signed_in && !s.editor ? 'This account is not on the editor list.'
-    : s.ready && tokenOk ? 'Sign in, or enter your access token'
-    : s.ready ? 'Sign in to continue'
-    : 'Enter your access token to continue';
-  $('auth-input').style.display = tokenOk ? '' : 'none';
+    : s.ready ? 'Sign in to continue.'
+    : 'Use an access token to continue.';
+  const box = $('token-box');
+  if (box) {
+    box.style.display = tokenOk ? '' : 'none';
+    if (!s.ready && tokenOk) box.open = true;
+  }
   $('auth-error').textContent = message || '';
   $('auth-screen').style.display = 'flex';
-  if (tokenOk) $('auth-input').focus();
 }
 async function signOut() {
   localStorage.removeItem('phext-token');
@@ -1923,24 +2293,100 @@ async function initApp() {
   } catch { /* auth will catch */ }
 }
 
-// Initial load
+const DEMO_OPS = {
+  '/api/dim': 'dim', '/api/forward': 'forward', '/api/backward': 'backward',
+  '/api/next': 'next', '/api/prev': 'prev', '/api/goto': 'goto',
+  '/api/home': 'home', '/api/base': 'base', '/api/nav': 'stay',
+};
+async function demoGet(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('demo unavailable');
+  return res.json();
+}
+async function demoApi(method, path, body) {
+  if (path === '/api/tree') return demoGet('/api/demo/tree');
+  if (path === '/api/status') return demoGet('/api/demo/status');
+  if (path === '/api/phexts') return [{ name: 'demo.phext', path: 'demo.phext', bytes: 0 }];
+  if (path === '/api/open') return { ok: true, message: 'opened demo.phext' };
+  if (path === '/api/update' || path === '/api/save')
+    return { ok: false, message: 'Sign in to save your own files.' };
+  if (path === '/api/search') {
+    const q = encodeURIComponent(body == null ? '' : String(body));
+    return demoGet('/api/demo/search?q=' + q);
+  }
+  const op = DEMO_OPS[path] || 'stay';
+  const to = (op === 'goto' || op === 'dim') && body != null ? String(body) : '';
+  const url = '/api/demo/nav?at=' + encodeURIComponent(demoAt)
+    + '&dim=' + encodeURIComponent(String(demoDim))
+    + '&op=' + op
+    + (to ? '&to=' + encodeURIComponent(to) : '');
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('demo unavailable');
+  const nav = await res.json();
+  if (nav.position) {
+    demoAt = nav.position.coordinate;
+    demoDim = nav.position.dimension_index;
+  }
+  return nav;
+}
+function coordHash() {
+  const hash = location.hash.replace(/^#/, '');
+  return /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash) ? hash : '';
+}
+async function startDemo() {
+  if (demoMode) return;
+  demoMode = true;
+  $('auth-screen').style.display = 'none';
+  $('demo-banner').style.display = 'flex';
+  if ((session && session.editor) || authToken) {
+    const sign = $('demo-signin');
+    if (sign) sign.style.display = 'none';
+    $('demo-leave').style.display = '';
+  }
+  try {
+    const start = coordHash() || '1.1.1/1.1.1/1.1.1';
+    demoAt = start;
+    demoDim = 1;
+    render(await api('POST', '/api/goto', start));
+    initApp();
+  } catch (e) {
+    demoMode = false;
+    $('demo-banner').style.display = 'none';
+    $('auth-screen').style.display = 'flex';
+    $('auth-error').textContent = 'The demo did not load. You can still sign in.';
+    if (!needsAuth) console.error(e);
+  }
+}
+function bootEditor() {
+  $('auth-screen').style.display = 'none';
+  $('demo-banner').style.display = 'none';
+  const hash = coordHash();
+  const load = hash ? api('POST', '/api/goto', hash) : api('POST', '/api/home');
+  return load.then(nav => { render(nav); initApp(); });
+}
+
+// Initial load. Signed-out visitors stay on the intro and do not call the editor API.
+window.addEventListener('popstate', () => {
+  if (demoMode && !new URLSearchParams(location.search).has('demo')) location.reload();
+});
+$('try-demo').addEventListener('click', (e) => {
+  e.preventDefault();
+  if (!new URLSearchParams(location.search).has('demo'))
+    history.pushState(null, '', '/?demo' + location.hash);
+  startDemo();
+});
 (async () => {
   try {
     await loadSession();
-    // Known to be signed out: show sign-in now rather than letting an API call 401.
-    if (session && session.locked && !session.editor && !authToken) {
-      needsAuth = true;
+    if (wantDemo) { await startDemo(); return; }
+    const signedIn = !!authToken || (session && (session.editor || !session.locked));
+    if (signedIn) { await bootEditor(); return; }
+    if (session && session.signed_in && !session.editor) {
       await showAuthScreen('', true);
       return;
     }
-    const hash = location.hash.replace(/^#/, '');
-    if (hash && /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash))
-      render(await api('POST', '/api/goto', hash));
-    else
-      render(await api('POST', '/api/home'));
-    initApp();
-  } catch(e) {
-    // If unauthorized, auth screen is already shown by api()
+    paintProviders();
+  } catch (e) {
     if (!needsAuth) console.error(e);
   }
 })();
@@ -1952,8 +2398,8 @@ async function initApp() {
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_request, is_api_path, is_editor_shell, public_document, AppState, ABOUT_HTML,
-        INDEX_HTML, NOT_FOUND_HTML, PRIVACY_HTML, ROBOTS_TXT, SITEMAP_XML, TERMS_HTML,
+        handle_request, is_api_path, is_editor_shell, public_document, AppState, DemoCatalog,
+        ABOUT_HTML, INDEX_HTML, NOT_FOUND_HTML, PRIVACY_HTML, ROBOTS_TXT, SITEMAP_XML, TERMS_HTML,
     };
     use phext_lattice::oauth::{Editors, Gate, Oauth};
     use phext_lattice::MappedLattice;
@@ -1986,7 +2432,7 @@ mod tests {
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-            handle_request(&mut stream, &state, &gate);
+            handle_request(&mut stream, &state, &gate, &DemoCatalog::load());
         });
         let mut client = std::net::TcpStream::connect(addr).unwrap();
         client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
@@ -2066,8 +2512,8 @@ mod tests {
     fn signed_out_visitors_can_read_every_public_page() {
         let gate = locked_gate();
         let pages = [
-            ("/", "text/html", "phext-edit"),
-            ("/index.html", "text/html", "phext-edit"),
+            ("/", "text/html", "Try the demo"),
+            ("/index.html", "text/html", "Try the demo"),
             ("/about", "text/html", "Phext Edit"),
             ("/privacy", "text/html", "Privacy Policy"),
             ("/terms", "text/html", "Terms of Service"),
@@ -2278,8 +2724,8 @@ mod http_tests {
 #[cfg(test)]
 mod share_tests {
     use super::{
-        handle_request, public_asset, AppState, Gate, ABOUT_HTML, APPLE_TOUCH_PNG,
-        INDEX_HTML, OG_PNG, PRIVACY_HTML, TERMS_HTML,
+        handle_request, public_asset, AppState, DemoCatalog, Gate, MappedLattice, ABOUT_HTML,
+        APPLE_TOUCH_PNG, INDEX_HTML, OG_PNG, PRIVACY_HTML, TERMS_HTML,
     };
     use phext_lattice::oauth::{Editors, Oauth};
     use std::io::{Read, Write};
@@ -2438,7 +2884,7 @@ mod share_tests {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
                 stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
-                handle_request(&mut stream, &state_bg, &gate_bg);
+                handle_request(&mut stream, &state_bg, &gate_bg, &DemoCatalog::load());
             }
         });
 
@@ -2523,5 +2969,183 @@ mod share_tests {
         assert_eq!(status, 405);
 
         server.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod demo_tests {
+    use super::*;
+    use phext_lattice::oauth::{Editors, Oauth};
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    fn locked_gate() -> Gate {
+        Gate::new(Some("s3cret".into()), Oauth::test_ready(), Editors::parse("github:100"))
+    }
+
+    fn editor_headers() -> HashMap<String, String> {
+        let cookie = format!("phext_session={}", Oauth::test_session_cookie());
+        HashMap::from([("cookie".into(), cookie)])
+    }
+
+    #[test]
+    fn signed_out_shell_leads_with_the_demo_and_tucks_the_token() {
+        let page = index_page(&locked_gate(), &HashMap::new());
+        assert!(page.contains(GATE_OPEN), "signed-out page should show the intro");
+        assert!(page.contains("Phext Edit"));
+        assert!(page.contains("Write in 11 dimensions: plain text, no lock-in."));
+        assert!(page.contains("Try the demo"));
+        assert!(page.contains("href=\"/?demo\""));
+        assert!(page.contains("Sign in with Google"));
+        assert!(page.contains("Sign in with GitHub"));
+        assert!(page.contains("<noscript>"));
+        assert!(!page.contains("Enter your access token to continue"));
+        let details = page.find("<details id=\"token-box\">").expect("token disclosure");
+        let input = page.find("id=\"auth-input\"").expect("token input");
+        let close = page[details..].find("</details>").expect("disclosure end") + details;
+        assert!(details < input && input < close, "token input stays inside the disclosure");
+        assert!(page[details..close].contains("use an access token"));
+    }
+
+    #[test]
+    fn a_signed_in_editor_does_not_see_the_intro() {
+        let page = index_page(&locked_gate(), &editor_headers());
+        assert!(page.contains(GATE_SHUT));
+        assert!(!page.contains(GATE_OPEN));
+    }
+
+    #[test]
+    fn an_open_server_skips_the_intro() {
+        let gate = Gate::new(None, Oauth::closed(), Editors::default());
+        let page = index_page(&gate, &HashMap::new());
+        assert!(page.contains(GATE_SHUT));
+    }
+
+    #[test]
+    fn the_demo_is_stateless_and_spans_several_dimensions() {
+        let demo = DemoCatalog::load();
+        let origin = demo.navigate("", 1, "home", "");
+        assert!(origin.scroll.content.contains("Welcome to the sample phext"));
+        assert!(origin.scroll.content.contains("eleven dimensions"));
+        assert_eq!(origin.position.coordinate, "1.1.1/1.1.1/1.1.1");
+        assert!(origin.sentron.axons.iter().any(|a| a.name == "Library"));
+
+        let again = demo.navigate("1.1.1/1.1.1/1.1.1", 1, "next", "");
+        let same = demo.navigate("1.1.1/1.1.1/1.1.1", 1, "next", "");
+        assert_eq!(again.position.coordinate, same.position.coordinate);
+        assert_eq!(again.position.coordinate, "1.1.1/1.1.1/1.1.2");
+
+        let mut at = origin.position.coordinate.clone();
+        let mut seen = vec![at.clone()];
+        for _ in 0..20 {
+            let step = demo.navigate(&at, 1, "next", "");
+            if step.position.coordinate == at {
+                break;
+            }
+            at = step.position.coordinate.clone();
+            seen.push(at.clone());
+        }
+        for coord in [
+            "1.1.1/1.1.1/1.2.1",
+            "1.1.1/1.1.2/1.1.1",
+            "1.1.1/2.1.1/1.1.1",
+            "1.1.2/1.1.1/1.1.1",
+            "1.2.1/1.1.1/1.1.1",
+            "2.1.1/1.1.1/1.1.1",
+            "2.1.1/1.1.1/1.1.2",
+        ] {
+            assert!(seen.iter().any(|c| c == coord), "missing {coord} in {seen:?}");
+        }
+        assert_eq!(seen.len(), DEMO_SCROLLS.len());
+
+        let section = demo.navigate("1.1.1/1.1.1/1.1.2", 2, "forward", "");
+        assert_eq!(section.position.coordinate, "1.1.1/1.1.1/1.2.1");
+        assert_eq!(section.position.dimension, "Section");
+
+        let hits = demo.search("outermost");
+        assert!(hits.iter().any(|h| h.coordinate == "2.1.1/1.1.1/1.1.1"));
+        assert!(demo.search("").is_empty());
+    }
+
+    fn exchange(port: u16, request: &str) -> (u16, String) {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut buf = String::new();
+        let _ = stream.read_to_string(&mut buf);
+        let status = buf.split_whitespace().nth(1).unwrap_or("0").parse().unwrap_or(0);
+        (status, buf)
+    }
+
+    #[test]
+    fn signed_out_demo_is_public_and_real_files_stay_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        let phext = dir.path().join("real.phext");
+        std::fs::write(&phext, b"hello-real-file-marker").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let lattice = MappedLattice::open(&phext).unwrap();
+        let state = Arc::new(Mutex::new(AppState::new(
+            lattice,
+            phext.to_string_lossy().to_string(),
+        )));
+        let gate = Arc::new(locked_gate());
+        let demo = Arc::new(DemoCatalog::load());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().take(9).flatten() {
+                handle_request(&mut stream, &state, &gate, &demo);
+            }
+        });
+
+        let (status, body) = exchange(port, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 200);
+        assert!(body.contains("Try the demo"));
+        assert!(body.contains("use an access token"));
+        assert!(!body.contains("hello-real-file-marker"));
+
+        let (status, body) = exchange(port, "GET /?demo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 200);
+        assert!(body.contains("Write in 11 dimensions: plain text, no lock-in."));
+
+        let (status, body) = exchange(port, "GET /api/demo/nav HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("Welcome to the sample phext"));
+        assert!(!body.contains("hello-real-file-marker"));
+
+        let (status, body) = exchange(
+            port,
+            "GET /api/demo/nav?at=1.1.1%2F1.1.1%2F1.1.1&dim=1&op=next HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("1.1.1/1.1.1/1.1.2"));
+        assert!(body.contains("tenth and eleventh"));
+
+        let (status, body) = exchange(port, "GET /api/nav HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 401, "{body}");
+        assert!(!body.contains("hello-real-file-marker"));
+
+        let (status, body) = exchange(
+            port,
+            "GET /api/nav HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer s3cret\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("hello-real-file-marker"));
+
+        let (status, body) = exchange(port, "POST /api/demo/nav HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 405, "{body}");
+        assert!(body.contains("read-only"));
+
+        let (status, _) = exchange(
+            port,
+            "POST /api/update HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+        );
+        assert_eq!(status, 401);
+
+        let (status, body) = exchange(
+            port,
+            "GET /api/demo/search?q=library HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("2.1.1/1.1.1/1.1.1"));
     }
 }
