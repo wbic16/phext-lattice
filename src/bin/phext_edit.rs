@@ -1500,7 +1500,7 @@ fn make_absolute(path: PathBuf) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
+mod local_mode_tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::path::PathBuf;
