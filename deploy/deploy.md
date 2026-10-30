@@ -63,6 +63,17 @@ replaced from the script's domain and port. `ssl_certificate` and
 the rendered file. An `ssl_dhparam` line is omitted when that file is not on
 the host.
 
+## Share image and icons
+
+`/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png` (and the precomposed
+alias), and `/og.png` are compiled into the phext-edit binary from `web/`
+(`include_bytes!` in `src/bin/phext_edit.rs`). Step 3 builds that binary and
+step 5 restarts the service, which is what publishes them. The nginx site
+proxies `location /` to the app, so these paths are not files copied onto the
+host and the site file does not grow a root or an alias for them. A normal
+`deploy.sh` run is the whole update. `/robots.txt` and `/sitemap.xml` are the
+same kind of compiled-in response; they are not separate files on disk.
+
 ## Managed-file marker
 
 The first line of a site file this script writes is:
