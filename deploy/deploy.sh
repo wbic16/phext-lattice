@@ -200,12 +200,16 @@ EOF
     site_tmp=$(mktemp)
     cat >"$site_tmp" <<EOF
 # Managed by phext-lattice deploy/deploy.sh.
+# First-run HTTP proxy only, so certbot has a server block to edit.
+# Once TLS exists, install deploy/nginx-edit.phext.io.conf (HTTPS
+# redirect, HSTS, auth limit_req). An existing site file is left as-is.
 limit_req_zone \$binary_remote_addr zone=phext_edit_req:10m rate=20r/s;
 
 server {
     listen 80;
     listen [::]:80;
     server_name ${DOMAIN};
+    server_tokens off;
     client_max_body_size 16M;
 
     location / {
