@@ -135,6 +135,10 @@ struct AppState {
     dirty: bool,
     /// Directory of phext files available
     phext_dir: Option<String>,
+    /// Landing file after sign-in / on a fresh load (--home or PHEXT_HOME)
+    home_file: Option<String>,
+    /// Landing coordinate within the home file (--home-coord or PHEXT_HOME_COORD)
+    home_coord: Option<libphext::phext::Coordinate>,
 }
 
 impl AppState {
@@ -149,7 +153,7 @@ impl AppState {
             nav.next_populated(lattice.index());
         }
 
-        AppState { lattice, nav, overview, file_path, dirty: false, phext_dir: None }
+        AppState { lattice, nav, overview, file_path, dirty: false, phext_dir: None, home_file: None, home_coord: None }
     }
 
     fn rebuild_overview(&mut self) {
@@ -267,6 +271,27 @@ impl AppState {
         }
         files.sort_by(|a, b| a.name.cmp(&b.name));
         files
+    }
+
+    /// Switch to the configured home file (if any) and jump to the home
+    /// coordinate (if any). Unsaved edits block a file switch.
+    fn go_home(&mut self) -> Result<(), String> {
+        if let Some(home) = self.home_file.clone() {
+            let same = match (std::fs::canonicalize(&home), std::fs::canonicalize(&self.file_path)) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => home == self.file_path,
+            };
+            if !same {
+                if self.dirty {
+                    return Err("unsaved changes; not switching to the home file".into());
+                }
+                self.open_phext(&home)?;
+            }
+        }
+        if let Some(coord) = self.home_coord {
+            self.nav.goto(coord);
+        }
+        Ok(())
     }
 
     fn open_phext(&mut self, path: &str) -> Result<(), String> {
@@ -499,6 +524,10 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
             if let Some(coord) = parse_coordinate(body.trim()) { state.nav.goto(coord); }
             json_response(stream, &state.nav_json());
         }
+        ("POST", "/api/home") => {
+            if let Err(e) = state.go_home() { eprintln!("home: {}", e); }
+            json_response(stream, &state.nav_json());
+        }
         ("POST", "/api/base") => {
             state.nav.goto(libphext::phext::default_coordinate());
             json_response(stream, &state.nav_json());
@@ -615,20 +644,41 @@ fn main() {
     let host = get_flag(&args, "--host").unwrap_or_else(|| "0.0.0.0".to_string());
     let token = get_flag(&args, "--token");
     let dir = get_flag(&args, "--dir");
+    let home_file = get_flag(&args, "--home")
+        .or_else(|| std::env::var("PHEXT_HOME").ok())
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .map(|h| match (&dir, std::path::Path::new(&h).is_absolute()) {
+            (Some(d), false) => std::path::Path::new(d).join(&h).to_string_lossy().to_string(),
+            _ => h,
+        })
+        .filter(|h| {
+            let ok = std::path::Path::new(h).is_file();
+            if !ok { eprintln!("Home file {} not found; ignoring --home", h); }
+            ok
+        });
+    let home_coord = get_flag(&args, "--home-coord")
+        .or_else(|| std::env::var("PHEXT_HOME_COORD").ok())
+        .and_then(|c| {
+            let parsed = parse_coordinate(c.trim());
+            if parsed.is_none() { eprintln!("Invalid --home-coord {}; ignoring", c); }
+            parsed
+        });
 
-    // Determine initial file
-    let file_path = if let Some(ref d) = dir {
-        // Find first .phext in directory
-        let mut first = None;
+    // Determine initial file: the home file if set, else the first .phext by name
+    let file_path = if let Some(ref h) = home_file {
+        h.clone()
+    } else if let Some(ref d) = dir {
+        let mut found: Vec<String> = Vec::new();
         if let Ok(entries) = std::fs::read_dir(d) {
             for entry in entries.flatten() {
                 if entry.path().extension().map(|e| e == "phext").unwrap_or(false) {
-                    first = Some(entry.path().to_string_lossy().to_string());
-                    break;
+                    found.push(entry.path().to_string_lossy().to_string());
                 }
             }
         }
-        first.unwrap_or_else(|| {
+        found.sort();
+        found.into_iter().next().unwrap_or_else(|| {
             eprintln!("No .phext files found in {}", d);
             std::process::exit(1);
         })
@@ -643,6 +693,9 @@ fn main() {
 
     let mut app_state = AppState::new(lattice, file_path.clone());
     app_state.phext_dir = dir.clone();
+    app_state.home_file = home_file.clone();
+    app_state.home_coord = home_coord;
+    if let Err(e) = app_state.go_home() { eprintln!("home: {}", e); }
 
     let state = Arc::new(Mutex::new(app_state));
     let gate = Arc::new(Gate::from_env(token));
@@ -1372,6 +1425,8 @@ $('auth-input').addEventListener('keydown', async (e) => {
       needsAuth = false;
       $('auth-screen').style.display = 'none';
       $('auth-error').textContent = '';
+      if (!/^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(location.hash.replace(/^#/, '')))
+        render(await api('POST', '/api/home'));
       initApp();
     } catch {
       $('auth-error').textContent = 'Invalid token';
@@ -1429,7 +1484,7 @@ async function initApp() {
     if (hash && /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash))
       render(await api('POST', '/api/goto', hash));
     else
-      render(await api('GET', '/api/nav'));
+      render(await api('POST', '/api/home'));
     initApp();
   } catch(e) {
     // If unauthorized, auth screen is already shown by api()

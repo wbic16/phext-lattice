@@ -19,6 +19,8 @@ set -euo pipefail
 BRANCH="${BRANCH:-exo}"
 PORT="${PORT:-8080}"
 DOMAIN="${DOMAIN:-edit.phext.io}"
+PHEXT_HOME="${PHEXT_HOME:-choose-your-own-adventure.phext}"
+PHEXT_HOME_COORD="${PHEXT_HOME_COORD:-10.10.2/1.1.1/1.10.10}"
 EXPECTED_A="${EXPECTED_A:-44.248.235.76}"
 APP_DIR="${APP_DIR:-/source/phext-lattice}"
 PHEXT_DIR="${PHEXT_DIR:-/source/human}"
@@ -150,7 +152,7 @@ User=${SERVICE_USER}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=${CONF_DIR}/token.env
 EnvironmentFile=-${CONF_DIR}/oauth.env
-ExecStart=${APP_DIR}/target/release/phext-edit --dir ${PHEXT_DIR} --host 127.0.0.1 --port ${PORT} --token \${PHEXT_TOKEN}
+ExecStart=${APP_DIR}/target/release/phext-edit --dir ${PHEXT_DIR} --home ${PHEXT_HOME} --home-coord ${PHEXT_HOME_COORD} --host 127.0.0.1 --port ${PORT} --token \${PHEXT_TOKEN}
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
