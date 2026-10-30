@@ -13,8 +13,14 @@
 /// `Gate` is the piece the HTTP servers use: `route()` answers the
 /// `/api/session` and `/api/auth/*` endpoints, `admit()` decides whether
 /// any other request may proceed.
+///
+/// `Gate::enable_local` is the phext-edit `--local` switch. It stays off
+/// unless that method is called: no environment variable and no request
+/// header turns it on. A forwarded request (proxy headers, or a Host that
+/// is not loopback) does not receive the bypass.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -663,16 +669,31 @@ pub struct Gate {
     oauth: Oauth,
     editors: Editors,
     limits: Limiter,
+    /// CLI `--local` only. `enable_local` is the sole writer.
+    local: AtomicBool,
 }
 
 impl Gate {
     pub fn new(token: Option<String>, oauth: Oauth, editors: Editors) -> Self {
         let token = token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-        Self { token, oauth, editors, limits: Limiter::standard() }
+        Self { token, oauth, editors, limits: Limiter::standard(), local: AtomicBool::new(false) }
     }
 
     pub fn from_env(token: Option<String>) -> Self {
         Self::new(token, Oauth::from_env(), Editors::from_env())
+    }
+
+    /// Admit every direct request as a local developer.
+    ///
+    /// The phext-edit CLI calls this only after it has refused to bind
+    /// anything but loopback. Nothing in the environment or in a request
+    /// header calls it.
+    pub fn enable_local(&self) {
+        self.local.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_local(&self) -> bool {
+        self.local.load(Ordering::SeqCst)
     }
 
     /// True when some credential is required for the API.
@@ -691,6 +712,10 @@ impl Gate {
     /// Startup lines describing how the API is protected.
     pub fn describe(&self) -> Vec<String> {
         let mut lines = Vec::new();
+        if self.is_local() {
+            lines.push("auth: DISABLED (--local, local developer, direct requests only)".to_string());
+            return lines;
+        }
         if self.token.is_some() {
             lines.push("auth: token accepted".to_string());
         }
@@ -730,6 +755,13 @@ impl Gate {
 
     /// Decides whether a non-auth request may proceed.
     pub fn admit(&self, method: &str, path: &str, headers: &HashMap<String, String>) -> Result<(), Reply> {
+        // `--local` is a process flag, not a header. Proxy markers withhold it.
+        if self.is_local() {
+            if request_forwarded(headers) {
+                return Err(Reply::error(403, "local mode refuses a forwarded request"));
+            }
+            return Ok(());
+        }
         let route = path.split('?').next().unwrap_or(path);
         if route == "/" || route == "/index.html" || !self.locked() {
             return Ok(());
@@ -770,6 +802,21 @@ impl Gate {
     }
 
     fn session_view(&self, headers: &HashMap<String, String>) -> Reply {
+        if self.is_local() && !request_forwarded(headers) {
+            return Reply::json(200, json!({
+                "locked": true,
+                "local": true,
+                "token": false,
+                "ready": false,
+                "providers": [],
+                "signed_in": true,
+                "editor": true,
+                "who": "local:developer",
+                "handle": "local",
+                "name": "Local developer",
+                "csrf": "local-dev",
+            }));
+        }
         let session = self.oauth.read_session(&cookies(headers));
         let editor = session
             .as_ref()
@@ -1254,6 +1301,68 @@ fn base64url_decode(input: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// True when `host` is a loopback listen address: 127.0.0.0/8, `::1`, or `localhost`.
+///
+/// `0.0.0.0` and `::` are not loopback — they accept remote connections.
+pub fn is_loopback_bind(host: &str) -> bool {
+    host_is_loopback(host)
+}
+
+fn host_is_loopback(host: &str) -> bool {
+    let host = host.trim().trim_matches('"');
+    if host.is_empty() {
+        return false;
+    }
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((inner, _)) => inner,
+            None => return false,
+        }
+    } else if host.matches(':').count() > 1 {
+        host
+    } else {
+        host.split(':').next().unwrap_or("")
+    };
+    let name = name.trim().trim_end_matches('.').to_ascii_lowercase();
+    name == "localhost" || name == "::1" || name == "0:0:0:0:0:0:0:1" || ipv4_loopback(&name)
+}
+
+fn ipv4_loopback(name: &str) -> bool {
+    let parts: Vec<&str> = name.split('.').collect();
+    if parts.len() != 4 {
+        return false;
+    }
+    let Ok(first) = parts[0].parse::<u8>() else {
+        return false;
+    };
+    first == 127
+        && parts[1].parse::<u8>().is_ok()
+        && parts[2].parse::<u8>().is_ok()
+        && parts[3].parse::<u8>().is_ok()
+}
+
+/// Proxy markers, or a Host that is not loopback.
+///
+/// Presence withholds `--local`. These headers never grant it.
+fn request_forwarded(headers: &HashMap<String, String>) -> bool {
+    const PROXY: &[&str] = &[
+        "x-forwarded-for",
+        "x-real-ip",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "forwarded",
+    ];
+    for name in PROXY {
+        if headers.get(*name).map(|value| !value.trim().is_empty()).unwrap_or(false) {
+            return true;
+        }
+    }
+    match headers.get("host") {
+        Some(host) if !host_is_loopback(host) => true,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1424,6 +1533,75 @@ mod tests {
         assert!(limiter.hit("203.0.113.8").is_ok());
         assert!(limiter.hit("203.0.113.8").is_err());
         assert!(limiter.hit("203.0.113.9").is_ok());
+    }
+
+    #[test]
+    fn loopback_bind_is_only_loopback() {
+        assert!(is_loopback_bind("127.0.0.1"));
+        assert!(is_loopback_bind("127.0.0.2"));
+        assert!(is_loopback_bind("::1"));
+        assert!(is_loopback_bind("[::1]"));
+        assert!(is_loopback_bind("localhost"));
+        assert!(is_loopback_bind("LOCALHOST"));
+        assert!(!is_loopback_bind("0.0.0.0"));
+        assert!(!is_loopback_bind("::"));
+        assert!(!is_loopback_bind("[::]"));
+        assert!(!is_loopback_bind("192.168.0.10"));
+        assert!(!is_loopback_bind("edit.phext.io"));
+        assert!(!is_loopback_bind(""));
+    }
+
+    #[test]
+    fn local_mode_admits_direct_requests_as_a_local_developer() {
+        let gate = Gate::new(Some("s3cret-token".into()), Oauth::closed(), Editors::default());
+        gate.enable_local();
+        assert!(gate.is_local());
+        assert!(gate.admit("GET", "/api/status", &headers(&[("host", "127.0.0.1:8080")])).is_ok());
+        assert!(gate.admit("POST", "/api/update", &headers(&[("host", "localhost:8080")])).is_ok());
+        assert!(gate.admit("GET", "/api/nav", &headers(&[("host", "[::1]:8080")])).is_ok());
+        let session = gate.route("GET", "/api/session", &headers(&[("host", "127.0.0.1:9")])).unwrap();
+        assert_eq!(session.status, 200);
+        let body = String::from_utf8(session.body).unwrap();
+        assert!(body.contains("\"signed_in\":true"));
+        assert!(body.contains("\"editor\":true"));
+        assert!(body.contains("local:developer"));
+    }
+
+    #[test]
+    fn local_mode_refuses_a_forwarded_request() {
+        let gate = Gate::new(Some("s3cret-token".into()), Oauth::closed(), Editors::default());
+        gate.enable_local();
+        let cases = [
+            headers(&[("host", "127.0.0.1"), ("x-forwarded-for", "203.0.113.4")]),
+            headers(&[("host", "127.0.0.1"), ("x-real-ip", "203.0.113.4")]),
+            headers(&[("host", "127.0.0.1"), ("x-forwarded-proto", "https")]),
+            headers(&[("host", "127.0.0.1"), ("forwarded", "for=203.0.113.4")]),
+            headers(&[("x-forwarded-host", "edit.phext.io"), ("host", "127.0.0.1")]),
+            headers(&[("host", "edit.phext.io")]),
+        ];
+        for headers in cases {
+            let reply = gate.admit("GET", "/api/status", &headers).unwrap_err();
+            assert_eq!(reply.status, 403);
+        }
+        let session = gate
+            .route("GET", "/api/session", &headers(&[("host", "edit.phext.io")]))
+            .unwrap();
+        let body = String::from_utf8(session.body).unwrap();
+        assert!(!body.contains("local:developer"));
+        assert!(body.contains("\"signed_in\":false"));
+    }
+
+    #[test]
+    fn local_mode_cannot_be_enabled_by_the_environment_or_a_header() {
+        let gate = Gate::from_env(Some("s3cret-token".into()));
+        assert!(!gate.is_local());
+        let denied = gate.admit(
+            "GET",
+            "/api/nav",
+            &headers(&[("x-phext-local", "1"), ("phext-local", "1"), ("authorization", "Bearer local")]),
+        );
+        assert_eq!(denied.unwrap_err().status, 401);
+        assert!(!gate.describe().iter().any(|line| line.contains("DISABLED")));
     }
 
     #[test]

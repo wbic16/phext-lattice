@@ -83,6 +83,20 @@ cargo build --bin phext-nav --features tui
 cargo build --bin phext-tts
 ```
 
+### Local development
+
+Run the editor on your machine without Google or GitHub sign-in and without an access token:
+
+```bash
+cargo run --bin phext-edit -- --local
+```
+
+`--local` listens on `127.0.0.1:8080` and admits every direct request as a local developer, so the editor loads straight into the lattice and `/api/*` answers without a session. Omit the flag and the previous auth gate is unchanged.
+
+The flag is refused unless the process binds to a loopback address (`127.0.0.1`, `::1`, or `localhost`). `--local --host 0.0.0.0` does not start. A request that arrived through a proxy (`X-Forwarded-For`, `X-Real-IP`, `Forwarded`, or a `Host` that is not loopback) is not treated as local. No environment variable and no request header can turn the bypass on.
+
+Phext files for that run come from `--dir` when you pass it, otherwise from `PHEXT_DATA_DIR`, otherwise from `./.phext-local` (created on first run, with a `welcome.phext` if the directory is empty). That default is separate from the production library, so a local session does not edit deployed phexts. `PHEXT_HOME` is ignored under `--local` unless you pass `--home`.
+
 ### phext-tts Usage
 
 ```bash
