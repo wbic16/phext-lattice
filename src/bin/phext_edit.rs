@@ -2238,7 +2238,8 @@ async function initApp() {
 mod public_route_tests {
     use super::{
         handle_request, is_api_path, is_editor_shell, public_document, AppState, ABOUT_HTML,
-        INDEX_HTML, NOT_FOUND_HTML, PRIVACY_HTML, ROBOTS_TXT, SITEMAP_XML, TERMS_HTML,
+        INDEX_HTML, NOT_FOUND_HTML, PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE, SITEMAP_XML,
+        STATIC_CACHE, TERMS_HTML,
     };
     use phext_lattice::oauth::{Editors, Gate, Oauth};
     use phext_lattice::MappedLattice;
