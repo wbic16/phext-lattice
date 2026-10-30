@@ -10,7 +10,7 @@
     },
     "sqlite_fts5": {
       "apparent_bytes": 87216128,
-      "allocated_bytes": 87220224,
+      "allocated_bytes": 87216128,
       "inodes": 1,
       "overhead_vs_payload": 2.139,
       "zstd19_bytes": 8211724

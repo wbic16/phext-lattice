@@ -8,20 +8,22 @@ Numbers are from [`RESULTS.md`](RESULTS.md) (scale 1 = 3,820 real articles / 4.1
 | dimension | phext today | best conventional | verdict |
 |---|---|---|---|
 | warm lookup | **0.7 µs** by coordinate, 2.1 µs by title (phext-lattice) | 4.1 µs SQLite | phext wins |
-| cold open | 131 ms + 98 MB RSS at 49 MB (index and names rebuilt each open) | 3.9 ms / 1.3 MB SQLite | phext loses, and it gets worse as the file grows |
+| cold open | 191 ms + 175 MB RSS at 49 MB (index and `NameIndex` rebuilt each open) | 3.9 ms / 1.3 MB SQLite | phext loses, and it gets worse as the file grows |
 | storage | 1.20× payload, 1 inode | 0.63× ZIM (zstd clusters) | ZIM wins; phext beats SQLite (1.52×) and files (7.6×) |
 | link traversal | **43 µs** 2-hop BFS (phext-lattice) | 84 µs SQLite | phext wins |
 | backlinks | 7.9 ms (full scan) | 2.2 µs SQLite | phext loses: no reverse index |
 | edit one article | 124–237 ms at 49 MB (rewrites the whole file) | 0.3 ms SQLite / files | phext loses, and it gets worse as the file grows |
 | add one article | **0.16 ms** raw append, but 57 ms to re-index | 0.18 ms SQLite | the format wins; the tooling can't use it yet |
-| retrieval, vague queries | R@1 0.174, 17 KB read per answer (grep-style search) | R@1 0.328, 4.2 KB (FTS5) | phext loses: no ranked term index |
-| retrieval, case noise | 0% | 100% SQLite NOCASE | phext loses: no case folding |
+| retrieval, vague queries | **R@1 0.338, 4.0 KB read, 38 µs** (`TermIndex`); grep-style search was 0.174 / 17 KB / 24 ms | R@1 0.328, 4.2 KB, 571 µs (FTS5) | phext wins since `TermIndex` |
+| retrieval, case noise | **100%, 0.6 µs** (`NameIndex::resolve`); exact-only was 0% | 100%, 331 µs SQLite NOCASE | phext wins since `NameIndex` |
 
 The format holds up well. Delimiters are 0.3% of the file. Record-per-section coordinates make
 lookup and traversal hash lookups, and a new article is an O(1) append. Every loss is a
-**tooling** gap: phext has no persisted index, no reverse index, no term index, no case folding,
-and no write path that touches less than the whole file. Every gap has a prototype or a
-measured baseline that shows the target can be reached.
+**tooling** gap: phext has no persisted index, no reverse index, and no write path that
+touches less than the whole file. The ranked term index and case folding gaps are closed:
+`phext_lattice::TermIndex` (BM25) and `phext_lattice::NameIndex` (exact + case-folded names)
+now ship in phext-lattice, and the benchmark uses them. Each remaining gap has a measured
+baseline that shows the target can be reached.
 
 ## Tooling scorecard
 
@@ -30,15 +32,15 @@ taken from the best conventional store or from a prototype in the harness.
 
 | # | metric (key in JSON) | repo | today | target | how |
 |---|---|---|---|---|---|
-| 1 | open → first article, `open.phext_lattice.open_first_ms` | phext-lattice | 131 ms | ≤ 10 ms, flat in file size | persist `LatticeIndex` + name map as a sidecar keyed by file checksum, or mmap a sorted span table |
-| 2 | RSS after open, `open.phext_lattice.rss_kb` | phext-lattice | 98 MB: 49 MB of touched mmap pages + ≈ 360 B/scroll of heap | ≤ 32 B/scroll of heap | sorted `Vec<(packed coord, u32 start, u32 len)>` + binary search instead of `HashMap<Coordinate, ScrollSpan>` + `Vec<Coordinate>` |
+| 1 | open → first article, `open.phext_lattice.open_first_ms` | phext-lattice | 191 ms (index 63, `NameIndex` 128) | ≤ 10 ms, flat in file size | persist `LatticeIndex` + name map as a sidecar keyed by file checksum, or mmap a sorted span table |
+| 2 | RSS after open, `open.phext_lattice.rss_kb` | phext-lattice | 175 MB: 49 MB of touched mmap pages + ≈ 920 B/scroll of heap (span index + exact and folded name maps) | ≤ 32 B/scroll of heap | sorted `Vec<(packed coord, u32 start, u32 len)>` + binary search instead of `HashMap<Coordinate, ScrollSpan>` + `Vec<Coordinate>` |
 | 3 | index build throughput, `index_rebuild_warm_ms` | phext-lattice | 56 ms / 49 MB ≈ 0.9 GB/s | ≥ 4 GB/s | skip runs of bytes ≥ 0x20 (memchr-style) instead of a `match` per byte |
 | 4 | durable single edit, `updates.phext_lattice_save_each` | phext-lattice | 237 ms (14× scale 1) | ≤ 1 ms, flat | append-only edit journal (a phext of changed scrolls, fsync) replayed into the overlay; compact in the background |
 | 5 | append then readable, `phext_lattice_reopen_after_append_ms` | phext-lattice | 57 ms | ≤ 1 ms | `MappedLattice::refresh()` that remaps and indexes only the new tail |
 | 6 | backlinks, `backlinks.phext_lattice_scan` | phext-lattice | 7.9 ms | ≤ 10 µs | reverse-link map built when link scrolls are indexed (SQLite: 2.2 µs) |
-| 7 | vague-query R@1 / bytes read, `retrieval.keywords_hard` | phext-lattice | 0.174 / 17,169 B | ≥ 0.33 / ≤ 4.2 KB | term index over scrolls; the BM25 prototype reaches **0.338 / 4,011 B at 86 µs** (FTS5: 0.328 / 4,169 B at 548 µs) |
-| 8 | search latency, `phext_lattice_search_grep` | phext-lattice | 24–38 ms/query (4 MB) | ≤ 1 ms | same term index; until then avoid re-lowercasing every scroll for every term |
-| 9 | case-insensitive name hit rate, `retrieval.alias_lower` | phext-lattice | 0% | 100% | case-folded name map: 3 ms to build, 0.3 µs per lookup (prototype) |
+| 7 | vague-query R@1 / bytes read, `retrieval.keywords_hard` | phext-lattice | ✅ **0.338 / 4,011 B** with `TermIndex` (was 0.174 / 17,169 B) | ≥ 0.33 / ≤ 4.2 KB | done; FTS5 is 0.328 / 4,169 B. Next: persist the index so its 71 ms / 7.6 MB build (4 MB corpus) leaves open |
+| 8 | ranked search latency, `phext_lattice_term_index` | phext-lattice | ✅ 8.5–38 µs/query (grep-style was 24–38 ms) | ≤ 1 ms | done. Exact-text `search_lattice` still re-lowercases every scroll per term |
+| 9 | case-insensitive name hit rate, `retrieval.alias_lower` | phext-lattice | ✅ 100% at 0.6 µs with `NameIndex::resolve` (was 0%) | 100% | done; the folded map costs ≈ 1.5× the exact-only name map's build time (row 1) |
 | 10 | `fetch` p50, `lookup_warm.phext_libphext_fetch` | libphext-rs | 12.8 ms at 49 MB (linear) | ≤ 5 µs | a span index type in libphext (move `LatticeIndex` upstream), `fetch_indexed()` |
 | 11 | `replace` + write, `phext_libphext_replace_rewrite` | libphext-rs | 124 ms at 49 MB | O(scroll) | splice API returning (offset, old_len, new bytes) so callers can patch in place or journal |
 | 12 | HTTP select p50, `lookup_warm.sq_http_by_coord` | SQ | 86 µs (one TCP connection per request) | ≤ 25 µs | HTTP keep-alive; per-request overhead is ~100× the lookup |
@@ -73,14 +75,15 @@ Appending a new article to a record-per-section phext is a single `O_APPEND` wri
 without fsync. All of these grow linearly with file size. ZIM is read-only, so any edit is a full
 rebuild (21 s at scale 10).
 
-**Agent retrieval quality.** On exact entity lookup every store scores 100%, and phext's name
-map is the fastest at 0.2 µs. With lower-cased input only SQLite (NOCASE) still finds the
-article. In this libzim build, ZIM's suggestion search did not fold case either. On specific
+**Agent retrieval quality.** On exact entity lookup every store scores 100%, and phext's
+`NameIndex` is the fastest at 0.1–0.5 µs. With lower-cased input, exact-only maps (files, ZIM's
+title index, phext before `NameIndex`) find nothing; `NameIndex::resolve` and SQLite (NOCASE)
+find 100%, at 0.6 µs and 331 µs. In this libzim build, ZIM's suggestion search did not fold case either. On specific
 keyword queries every method reaches R@10 ≈ 1.0. On vague queries ranking decides the outcome.
 Grep-style search over phext (rank by the number of terms matched) finds the right article first
-17% of the time, and the agent reads 17 KB to reach it. A BM25 index over the same scrolls finds
-it first 34% of the time with 4 KB read: 4× less context for the agent and about 280× lower
-latency. A BM25 index over phext matches FTS5 quality, so this is not a limit of the format.
+17% of the time, and the agent reads 17 KB to reach it. `TermIndex` (BM25 over the same scrolls)
+finds it first 34% of the time with 4 KB read: 4× less context for the agent and about 600× lower
+latency. It edges out FTS5 (33%, 571 µs) and Xapian (27%, 146 µs) at a fraction of their latency.
 
 ## Bug found while benchmarking
 

@@ -109,9 +109,10 @@ def main(work, *scales):
                                      f"{v['context_bytes_p50']:,}", lat(v["latency"])])
                 print(f"**{kind}**\n")
                 print(table(["method", "n", "R@1", "R@10", "MRR@10", "agent bytes read (p50)", "p50"], rows))
-            print(f"Case-folded name map build: {rr.get('casefold_map_build_ms')} ms; BM25 sidecar build: "
-                  f"{rr['keywords']['phext_bm25_sidecar_prototype']['build_ms']} ms, ~"
-                  f"{mb(rr['keywords']['phext_bm25_sidecar_prototype']['approx_heap_bytes'])} heap.\n")
+            ti = rr["keywords"]["phext_lattice_term_index"]
+            ni = rr.get("name_index", {})
+            print(f"`NameIndex`: {ni.get('names', 0):,} names, {ni.get('ambiguous_folded', 0)} folded collisions, built as part of "
+                  f"phext-lattice open (`names` above). `TermIndex` build: {ti['build_ms']} ms, ~{mb(ti['approx_heap_bytes'])} heap.\n")
 
 
 if __name__ == "__main__":

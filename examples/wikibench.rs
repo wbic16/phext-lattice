@@ -9,7 +9,8 @@
 //! Phext layout ("record per section"): article n is the section at
 //!   1.1.1/1.1.(n/999²+1)/((n/999)%999+1).(n%999+1).f
 //! with fields f = 1 title, 2 body, 3 outbound links (one coordinate per line), 4 aliases.
-//! A new article is therefore a pure append at EOF.
+//! A new article is therefore a pure append at EOF. Names resolve through
+//! `phext_lattice::NameIndex`, ranked search through `phext_lattice::TermIndex`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -21,6 +22,7 @@ use libphext::phext::{self, Coordinate};
 use phext_lattice::index::LatticeIndex;
 use phext_lattice::mmap::MappedLattice;
 use phext_lattice::search::search_lattice_auto;
+use phext_lattice::{NameIndex, TermIndex};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
@@ -127,17 +129,14 @@ fn build_phext(arts: &[Article]) -> Vec<u8> {
     out
 }
 
-/// Title + alias → record id, built from fields 1 and 4 of every record (phext has no
+/// Title + alias → record, built from fields 1 and 4 of every record (phext has no
 /// persisted name index, so this is part of "open").
-fn phext_names(lat: &MappedLattice) -> HashMap<String, usize> {
-    let mut names = HashMap::new();
-    for c in lat.index().coordinates() {
-        if c.x.scroll == 1 || c.x.scroll == 4 {
-            let s = lat.read_scroll(c).unwrap();
-            for line in s.lines() { names.entry(line.to_string()).or_insert(rec_id(c)); }
-        }
-    }
-    names
+fn phext_names(lat: &MappedLattice) -> NameIndex {
+    NameIndex::from_scrolls(lat, |c| (c.x.scroll == 1 || c.x.scroll == 4).then(|| rec(rec_id(c), 1)))
+}
+
+fn nid(names: &NameIndex, name: &str) -> usize {
+    rec_id(&names.get(name).unwrap())
 }
 
 fn parse_links(s: &str) -> Vec<Coordinate> {
@@ -318,7 +317,7 @@ impl Drop for Sq { fn drop(&mut self) { let _ = self.child.kill(); let _ = self.
 // ------------------------------------------------------------------------------------------------
 
 fn tokens(s: &str) -> Vec<String> {
-    s.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|t| t.len() >= 2).map(String::from).collect()
+    phext_lattice::tokenize(s).collect()
 }
 
 /// Grep-style agent ranking: score = number of query terms present, ties by total hits.
@@ -330,46 +329,6 @@ fn rank_grep(per_term: Vec<HashMap<usize, usize>>) -> Vec<usize> {
     let mut v: Vec<(usize, (usize, usize))> = score.into_iter().collect();
     v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     v.into_iter().take(10).map(|x| x.0).collect()
-}
-
-/// Prototype BM25 sidecar over phext records (what a phext term index would provide).
-struct Bm25 { post: HashMap<String, Vec<(u32, u32)>>, dl: Vec<u32>, avg: f64 }
-impl Bm25 {
-    fn build(lat: &MappedLattice, n: usize) -> Bm25 {
-        let mut post: HashMap<String, Vec<(u32, u32)>> = HashMap::new();
-        let mut dl = vec![0u32; n];
-        for d in 0..n {
-            let mut tf: HashMap<String, u32> = HashMap::new();
-            for f in [1, 2] {
-                if let Some(s) = lat.read_scroll(&rec(d, f)) {
-                    for t in tokens(&s) { *tf.entry(t).or_default() += 1; dl[d] += 1; }
-                }
-            }
-            for (t, c) in tf { post.entry(t).or_default().push((d as u32, c)); }
-        }
-        let avg = dl.iter().map(|&x| x as f64).sum::<f64>() / n as f64;
-        Bm25 { post, dl, avg }
-    }
-    fn search(&self, q: &str) -> Vec<usize> {
-        let n = self.dl.len() as f64;
-        let mut acc: HashMap<u32, f64> = HashMap::new();
-        for t in tokens(q) {
-            if let Some(p) = self.post.get(&t) {
-                let idf = ((n - p.len() as f64 + 0.5) / (p.len() as f64 + 0.5) + 1.0).ln();
-                for &(d, tf) in p {
-                    let tf = tf as f64;
-                    let norm = tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * self.dl[d as usize] as f64 / self.avg));
-                    *acc.entry(d).or_default() += idf * norm;
-                }
-            }
-        }
-        let mut v: Vec<(u32, f64)> = acc.into_iter().collect();
-        v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
-        v.into_iter().take(10).map(|x| x.0 as usize).collect()
-    }
-    fn heap_bytes(&self) -> usize {
-        self.post.iter().map(|(k, v)| k.len() + 48 + v.len() * 8).sum::<usize>() + self.dl.len() * 4
-    }
 }
 
 /// recall@1, recall@10, MRR@10, and the bytes an agent reads walking the ranked list
@@ -445,7 +404,7 @@ fn run(corpus: &Path, out: &Path, scale: usize, sq_bin: Option<PathBuf>) -> Valu
     let t_index = t.elapsed();
     let names = phext_names(&lat);
     let t_names = t.elapsed();
-    let c = lat.read_scroll(&rec(names[title_of[probe]], 2)).unwrap();
+    let c = lat.read_scroll(&rec(nid(&names, title_of[probe]), 2)).unwrap();
     open["phext_lattice"] = json!({"open_first_ms": ms(t.elapsed()), "index_build_ms": ms(t_index),
         "name_map_ms": ms(t_names - t_index), "rss_kb": rss_kb().saturating_sub(rss0), "scrolls": lat.scroll_count()});
     assert_eq!(c, body);
@@ -481,9 +440,9 @@ fn run(corpus: &Path, out: &Path, scale: usize, sq_bin: Option<PathBuf>) -> Valu
         look["sqlite_by_id"] = time_each(&lookups, |&i| st.query_row([i as i64], |r| r.get::<_, String>(0)).unwrap().len()).0;
     }
     let few = &lookups[..if n > 20000 { 50 } else { 200 }];
-    look["phext_libphext_fetch"] = time_each(few, |&i| phext::fetch(&buf, rec(names[title_of[i]], 2)).len()).0;
-    look["phext_libphext_explode"] = time_each(&lookups, |&i| exploded.get(&rec(names[title_of[i]], 2)).unwrap().clone().len()).0;
-    look["phext_lattice"] = time_each(&lookups, |&i| lat.read_scroll(&rec(names[title_of[i]], 2)).unwrap().len()).0;
+    look["phext_libphext_fetch"] = time_each(few, |&i| phext::fetch(&buf, rec(nid(&names, title_of[i]), 2)).len()).0;
+    look["phext_libphext_explode"] = time_each(&lookups, |&i| exploded.get(&rec(nid(&names, title_of[i]), 2)).unwrap().clone().len()).0;
+    look["phext_lattice"] = time_each(&lookups, |&i| lat.read_scroll(&rec(nid(&names, title_of[i]), 2)).unwrap().len()).0;
     look["phext_lattice_by_coord"] = time_each(&lookups, |&i| lat.read_scroll(&rec(i, 2)).unwrap().len()).0;
     if let Some(s) = &sq {
         look["sq_http_by_coord"] = time_each(&lookups[..500], |&i| s.get(&format!("/api/v2/select?p=wiki&c={}", rec(i, 2).to_urlencoded())).len()).0;
@@ -508,7 +467,7 @@ fn run(corpus: &Path, out: &Path, scale: usize, sq_bin: Option<PathBuf>) -> Valu
     trav["files"] = time_each(&seeds, |&s| {
         let (k, b) = bfs(s,
             |u| fs::read_to_string(fdir.join("l").join(fname(title_of[u]))).unwrap().lines()
-                    .filter(|l| !l.is_empty()).map(|t| names[t]).collect(),
+                    .filter(|l| !l.is_empty()).map(|t| nid(&names, t)).collect(),
             |u| fs::read_to_string(fdir.join("a").join(fname(title_of[u]))).unwrap().len());
         nodes += k; b
     }).0;
@@ -635,26 +594,23 @@ fn run(corpus: &Path, out: &Path, scale: usize, sq_bin: Option<PathBuf>) -> Valu
     r
 }
 
-fn retrieval(corpus: &Path, arts: &[Article], names: &HashMap<String, usize>, lat: &MappedLattice, db: &Connection, fdir: &Path) -> Value {
+fn retrieval(corpus: &Path, arts: &[Article], names: &NameIndex, lat: &MappedLattice, db: &Connection, fdir: &Path) -> Value {
     let qs: Vec<Value> = fs::read_to_string(corpus.join("queries.jsonl")).unwrap().lines()
         .map(|l| serde_json::from_str(l).unwrap()).collect();
     let doc_len = |d: usize| arts.get(d).map(|a| a.text.len()).unwrap_or(0);
     let mut out = json!({});
-    let t = Instant::now();
-    let mut folded: HashMap<String, usize> = HashMap::new();
-    for (k, &v) in names { folded.entry(k.to_lowercase()).or_insert(v); }
-    out["casefold_map_build_ms"] = json!(ms(t.elapsed()));
+    out["name_index"] = json!({"names": names.len(), "ambiguous_folded": names.ambiguous()});
 
     for kind in ["alias", "alias_lower"] {
         let q: Vec<(usize, String)> = qs.iter().filter(|v| v["kind"] == kind)
             .map(|v| (v["gold"].as_u64().unwrap() as usize, v["q"].as_str().unwrap().to_string())).collect();
         let mut o = json!({});
         let mut res = Vec::new();
-        let (l, _) = time_each(&q, |(_, s)| { let hit = names.get(s).copied(); res.push(hit); 1 });
-        o["phext_lattice_name_map"] = hit_rate(&q, &res, l);
+        let (l, _) = time_each(&q, |(_, s)| { res.push(names.get(s).map(|c| rec_id(&c))); 1 });
+        o["phext_lattice_names_exact"] = hit_rate(&q, &res, l);
         res.clear();
-        let (l, _) = time_each(&q, |(_, s)| { res.push(folded.get(&s.to_lowercase()).copied()); 1 });
-        o["phext_casefold_map_prototype"] = hit_rate(&q, &res, l);
+        let (l, _) = time_each(&q, |(_, s)| { res.push(names.resolve(s).map(|c| rec_id(&c))); 1 });
+        o["phext_lattice_names_resolve"] = hit_rate(&q, &res, l);
         res.clear();
         let mut st = db.prepare_cached(if kind == "alias" {
             "SELECT id FROM articles WHERE title=?1 UNION ALL SELECT target FROM redirects WHERE alias=?1 LIMIT 1"
@@ -666,7 +622,7 @@ fn retrieval(corpus: &Path, arts: &[Article], names: &HashMap<String, usize>, la
         res.clear();
         let (l, _) = time_each(&q, |(_, s)| {
             res.push(fs::read_to_string(fdir.join("a").join(fname(s))).ok()
-                .and_then(|b| b.lines().next().and_then(|t| names.get(t).copied())));
+                .and_then(|b| b.lines().next().and_then(|t| names.get(t).map(|c| rec_id(&c)))));
             1
         });
         o["files"] = hit_rate(&q, &res, l);
@@ -674,7 +630,7 @@ fn retrieval(corpus: &Path, arts: &[Article], names: &HashMap<String, usize>, la
     }
 
     let t = Instant::now();
-    let bm = Bm25::build(lat, arts.len());
+    let terms = TermIndex::build_grouped(lat, |c| (c.x.scroll <= 2).then(|| rec(rec_id(c), 1)));
     let build_ms = ms(t.elapsed());
     for kind in ["keywords", "keywords_hard"] {
         let q: Vec<(usize, String)> = qs.iter().filter(|v| v["kind"] == kind)
@@ -706,10 +662,13 @@ fn retrieval(corpus: &Path, arts: &[Article], names: &HashMap<String, usize>, la
         o["phext_lattice_search_grep"] = score_quality(&res, &doc_len, l);
 
         let mut res = Vec::new();
-        let (l, _) = time_each(&q, |(g, s)| { res.push((*g, bm.search(s))); 1 });
-        o["phext_bm25_sidecar_prototype"] = score_quality(&res, &doc_len, l);
-        o["phext_bm25_sidecar_prototype"]["build_ms"] = json!(build_ms);
-        o["phext_bm25_sidecar_prototype"]["approx_heap_bytes"] = json!(bm.heap_bytes());
+        let (l, _) = time_each(&q, |(g, s)| {
+            res.push((*g, terms.search(s, 10).iter().map(|h| rec_id(&h.coordinate)).collect()));
+            1
+        });
+        o["phext_lattice_term_index"] = score_quality(&res, &doc_len, l);
+        o["phext_lattice_term_index"]["build_ms"] = json!(build_ms);
+        o["phext_lattice_term_index"]["approx_heap_bytes"] = json!(terms.heap_bytes());
 
         let docs: Vec<(usize, String)> = arts.iter().enumerate()
             .map(|(i, a)| (i, fname(&a.title))).collect();
