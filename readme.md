@@ -85,17 +85,41 @@ cargo build --bin phext-tts
 
 ### Local development
 
-Run the editor on your machine without Google or GitHub sign-in and without an access token:
+Run the editor on your machine without Google or GitHub sign-in and without an access token.
+
+Linux and macOS:
 
 ```bash
 cargo run --bin phext-edit -- --local
 ```
 
+Windows Command Prompt, from the checkout (for example `c:\source\phext-lattice`):
+
+```bat
+cd /d c:\source\phext-lattice
+set PHEXT_DATA_DIR=
+set PHEXT_HOME=
+cargo run --bin phext-edit -- --local
+```
+
+Windows PowerShell:
+
+```powershell
+Set-Location c:\source\phext-lattice
+Remove-Item Env:PHEXT_DATA_DIR -ErrorAction SilentlyContinue
+Remove-Item Env:PHEXT_HOME -ErrorAction SilentlyContinue
+cargo run --bin phext-edit -- --local
+```
+
+If PowerShell swallows `--local`, quote the flag: `cargo run --bin phext-edit -- "--local"`.
+
 `--local` listens on `127.0.0.1:8080` and admits every direct request as a local developer, so the editor loads straight into the lattice and `/api/*` answers without a session. Omit the flag and the previous auth gate is unchanged.
 
 The flag is refused unless the process binds to a loopback address (`127.0.0.1`, `::1`, or `localhost`). `--local --host 0.0.0.0` does not start. A request that arrived through a proxy (`X-Forwarded-For`, `X-Real-IP`, `Forwarded`, or a `Host` that is not loopback) is not treated as local. No environment variable and no request header can turn the bypass on.
 
-Phext files for that run come from `--dir` when you pass it, otherwise from `PHEXT_DATA_DIR`, otherwise from `./.phext-local` (created on first run, with a `welcome.phext` if the directory is empty). That default is separate from the production library, so a local session does not edit deployed phexts. `PHEXT_HOME` is ignored under `--local` unless you pass `--home`.
+Phext files for that run come from `--dir` when you pass it, otherwise from `PHEXT_DATA_DIR`, otherwise from `.phext-local` in the current directory (`.\.phext-local` on Windows). That folder is created on first run, with a `welcome.phext` when it does not already contain a phext file. You do not need to create the directory yourself. It is separate from the production library, so a local session does not edit deployed phexts. `PHEXT_HOME` is ignored under `--local` unless you pass `--home`. On Windows, set `PHEXT_DATA_DIR` only to a Windows path such as `C:\source\phexts`. `/var/lib/phext-edit` is not the default.
+
+If startup cannot create or open a file, the process exits with a line that names the operation and the full path, for example `error: open C:\source\phext-lattice\.phext-local\welcome.phext: The system cannot find the file specified. (os error 2)`. Copy that `error:` line if it still fails. Clearing `PHEXT_DATA_DIR` and `PHEXT_HOME` (the commands above) avoids a leftover Unix path from another machine.
 
 ### phext-tts Usage
 

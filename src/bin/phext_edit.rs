@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
@@ -260,7 +261,7 @@ impl AppState {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().map(|e| e == "phext").unwrap_or(false) {
+                if is_phext(&path) {
                     let meta = std::fs::metadata(&path).ok();
                     files.push(PhextFile {
                         name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
@@ -298,13 +299,17 @@ impl AppState {
     fn open_phext(&mut self, path: &str) -> Result<(), String> {
         // Validate path is within allowed directory
         if let Some(dir) = &self.phext_dir {
-            let canonical = std::fs::canonicalize(path).map_err(|e| format!("{}", e))?;
-            let dir_canonical = std::fs::canonicalize(dir).map_err(|e| format!("{}", e))?;
+            let canonical = std::fs::canonicalize(path)
+                .map_err(|e| format!("canonicalize {path}: {e}"))?;
+            let dir_canonical = std::fs::canonicalize(dir)
+                .map_err(|e| format!("canonicalize {dir}: {e}"))?;
             if !canonical.starts_with(&dir_canonical) {
-                return Err("path outside allowed directory".into());
+                return Err(format!(
+                    "path outside allowed directory: {path} is not inside {dir}"
+                ));
             }
         }
-        let lattice = MappedLattice::open(path).map_err(|e| format!("{}", e))?;
+        let lattice = MappedLattice::open(path).map_err(|e| e.to_string())?;
         let buf = lattice.to_phext_bytes();
         self.overview = LatticeOverview::build(&buf, lattice.index());
         self.nav = Navigator::new();
@@ -819,42 +824,115 @@ fn resolve_local_host(host: Option<&str>) -> Result<String, String> {
     }
 }
 
-/// `PHEXT_DATA_DIR` when it is set, otherwise a directory next to the process
-/// that is not the production library.
-fn resolve_data_dir(env_value: Option<&str>) -> String {
-    match env_value.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(dir) => dir.to_string(),
-        None => ".phext-local".to_string(),
+const LOCAL_STARTER: &[u8] =
+    b"Local development phext.\nThis directory is separate from the production library.\n";
+
+fn io_context(op: &str, path: &Path, err: impl std::fmt::Display) -> String {
+    format!("{op} {}: {err}", path.display())
+}
+
+/// `.phext` files, compared without case so `Notes.PHEXT` counts on Windows.
+fn is_phext(path: &Path) -> bool {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => ext.eq_ignore_ascii_case("phext"),
+        None => false,
     }
 }
 
-/// Create the local data directory and a starter phext when it has none.
-fn ensure_local_data_dir(dir: &std::path::Path) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
-    let mut any = false;
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            if entry.path().extension().map(|ext| ext == "phext").unwrap_or(false) {
-                any = true;
-                break;
+/// `PHEXT_DATA_DIR` when it is set, otherwise `.phext-local` in `cwd`.
+///
+/// Relative values are joined onto `cwd` with `Path::join`. An absolute value
+/// is kept as given. `/var/lib/phext-edit` is not a fallback; it is used only
+/// when the variable is set to that path. On Windows a leading `/` is not an
+/// absolute path (it is the root of the current drive).
+fn resolve_data_dir(env_value: Option<&str>, cwd: &Path) -> PathBuf {
+    match env_value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(dir) => {
+            let path = PathBuf::from(dir);
+            if path.is_absolute() {
+                path
+            } else {
+                cwd.join(path)
             }
         }
+        None => cwd.join(".phext-local"),
     }
-    if !any {
-        let welcome = dir.join("welcome.phext");
-        std::fs::write(
-            &welcome,
-            b"Local development phext.\nThis directory is separate from the production library.\n",
-        )
-        .map_err(|err| format!("cannot write {}: {err}", welcome.display()))?;
+}
+
+/// Phext files in `dir`. A directory that cannot be read is an error that
+/// names the operation and the full path, not an empty list.
+fn list_phext_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = std::fs::read_dir(dir).map_err(|err| io_context("read directory", dir, err))?;
+    let mut phexts = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|err| io_context("read directory", dir, err))?;
+        let path = entry.path();
+        if is_phext(&path) && path.is_file() {
+            phexts.push(path);
+        }
+    }
+    phexts.sort();
+    Ok(phexts)
+}
+
+/// Create the local data directory and a starter phext when it has none.
+///
+/// Returns the phext file to open. The directory is created with
+/// `create_dir_all` when it does not exist, including when a parent is missing.
+fn ensure_local_data_dir(dir: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(dir).map_err(|err| io_context("create directory", dir, err))?;
+    let existing = list_phext_files(dir)?;
+    if let Some(file) = existing.into_iter().next() {
+        return Ok(file);
+    }
+    let welcome = dir.join("welcome.phext");
+    write_starter(&welcome)?;
+    Ok(welcome)
+}
+
+fn write_starter(path: &Path) -> Result<(), String> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|err| io_context("create", path, err))?;
+    file.write_all(LOCAL_STARTER).map_err(|err| io_context("write", path, err))?;
+    file.flush().map_err(|err| io_context("flush", path, err))?;
+    file.sync_all().map_err(|err| io_context("sync", path, err))?;
+    let len = std::fs::metadata(path).map_err(|err| io_context("stat", path, err))?.len();
+    if len == 0 {
+        return Err(format!("write {}: file is empty after write", path.display()));
     }
     Ok(())
+}
+
+/// Data directory plus the phext `--local` should open, from a possibly missing dir.
+fn local_startup_paths(env_value: Option<&str>, cwd: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let dir = resolve_data_dir(env_value, cwd);
+    let file = ensure_local_data_dir(&dir)?;
+    Ok((dir, file))
+}
+
+/// Make `path` absolute so an error can name the full location.
+fn make_absolute(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        return path;
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(path),
+        Err(err) => {
+            eprintln!("error: read current directory: {err}");
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
     use phext_lattice::oauth::{Editors, Oauth};
@@ -963,19 +1041,84 @@ mod tests {
 
     #[test]
     fn local_data_dir_defaults_away_from_production() {
-        assert_eq!(resolve_data_dir(None), ".phext-local");
-        assert_eq!(resolve_data_dir(Some("  ")), ".phext-local");
-        assert_eq!(resolve_data_dir(Some("/var/lib/phext-edit")), "/var/lib/phext-edit");
+        let cwd = std::env::temp_dir().join("phext-lattice-cwd");
+        assert_eq!(resolve_data_dir(None, &cwd), cwd.join(".phext-local"));
+        assert_eq!(resolve_data_dir(Some("  "), &cwd), cwd.join(".phext-local"));
+        assert_eq!(resolve_data_dir(Some("my data"), &cwd), cwd.join("my data"));
+        let production = std::env::temp_dir().join("var").join("lib").join("phext-edit");
+        let production_str = production.to_str().expect("temp path is unicode");
+        assert_eq!(resolve_data_dir(Some(production_str), &cwd), production);
+        assert_ne!(resolve_data_dir(None, &cwd), production);
+        // `/var/lib/phext-edit` is not the default. On Unix it is absolute, so an
+        // explicit PHEXT_DATA_DIR of that path is kept. On Windows a leading
+        // slash is the current drive root, not an absolute path with a prefix.
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                resolve_data_dir(Some("/var/lib/phext-edit"), &cwd),
+                PathBuf::from("/var/lib/phext-edit")
+            );
+            assert_ne!(resolve_data_dir(None, &cwd), PathBuf::from("/var/lib/phext-edit"));
+        }
+        #[cfg(windows)]
+        {
+            let win = PathBuf::from(r"C:\phext data\library");
+            assert!(win.is_absolute());
+            assert_eq!(resolve_data_dir(Some(r"C:\phext data\library"), &cwd), win);
+            assert_ne!(resolve_data_dir(None, &cwd), win);
+        }
+
         let dir = tempfile::tempdir().unwrap();
+        let file = ensure_local_data_dir(dir.path()).unwrap();
+        assert_eq!(file, dir.path().join("welcome.phext"));
+        assert!(file.is_file());
         ensure_local_data_dir(dir.path()).unwrap();
-        assert!(dir.path().join("welcome.phext").is_file());
-        ensure_local_data_dir(dir.path()).unwrap();
-        let phexts: Vec<_> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .flatten()
-            .filter(|entry| entry.path().extension().map(|ext| ext == "phext").unwrap_or(false))
-            .collect();
+        let phexts = list_phext_files(dir.path()).unwrap();
         assert_eq!(phexts.len(), 1);
+    }
+
+    #[test]
+    fn local_startup_creates_a_missing_data_dir_with_spaces() {
+        let parent = tempfile::tempdir().unwrap();
+        let cwd = parent.path().join("work dir");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let custom = parent.path().join("does not exist").join("phext data");
+        assert!(!custom.exists(), "{}", custom.display());
+
+        let (dir, file) = local_startup_paths(None, &cwd).unwrap();
+        assert_eq!(dir, cwd.join(".phext-local"));
+        assert_eq!(file, dir.join("welcome.phext"));
+        assert!(file.is_file(), "{}", file.display());
+        let opened = MappedLattice::open(&file).unwrap();
+        assert!(opened.scroll_count() >= 1);
+
+        let custom_str = custom.to_str().expect("temp path is unicode");
+        let (dir, file) = local_startup_paths(Some(custom_str), &cwd).unwrap();
+        assert_eq!(dir, custom);
+        assert_eq!(file.file_name().and_then(|name| name.to_str()), Some("welcome.phext"));
+        assert!(file.is_file(), "{}", file.display());
+        MappedLattice::open(&file).unwrap();
+
+        // An existing .PHEXT is enough; do not add a second starter.
+        let upper = parent.path().join("upper case dir");
+        std::fs::create_dir_all(&upper).unwrap();
+        std::fs::write(upper.join("Notes.PHEXT"), b"kept\n").unwrap();
+        let file = ensure_local_data_dir(&upper).unwrap();
+        assert_eq!(file.file_name().and_then(|name| name.to_str()), Some("Notes.PHEXT"));
+        assert!(!upper.join("welcome.phext").exists());
+
+        let missing = parent.path().join("no such data");
+        assert!(!missing.exists());
+        let err = list_phext_files(&missing).unwrap_err();
+        assert!(err.contains("read directory"), "{err}");
+        assert!(err.contains(&missing.display().to_string()), "{err}");
+
+        let blocker = parent.path().join("blocked file");
+        std::fs::write(&blocker, b"x").unwrap();
+        let nested = blocker.join("child dir");
+        let err = local_startup_paths(Some(nested.to_str().unwrap()), &cwd).unwrap_err();
+        assert!(err.contains("create directory"), "{err}");
+        assert!(err.contains(&nested.display().to_string()), "{err}");
     }
 
     #[test]
@@ -1031,13 +1174,16 @@ fn main() {
         .or_else(|| if local { None } else { std::env::var("PHEXT_HOME").ok() })
         .map(|h| h.trim().to_string())
         .filter(|h| !h.is_empty())
-        .map(|h| match (&dir, std::path::Path::new(&h).is_absolute()) {
-            (Some(d), false) => std::path::Path::new(d).join(&h).to_string_lossy().to_string(),
-            _ => h,
+        .map(|h| {
+            let path = match (&dir, Path::new(&h).is_absolute()) {
+                (Some(d), false) => Path::new(d).join(&h),
+                _ => PathBuf::from(&h),
+            };
+            make_absolute(path).to_string_lossy().to_string()
         })
         .filter(|h| {
-            let ok = std::path::Path::new(h).is_file();
-            if !ok { eprintln!("Home file {} not found; ignoring --home", h); }
+            let ok = Path::new(h).is_file();
+            if !ok { eprintln!("error: home file not found: {h}"); }
             ok
         });
     let home_coord = get_flag(&args, "--home-coord")
@@ -1049,49 +1195,68 @@ fn main() {
         });
 
     let positional = positional_file(&args);
-    if local && dir.is_none() && positional.is_none() && get_flag(&args, "--home").is_none() {
-        let data = resolve_data_dir(std::env::var("PHEXT_DATA_DIR").ok().as_deref());
-        if let Err(message) = ensure_local_data_dir(std::path::Path::new(&data)) {
-            eprintln!("error: {message}");
-            std::process::exit(1);
-        }
-        dir = Some(data);
-        home_file = None;
-    }
-
-    // Determine initial file: the home file if set, else the first .phext by name
-    let file_path = if let Some(ref h) = home_file {
-        h.clone()
-    } else if let Some(ref d) = dir {
-        let mut found: Vec<String> = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(d) {
-            for entry in entries.flatten() {
-                if entry.path().extension().map(|e| e == "phext").unwrap_or(false) {
-                    found.push(entry.path().to_string_lossy().to_string());
-                }
+    let mut startup_file: Option<PathBuf> = None;
+    // A missing --home does not block the default data directory.
+    if local && dir.is_none() && positional.is_none() && home_file.is_none() {
+        let cwd = match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(err) => {
+                eprintln!("error: read current directory: {err}");
+                std::process::exit(1);
+            }
+        };
+        match local_startup_paths(std::env::var("PHEXT_DATA_DIR").ok().as_deref(), &cwd) {
+            Ok((data, file)) => {
+                dir = Some(data.display().to_string());
+                home_file = None;
+                startup_file = Some(file);
+            }
+            Err(message) => {
+                eprintln!("error: {message}");
+                std::process::exit(1);
             }
         }
-        found.sort();
-        found.into_iter().next().unwrap_or_else(|| {
-            eprintln!("No .phext files found in {}", d);
-            std::process::exit(1);
-        })
+    }
+
+    // Determine initial file: the home file if set, else the first .phext by name.
+    // Open the PathBuf directly so a non-Unicode Windows path is not lossily
+    // round-tripped through String before the first open.
+    let file_path_buf = if let Some(file) = startup_file {
+        file
+    } else if let Some(ref h) = home_file {
+        PathBuf::from(h)
+    } else if let Some(ref d) = dir {
+        let dir_path = make_absolute(PathBuf::from(d));
+        match list_phext_files(&dir_path) {
+            Err(message) => {
+                eprintln!("error: {message}");
+                std::process::exit(1);
+            }
+            Ok(found) => match found.into_iter().next() {
+                Some(path) => path,
+                None => {
+                    eprintln!("error: no .phext files in {}", dir_path.display());
+                    std::process::exit(1);
+                }
+            },
+        }
     } else if local {
         match positional {
-            Some(file) => file,
+            Some(file) => make_absolute(PathBuf::from(file)),
             None => {
                 eprintln!("error: --local needs a .phext file or --dir.");
                 std::process::exit(1);
             }
         }
     } else {
-        args[1].clone()
+        make_absolute(PathBuf::from(&args[1]))
     };
 
-    let lattice = MappedLattice::open(&file_path).unwrap_or_else(|e| {
-        eprintln!("Failed to open {}: {}", file_path, e);
+    let lattice = MappedLattice::open(&file_path_buf).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
         std::process::exit(1);
     });
+    let file_path = file_path_buf.to_string_lossy().to_string();
 
     let mut app_state = AppState::new(lattice, file_path.clone());
     app_state.phext_dir = dir.clone();
