@@ -440,6 +440,42 @@ fn json_response(stream: &mut std::net::TcpStream, value: &impl Serialize) {
     send(stream, 200, "application/json", body.as_bytes());
 }
 
+/// Path without the query string. Fragments are not sent by the browser.
+fn path_route(path: &str) -> &str {
+    path.split('?').next().unwrap_or(path)
+}
+
+struct PublicDocument {
+    content_type: &'static str,
+    body: &'static str,
+}
+
+/// Pages and crawler files a signed-out visitor can read. Exact paths only.
+fn public_document(path: &str) -> Option<PublicDocument> {
+    let (content_type, body) = match path_route(path) {
+        "/about" => ("text/html; charset=utf-8", ABOUT_HTML),
+        "/privacy" => ("text/html; charset=utf-8", PRIVACY_HTML),
+        "/terms" => ("text/html; charset=utf-8", TERMS_HTML),
+        "/robots.txt" => ("text/plain; charset=utf-8", ROBOTS_TXT),
+        "/sitemap.xml" => ("application/xml; charset=utf-8", SITEMAP_XML),
+        _ => return None,
+    };
+    Some(PublicDocument { content_type, body })
+}
+
+/// The editor shell. `admit` already lets `/` and `/index.html` through unsigned.
+fn is_editor_shell(path: &str) -> bool {
+    matches!(path_route(path), "/" | "/index.html")
+}
+
+/// File, search, and sign-in routes. These stay behind the gate and answer JSON.
+fn is_api_path(path: &str) -> bool {
+    let route = path_route(path);
+    route == "/api" || route.starts_with("/api/")
+}
+
+const API_NOT_FOUND: &[u8] = br#"{"ok":false,"error":"not found"}"#;
+
 fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>, gate: &Gate) {
     let cloned = match stream.try_clone() { Ok(s) => s, Err(_) => return };
     let mut reader = BufReader::new(cloned);
@@ -451,22 +487,27 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
         return;
     }
 
-    if path == "/favicon.ico" {
+    if path_route(&path) == "/favicon.ico" {
         send(stream, 200, "image/svg+xml", FAVICON_SVG.as_bytes());
         return;
     }
 
-    // Public pages: readable without signing in (OAuth app homepage + privacy policy)
-    let public = match path.as_str() {
-        "/about" => Some(ABOUT_HTML),
-        "/privacy" => Some(PRIVACY_HTML),
-        _ => None,
-    };
-    if let Some(page) = public {
+    // Public documents, then a real 404. Both are answered before the gate so a
+    // signed-out visitor is not handed 401 JSON. /api is unchanged: gate.route
+    // still serves sign-in, and gate.admit still requires a token or session.
+    if let Some(doc) = public_document(&path) {
         match method.as_str() {
-            "GET" => send(stream, 200, "text/html; charset=utf-8", page.as_bytes()),
-            "HEAD" => send_head(stream, 200, "text/html; charset=utf-8", page.len()),
+            "GET" => send(stream, 200, doc.content_type, doc.body.as_bytes()),
+            "HEAD" => send_head(stream, 200, doc.content_type, doc.body.len()),
             _ => send(stream, 405, "text/plain", b"method not allowed"),
+        }
+        return;
+    }
+    if !is_editor_shell(&path) && !is_api_path(&path) {
+        let kind = "text/html; charset=utf-8";
+        match method.as_str() {
+            "HEAD" => send_head(stream, 404, kind, NOT_FOUND_HTML.len()),
+            _ => send(stream, 404, kind, NOT_FOUND_HTML.as_bytes()),
         }
         return;
     }
@@ -613,6 +654,11 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
             }
         }
 
+        // Unknown API routes stay JSON. The editor shell's other methods keep
+        // the plain-text 404 they already returned after a successful admit.
+        _ if is_api_path(&path) => {
+            send(stream, 404, "application/json", API_NOT_FOUND);
+        }
         _ => { send(stream, 404, "text/plain", b"not found"); }
     }
 }
@@ -1043,7 +1089,7 @@ const ABOUT_HTML: &str = concat!(r#"<!DOCTYPE html>
 </head>
 <body>
 <main>
-<nav><a href="./">Open the editor</a> · <a href="privacy">Privacy Policy</a></nav>
+<nav><a href="./">Open the editor</a> · <a href="privacy">Privacy Policy</a> · <a href="terms">Terms of Service</a></nav>
 <h1>💎 Phext Edit</h1>
 <p class="dim">A web editor for phext files.</p>
 
@@ -1074,7 +1120,7 @@ are, so the server can tell whether your account is on its list of editors.</p>
 not post anything for you, and it does not share or sell your information. The
 <a href="privacy">Privacy Policy</a> gives the details.</p>
 
-<footer>Phext Edit · <a href="privacy">Privacy Policy</a> ·
+<footer>Phext Edit · <a href="privacy">Privacy Policy</a> · <a href="terms">Terms of Service</a> ·
 Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
 </main>
 </body>
@@ -1093,7 +1139,7 @@ const PRIVACY_HTML: &str = concat!(r#"<!DOCTYPE html>
 </head>
 <body>
 <main>
-<nav><a href="about">About Phext Edit</a> · <a href="./">Open the editor</a></nav>
+<nav><a href="about">About Phext Edit</a> · <a href="terms">Terms of Service</a> · <a href="./">Open the editor</a></nav>
 <h1>Privacy Policy</h1>
 <p class="dim">Effective 30 October 2026</p>
 
@@ -1153,8 +1199,107 @@ User Data Policy</a>, including the Limited Use requirements.</p>
 <h2>Changes</h2>
 <p>If this policy changes, the new version will be posted on this page with a new effective date.</p>
 
-<footer>Phext Edit · <a href="about">About</a> ·
+<footer>Phext Edit · <a href="about">About</a> · <a href="terms">Terms of Service</a> ·
 Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
+</main>
+</body>
+</html>
+"#);
+
+const TERMS_HTML: &str = concat!(r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Terms for Phext Edit: sign in with Google or GitHub, edit the phext files on this server, no ads.">
+<title>Phext Edit: terms of service</title>
+<link rel="icon" type="image/svg+xml" href="favicon.ico">
+"#, public_style!(), r#"
+</head>
+<body>
+<main>
+<nav><a href="about">About Phext Edit</a> · <a href="privacy">Privacy Policy</a> · <a href="./">Open the editor</a></nav>
+<h1>Terms of Service</h1>
+<p class="dim">Effective 30 October 2026</p>
+
+<p>These terms describe Phext Edit, the web editor for phext files at this site.
+Read them with the <a href="privacy">Privacy Policy</a>, which says what happens
+to the information from sign-in.</p>
+
+<h2>The editor</h2>
+<p>Phext is plain text arranged in 11 dimensions. Phext Edit lets you read and edit
+the phext files this server hosts, from a browser. It is part of the open-source
+<a href="https://github.com/wbic16/phext-lattice">phext-lattice</a> project.</p>
+
+<h2>Signing in</h2>
+<p>The files can be changed, so the editor asks you to sign in before you open them.
+You sign in with a Google account or a GitHub account. Sign-in is used to check who
+you are, so the server can tell whether your account may use the editor. Phext Edit
+does not read your mail, files, contacts, or repositories, and it does not post
+anything for you.</p>
+
+<h2>Files you edit</h2>
+<p>Text you save is written into the phext files on this server. Those files belong
+to the person who runs the server, and they are not tied to your account.</p>
+
+<h2>Advertising</h2>
+<p>Phext Edit does not show advertisements. It does not use your sign-in or your
+edits for advertising.</p>
+
+<h2>Questions</h2>
+<p>Email <a href="mailto:will+support@phext.io">will+support@phext.io</a>.</p>
+
+<h2>Changes</h2>
+<p>If these terms change, the new version will be posted on this page with a new effective date.</p>
+
+<footer>Phext Edit · <a href="about">About</a> · <a href="privacy">Privacy Policy</a> ·
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
+</main>
+</body>
+</html>
+"#);
+
+// Canonical host is https://edit.phext.io (repeated below; tests check both files).
+// Disallow comes before Allow so a first-match crawler still blocks /api.
+// Allow: / is the public landing page (the editor shell). File contents and
+// sign-in live under /api, which stays disallowed.
+const ROBOTS_TXT: &str = "\
+User-agent: *\n\
+Disallow: /api\n\
+Allow: /\n\
+Allow: /index.html\n\
+Allow: /about\n\
+Allow: /privacy\n\
+Allow: /terms\n\
+\n\
+Sitemap: https://edit.phext.io/sitemap.xml\n\
+";
+
+const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://edit.phext.io/</loc></url>
+  <url><loc>https://edit.phext.io/about</loc></url>
+  <url><loc>https://edit.phext.io/privacy</loc></url>
+  <url><loc>https://edit.phext.io/terms</loc></url>
+</urlset>
+"#;
+
+const NOT_FOUND_HTML: &str = concat!(r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phext Edit: page not found</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.ico">
+"#, public_style!(), r#"
+</head>
+<body>
+<main>
+<nav><a href="/">Phext Edit</a> · <a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a></nav>
+<h1>Page not found</h1>
+<p>There is no page at that address.</p>
+<p><a href="/">Back to Phext Edit</a></p>
+<footer>Phext Edit · <a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a></footer>
 </main>
 </body>
 </html>
@@ -1426,7 +1571,7 @@ body {
     <div style="color:var(--dim);margin-top:28px;font-size:12px;line-height:1.6">
       A web editor for phext: plain text arranged in 11 dimensions.<br>
       Sign-in only checks who you are; nothing is shared or sold.<br>
-      <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a>
+      <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a>
     </div>
   </div>
 </div>
@@ -1936,3 +2081,208 @@ async function initApp() {
 </body>
 </html>
 "##;
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        handle_request, is_api_path, is_editor_shell, public_document, AppState, ABOUT_HTML,
+        INDEX_HTML, NOT_FOUND_HTML, PRIVACY_HTML, ROBOTS_TXT, SITEMAP_XML, TERMS_HTML,
+    };
+    use phext_lattice::oauth::{Editors, Gate, Oauth};
+    use phext_lattice::MappedLattice;
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    struct HttpResponse {
+        status: u16,
+        content_type: String,
+        body: String,
+    }
+
+    fn locked_gate() -> Arc<Gate> {
+        Arc::new(Gate::new(Some("s3cret-token".into()), Oauth::closed(), Editors::default()))
+    }
+
+    fn open_gate() -> Arc<Gate> {
+        Arc::new(Gate::new(None, Oauth::closed(), Editors::default()))
+    }
+
+    fn http(gate: &Arc<Gate>, request: &str) -> HttpResponse {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = Arc::new(Mutex::new(AppState::new(
+            MappedLattice::from_bytes(b"scroll one"),
+            "mem.phext".into(),
+        )));
+        let gate = Arc::clone(gate);
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            handle_request(&mut stream, &state, &gate);
+        });
+        let mut client = std::net::TcpStream::connect(addr).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        client.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+        client.write_all(request.as_bytes()).unwrap();
+        let _ = client.shutdown(std::net::Shutdown::Write);
+        let mut raw = Vec::new();
+        client.read_to_end(&mut raw).unwrap();
+        server.join().expect("server thread");
+        let raw = String::from_utf8_lossy(&raw).into_owned();
+        let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((&raw, ""));
+        let status_line = head.lines().next().unwrap_or("");
+        let status = status_line.split_whitespace().nth(1).unwrap_or("0").parse().unwrap_or(0);
+        let content_type = head
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.eq_ignore_ascii_case("content-type") {
+                    Some(value.trim().to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        HttpResponse { status, content_type, body: body.to_string() }
+    }
+
+    fn get(gate: &Arc<Gate>, path: &str) -> HttpResponse {
+        http(gate, &format!("GET {path} HTTP/1.1\r\nHost: edit.phext.io\r\nConnection: close\r\n\r\n"))
+    }
+
+    #[test]
+    fn public_pages_name_each_other_and_the_contact() {
+        for page in [ABOUT_HTML, PRIVACY_HTML, INDEX_HTML] {
+            assert!(page.contains("href=\"terms\""), "missing terms link");
+        }
+        assert!(TERMS_HTML.contains("href=\"about\""));
+        assert!(TERMS_HTML.contains("href=\"privacy\""));
+        assert!(TERMS_HTML.contains("will+support@phext.io"));
+        assert!(TERMS_HTML.contains("Google"));
+        assert!(TERMS_HTML.contains("GitHub"));
+        assert!(TERMS_HTML.contains("does not show advertisements"));
+        assert!(!TERMS_HTML.to_ascii_lowercase().contains("legal review"));
+        assert!(NOT_FOUND_HTML.contains("href=\"/\""));
+    }
+
+    #[test]
+    fn crawler_files_use_the_canonical_host() {
+        const ORIGIN: &str = "https://edit.phext.io";
+        assert!(ROBOTS_TXT.contains(ORIGIN));
+        assert!(SITEMAP_XML.contains(ORIGIN));
+        assert!(ROBOTS_TXT.starts_with("User-agent: *\nDisallow: /api\n"));
+        for path in ["/", "/index.html", "/about", "/privacy", "/terms"] {
+            let line = if path == "/" {
+                "Allow: /\n".to_string()
+            } else {
+                format!("Allow: {path}\n")
+            };
+            assert!(ROBOTS_TXT.contains(&line), "robots missing {line}");
+        }
+        assert!(ROBOTS_TXT.contains(&format!("Sitemap: {ORIGIN}/sitemap.xml\n")));
+        assert!(!ROBOTS_TXT.contains("Disallow: /about"));
+        assert!(!ROBOTS_TXT.contains("Disallow: /\n"));
+        for path in ["/", "/about", "/privacy", "/terms"] {
+            assert!(SITEMAP_XML.contains(&format!("{ORIGIN}{path}</loc>")));
+        }
+        assert!(!SITEMAP_XML.contains("/api"));
+        assert_eq!(public_document("/robots.txt?from=crawler").unwrap().body, ROBOTS_TXT);
+        assert!(public_document("/nope").is_none());
+        assert!(is_api_path("/api/nav") && is_api_path("/api") && is_api_path("/api/auth/github?next=/"));
+        assert!(!is_api_path("/apples") && !is_api_path("/about"));
+        assert!(is_editor_shell("/?utm=1") && is_editor_shell("/index.html"));
+        assert!(!is_editor_shell("/terms"));
+    }
+
+    #[test]
+    fn signed_out_visitors_can_read_every_public_page() {
+        let gate = locked_gate();
+        let pages = [
+            ("/", "text/html", "phext-edit"),
+            ("/index.html", "text/html", "phext-edit"),
+            ("/about", "text/html", "Phext Edit"),
+            ("/privacy", "text/html", "Privacy Policy"),
+            ("/terms", "text/html", "Terms of Service"),
+            ("/terms?ref=about", "text/html", "will+support@phext.io"),
+            ("/robots.txt", "text/plain", "Sitemap: https://edit.phext.io/sitemap.xml"),
+            ("/sitemap.xml", "application/xml", "https://edit.phext.io/terms"),
+            ("/favicon.ico", "image/svg+xml", "svg"),
+        ];
+        for (path, kind, marker) in pages {
+            let res = get(&gate, path);
+            assert_eq!(res.status, 200, "{path} status {}", res.status);
+            assert!(res.content_type.starts_with(kind), "{path} type {}", res.content_type);
+            assert!(res.body.contains(marker), "{path} body missing {marker}");
+            assert!(!res.body.contains("\"error\":\"unauthorized\""), "{path} was refused");
+        }
+        let head = http(&gate, "HEAD /terms HTTP/1.1\r\nHost: edit.phext.io\r\nConnection: close\r\n\r\n");
+        assert_eq!(head.status, 200);
+        assert!(head.body.is_empty());
+        let post = http(&gate, "POST /terms HTTP/1.1\r\nHost: edit.phext.io\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        assert_eq!(post.status, 405);
+        assert!(!post.body.contains("unauthorized"));
+    }
+
+    #[test]
+    fn unknown_paths_are_an_html_404_with_a_link_home() {
+        let gate = locked_gate();
+        for path in ["/no-such-page", "/foo/bar", "/missing?x=1", "/terms/"] {
+            let res = get(&gate, path);
+            assert_eq!(res.status, 404, "{path}");
+            assert!(res.content_type.starts_with("text/html"), "{path}");
+            assert!(res.body.contains("href=\"/\""), "{path} has no home link");
+            assert!(res.body.contains("Page not found"), "{path}");
+            assert!(!res.body.contains("unauthorized"), "{path}");
+        }
+        let head = http(&gate, "HEAD /no-such-page HTTP/1.1\r\nHost: edit.phext.io\r\nConnection: close\r\n\r\n");
+        assert_eq!(head.status, 404);
+        assert!(head.content_type.starts_with("text/html"));
+        assert!(head.body.is_empty());
+    }
+
+    #[test]
+    fn api_paths_still_return_json_and_a_token_still_works() {
+        let gate = locked_gate();
+        let denied = get(&gate, "/api/nav");
+        assert_eq!(denied.status, 401);
+        assert!(denied.content_type.starts_with("application/json"));
+        assert!(denied.body.contains("\"error\":\"unauthorized\""));
+        assert!(!denied.body.contains("<html"));
+
+        let unknown = get(&gate, "/api/does-not-exist");
+        assert_eq!(unknown.status, 401);
+        assert!(unknown.content_type.starts_with("application/json"));
+        assert!(!unknown.body.contains("<html"));
+
+        let authed = http(
+            &gate,
+            "GET /api/status HTTP/1.1\r\nHost: edit.phext.io\r\nAuthorization: Bearer s3cret-token\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(authed.status, 200, "{}", authed.body);
+        assert!(authed.content_type.starts_with("application/json"));
+
+        let missing = http(
+            &gate,
+            "GET /api/does-not-exist HTTP/1.1\r\nHost: edit.phext.io\r\nAuthorization: Bearer s3cret-token\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(missing.status, 404);
+        assert!(missing.content_type.starts_with("application/json"));
+        assert!(missing.body.contains("\"error\":\"not found\""));
+
+        let session = get(&open_gate(), "/api/session");
+        assert_eq!(session.status, 200);
+        assert!(session.content_type.starts_with("application/json"));
+        assert!(session.body.contains("\"locked\":false"));
+
+        // Sign-in itself is an API route and must stay reachable while signed out.
+        let oauth = Arc::new(Gate::new(None, Oauth::test_ready(), Editors::default()));
+        let who = get(&oauth, "/api/session");
+        assert_eq!(who.status, 200);
+        assert!(who.body.contains("\"locked\":true"));
+        assert!(who.content_type.starts_with("application/json"));
+        let start = get(&oauth, "/api/auth/github");
+        assert_eq!(start.status, 302, "{}", start.body);
+        assert!(!start.body.contains("Page not found"));
+    }
+}
