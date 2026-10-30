@@ -12,6 +12,7 @@
 /// - `editor` — Pluggable editor mode trait
 /// - `modes` — Vim-style editor mode
 /// - `undo` — Undo/redo engine with phext serialization
+/// - `measure` — first-party ad-funnel log for the web editor (web feature)
 
 pub mod coordinate_ext;
 pub mod cursor;
@@ -20,6 +21,8 @@ pub mod index;
 pub mod mmap;
 pub mod modes;
 pub mod navigator;
+#[cfg(feature = "web")]
+pub mod measure;
 #[cfg(feature = "web")]
 pub mod oauth;
 pub mod search;

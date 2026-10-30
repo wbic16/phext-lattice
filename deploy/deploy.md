@@ -22,6 +22,10 @@ policy link. Both are served by phext-edit itself and open without signing in;
 Google rejects a homepage that sits behind a login. Add `phext.io` under
 authorized domains.
 
+Ad measurement (first-party funnel log, no third-party script) is described in
+[measure.md](measure.md), including the directory the service writes and how to
+print a report after an ad flight.
+
 ## mirrorborn.us/editor (previous setup)
 
 ## Architecture
