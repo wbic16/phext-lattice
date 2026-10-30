@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::io;
 use memmap2::Mmap;
 use libphext::phext::Coordinate;
-use crate::index::LatticeIndex;
+use crate::index::{LatticeIndex, ScrollSpan};
 
 /// A memory-mapped phext document with copy-on-write editing.
 pub struct MappedLattice {
@@ -50,6 +50,26 @@ impl MappedLattice {
         let mmap = unsafe { Mmap::map(&file)? };
         let index = LatticeIndex::build(&mmap);
 
+        Ok(MappedLattice {
+            mmap,
+            path,
+            index,
+            overlay: HashMap::new(),
+            _temp_file: None,
+        })
+    }
+
+    /// Open a phext file with an index built elsewhere (e.g. loaded from a
+    /// `sidecar`), skipping the O(n) scan. Fails if the index was built for a
+    /// buffer of a different length.
+    pub fn open_with_index<P: AsRef<Path>>(path: P, index: LatticeIndex) -> io::Result<MappedLattice> {
+        let path = path.as_ref().to_path_buf();
+        let file = std::fs::File::open(&path)?;
+        let mmap = unsafe { Mmap::map(&file)? };
+        if mmap.len() != index.buffer_len() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!(
+                "index covers {} bytes but {} has {}", index.buffer_len(), path.display(), mmap.len())));
+        }
         Ok(MappedLattice {
             mmap,
             path,
@@ -166,13 +186,20 @@ impl MappedLattice {
         self.overlay.len()
     }
 
+    /// Coordinates with unsaved edits (modified, inserted, or deleted), sorted.
+    pub fn pending_coordinates(&self) -> Vec<Coordinate> {
+        let mut coords: Vec<Coordinate> = self.overlay.keys().copied().collect();
+        coords.sort();
+        coords
+    }
+
     /// Save to the backing file. Reconstructs the phext from mmap + overlay.
     /// Uses atomic rename via NamedTempFile to prevent partial-write corruption.
     pub fn save(&mut self) -> io::Result<()> {
         if self.path.as_os_str().is_empty() {
             return Err(io::Error::new(io::ErrorKind::Other, "No backing file path"));
         }
-        let content = self.to_phext_bytes();
+        let (content, spans, clean) = self.serialize();
 
         // Write to a temp file in the same directory, then atomically rename.
         // This ensures no partial-write state is ever visible on disk.
@@ -186,10 +213,15 @@ impl MappedLattice {
         tmp.persist(&self.path)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-        // Re-map the file and rebuild index
+        // Re-map the file. The spans recorded while serializing are the index,
+        // unless an edit smuggled in delimiter bytes; then rescan.
         let file = std::fs::File::open(&self.path)?;
         self.mmap = unsafe { Mmap::map(&file)? };
-        self.index = LatticeIndex::build(&self.mmap);
+        self.index = if clean {
+            LatticeIndex::from_entries(spans, self.mmap.len())
+        } else {
+            LatticeIndex::build(&self.mmap)
+        };
         self.overlay.clear();
 
         Ok(())
@@ -203,6 +235,13 @@ impl MappedLattice {
 
     /// Reconstruct the full phext as bytes from mmap + overlay.
     pub fn to_phext_bytes(&self) -> Vec<u8> {
+        self.serialize().0
+    }
+
+    /// Serialize mmap + overlay, recording each non-empty scroll's span as it is
+    /// written. The flag is false if an overlay scroll contains delimiter bytes,
+    /// in which case the recorded spans don't describe the output.
+    fn serialize(&self) -> (Vec<u8>, Vec<(Coordinate, ScrollSpan)>, bool) {
         use libphext::phext::{
             SCROLL_BREAK, SECTION_BREAK, CHAPTER_BREAK, BOOK_BREAK,
             VOLUME_BREAK, COLLECTION_BREAK, SERIES_BREAK, SHELF_BREAK, LIBRARY_BREAK,
@@ -211,6 +250,8 @@ impl MappedLattice {
 
         let coords = self.populated_coordinates();
         let mut output: Vec<u8> = Vec::new();
+        let mut spans: Vec<(Coordinate, ScrollSpan)> = Vec::with_capacity(coords.len());
+        let mut clean = true;
         let mut current = default_coordinate();
 
         for coord in coords {
@@ -254,13 +295,20 @@ impl MappedLattice {
 
             // Write scroll content
             if let Some(content) = self.read_scroll(&coord) {
+                if self.overlay.contains_key(&coord) && content.bytes().any(crate::sidecar::is_break) {
+                    clean = false;
+                }
+                let start = output.len();
                 output.extend_from_slice(content.as_bytes());
+                if output.len() > start {
+                    spans.push((coord, ScrollSpan { start, end: output.len() }));
+                }
             }
 
             current = coord;
         }
 
-        output
+        (output, spans, clean)
     }
 
     /// Access the raw mmap buffer for search operations.
@@ -405,5 +453,29 @@ mod tests {
         let c1 = to_coordinate("1.1.1/1.1.1/1.1.1");
         lattice.delete_scroll(c1);
         assert_eq!(lattice.scroll_count(), original_count); // +1 -1 = same
+    }
+
+    #[test]
+    fn save_records_the_same_index_a_scan_would_build() {
+        let dir = std::env::temp_dir().join(format!("phext-lattice-save-index-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.phext");
+        std::fs::write(&path, test_phext()).unwrap();
+        let mut lat = MappedLattice::open(&path).unwrap();
+        lat.write_scroll(to_coordinate("1.1.1/1.1.1/1.1.2"), "longer scroll two".into());
+        lat.write_scroll(to_coordinate("1.1.1/1.1.2/1.1.1"), "new book".into());
+        lat.write_scroll(to_coordinate("2.1.1/1.1.1/1.1.1"), "".into());
+        lat.delete_scroll(to_coordinate("1.1.1/1.1.1/1.2.1"));
+        lat.save().unwrap();
+        let scanned = LatticeIndex::build(&std::fs::read(&path).unwrap());
+        assert_eq!(lat.index().coordinates(), scanned.coordinates());
+        assert_eq!(lat.index().spans(), scanned.spans());
+
+        // an edit containing a delimiter falls back to a rescan
+        lat.write_scroll(to_coordinate("1.1.1/1.1.1/1.1.1"), "split\x17here".into());
+        lat.save().unwrap();
+        let scanned = LatticeIndex::build(&std::fs::read(&path).unwrap());
+        assert_eq!(lat.index().coordinates(), scanned.coordinates());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

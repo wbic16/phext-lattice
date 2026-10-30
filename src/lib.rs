@@ -2,12 +2,13 @@
 ///
 /// Provides:
 /// - `coordinate_ext` — Hash/Eq, Dimension enum, dimensional navigation for Coordinate
-/// - `index` — O(1) coordinate → byte-span lookup built from a single scan
+/// - `index` — sorted coordinate → byte-span table, built from a single scan or loaded
 /// - `mmap` — Memory-mapped phext files with copy-on-write editing
 /// - `navigator` — 9D cursor model for lattice navigation
 /// - `search` — Parallel search with early termination
 /// - `term_index` — BM25 ranked full-text index over scrolls
 /// - `names` — Title/alias → coordinate lookup, exact and case-folded
+/// - `sidecar` — Persisted span/name/term indexes in a parallel phext beside the source
 /// - `sentron` — 2×4×5×8 neural topology
 /// - `stats` — Density, sparklines, lattice overview
 /// - `cursor` — Sub-scroll cursor with word navigation
@@ -27,6 +28,7 @@ pub mod navigator;
 pub mod oauth;
 pub mod search;
 pub mod sentron;
+pub mod sidecar;
 pub mod stats;
 pub mod term_index;
 pub mod tts;
@@ -43,6 +45,7 @@ pub use modes::VimMode;
 pub use names::{NameIndex, fold};
 pub use navigator::Navigator;
 pub use search::{search_lattice, search_lattice_parallel, search_lattice_auto, search_coordinates, SearchHit};
+pub use sidecar::{IndexedLattice, IndexSpec, OpenMode, SyncReport, sidecar_dir};
 pub use sentron::{Sentron, Neuron, Axon, AxisGroup, SENTRON_CAPACITY};
 pub use stats::{ScrollStats, DimensionDensity, LatticeOverview, Neighborhood};
 pub use term_index::{TermIndex, TermHit, Bm25Params, tokenize};
