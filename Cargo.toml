@@ -42,6 +42,11 @@ path = "src/bin/phext_edit.rs"
 required-features = ["web"]
 
 [[bin]]
+name = "phext-measure"
+path = "src/bin/phext_measure.rs"
+required-features = ["web"]
+
+[[bin]]
 name = "phext-nav"
 path = "src/bin/phext_nav.rs"
 required-features = ["tui"]
