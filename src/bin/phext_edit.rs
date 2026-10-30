@@ -854,7 +854,7 @@ fn ensure_local_data_dir(dir: &std::path::Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+mod local_mode_tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
