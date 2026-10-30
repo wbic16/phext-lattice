@@ -20,6 +20,7 @@ use phext_lattice::{
 };
 use phext_lattice::claims::{self, Tier};
 use phext_lattice::joins;
+use phext_lattice::measure;
 use phext_lattice::oauth::{forwarded_https, security_header_block, status_text, Gate, Reply, Session};
 use phext_lattice::submissions::{self, Submission, SubmissionStatus};
 use phext_lattice::wavefront;
@@ -581,6 +582,42 @@ fn is_api_path(path: &str) -> bool {
 
 const API_NOT_FOUND: &[u8] = br#"{"ok":false,"error":"not found"}"#;
 
+/// `POST /api/measure`. Public: a signed-out landing has to be able to post.
+/// Sets no cookie. The body is size-capped before it is read.
+fn handle_measure(
+    stream: &mut std::net::TcpStream,
+    reader: &mut BufReader<std::net::TcpStream>,
+    method: &str,
+    headers: &HashMap<String, String>,
+) {
+    let deny = |stream: &mut std::net::TcpStream, status: u16, content_type: &str, body: &[u8]| {
+        send_response(stream, status, content_type, body, CacheClass::NoStore, headers, false);
+    };
+    if method != "POST" {
+        deny(stream, 405, "text/plain", b"method not allowed");
+        return;
+    }
+    let Some(len_raw) = headers.get("content-length") else {
+        deny(stream, 400, "application/json", b"{\"ok\":false}");
+        return;
+    };
+    let Ok(len) = len_raw.parse::<usize>() else {
+        deny(stream, 400, "application/json", b"{\"ok\":false}");
+        return;
+    };
+    if len > measure::MAX_BODY {
+        deny(stream, 413, "application/json", b"{\"ok\":false}");
+        return;
+    }
+    let body = read_body(reader, headers);
+    let status = measure::accept(headers, &body);
+    if status == 204 {
+        deny(stream, 204, "text/plain", b"");
+    } else {
+        deny(stream, status, "application/json", b"{\"ok\":false}");
+    }
+}
+
 fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>, gate: &Gate) {
     let cloned = match stream.try_clone() { Ok(s) => s, Err(_) => return };
     let mut reader = BufReader::new(cloned);
@@ -623,6 +660,14 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
             "HEAD" => send_response(stream, 404, HTML, NOT_FOUND_HTML.as_bytes(), CacheClass::NoStore, &headers, true),
             _ => send_response(stream, 404, HTML, NOT_FOUND_HTML.as_bytes(), CacheClass::NoStore, &headers, false),
         }
+        return;
+    }
+
+    // Funnel beacon. Signed-out landings post here, so this is before the auth
+    // gate. It sets no cookie and does not read the session.
+    let route = path.split('?').next().unwrap_or(path.as_str());
+    if route == "/api/measure" {
+        handle_measure(stream, &mut reader, &method, &headers);
         return;
     }
 
@@ -2134,6 +2179,7 @@ fn main() {
         eprintln!("  PHEXT_PUBLIC_URL, PHEXT_SESSION_SECRET, PHEXT_EDITORS, PHEXT_EDITORS_FILE, PHEXT_COOKIE_SECURE=1");
         eprintln!("  GITHUB_CLIENT_ID/SECRET, GOOGLE_CLIENT_ID/SECRET, X_CLIENT_ID/SECRET");
         eprintln!("  PHEXT_CLAIM_ENABLED=1 opens claim mode (/api/claim; the /claim lookup is always public)");
+        eprintln!("  PHEXT_DATA_DIR    funnel log directory (default /var/lib/phext-edit)");
         std::process::exit(1);
     }
 
@@ -2262,6 +2308,10 @@ fn main() {
         gate.load_editors_file(&editors_file);
         println!("   admitted editors: {}", editors_file.display());
     }
+    let measure_line = match measure::install() {
+        Ok(path) => format!("measure: {}", path.display()),
+        Err(err) => format!("measure: off ({err})"),
+    };
     let listener = TcpListener::bind(format!("{}:{}", host, port)).unwrap_or_else(|e| {
         eprintln!("Failed to bind {}:{}: {}", host, port, e);
         std::process::exit(1);
@@ -2303,6 +2353,7 @@ fn main() {
     for line in gate.describe() {
         println!("   {}", line);
     }
+    println!("   {}", measure_line);
     println!("   Open in browser: http://localhost:{}", port);
 
     for stream in listener.incoming() {
@@ -2987,7 +3038,7 @@ const PRIVACY_HTML: &str = concat!(r#"<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="How Phext Edit handles the information it gets when you sign in.">
+<meta name="description" content="How Phext Edit handles sign-in and the first-party notes used to measure ads.">
 <title>Phext Edit: privacy policy</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 "#, public_style!(), r#"
@@ -2999,7 +3050,8 @@ const PRIVACY_HTML: &str = concat!(r#"<!DOCTYPE html>
 <p class="dim">Effective 30 October 2026</p>
 
 <p>This policy covers Phext Edit, the web editor for phext files. It explains what Phext Edit
-learns when you sign in, how that information is used, and what happens to it.</p>
+learns when you sign in, the small first-party note it uses to measure advertisements, how
+that information is used, and what happens to it.</p>
 
 <h2>What we receive</h2>
 <p>When you sign in with <b>Google</b>, Phext Edit asks for the <code>openid</code>,
@@ -3022,7 +3074,7 @@ repositories.</p>
   <li>show your name or username in the editor so you can see who is signed in</li>
 </ul>
 <p>They are not used for advertising, profiling or analytics, and they are not sold or shared
-with anyone.</p>
+with anyone. The ad-measurement note below is kept apart from your account.</p>
 
 <h2>What is stored, and for how long</h2>
 <ul>
@@ -3033,11 +3085,37 @@ with anyone.</p>
     your profile, then thrown away. It is never saved, and Phext Edit never acts on your account.</li>
   <li><b>Your edits.</b> Text you save is written into the phext files on the server. Those
     files belong to the server's owner and are not tied to your account.</li>
-  <li><b>Server logs.</b> The web server keeps standard access logs (IP address, time, page
-    requested and browser) to keep the service running and secure. These logs do not include
-    your account details.</li>
+  <li><b>Server logs.</b> The web server keeps standard access logs (IP address, time, the
+    page requested, and browser) to keep the service running and secure. The page address can
+    include the query string of the link you opened. These logs do not include your account
+    details.</li>
 </ul>
-<p>Phext Edit uses no third-party analytics, advertising or tracking scripts.</p>
+<p>Phext Edit loads no third-party analytics, advertising or tracking scripts.</p>
+
+<h2>Ad measurement</h2>
+<p>Opening Phext Edit can send one small note to this same website so the owner can see
+whether an advertisement brought people here. The note is not kept when your browser sends
+Do Not Track (<code>DNT: 1</code>) or Global Privacy Control (<code>Sec-GPC: 1</code>).
+The page sends nothing when the browser exposes that setting to the script, and the server
+discards the note if the request still arrives with one of those headers.</p>
+<p>A note contains only:</p>
+<ul>
+  <li>which step this visit reached: the landing page, the demo, a sign-in click, a finished
+    sign-in, or the first phext opened or created in that visit</li>
+  <li>advertising labels from the link, when the link had them: <code>utm_source</code>,
+    <code>utm_medium</code>, <code>utm_campaign</code>, <code>utm_term</code>,
+    <code>utm_content</code></li>
+  <li>whether that link carried a <code>gclid</code>, <code>fbclid</code>, or
+    <code>twclid</code>. Yes or no only. The id itself is never sent and never stored</li>
+  <li>the host name of the site you came from, with no path and no query string</li>
+  <li>for a sign-in step, which button it was: GitHub, Google, or X</li>
+  <li>a random id for that browser tab, kept in <code>sessionStorage</code> until the tab
+    closes. It is not a cookie and it is not tied to your sign-in</li>
+</ul>
+<p>Notes are appended to a log file on the server and rotated as the file grows. They are
+used to read a funnel after an ad flight: visits, demo starts, sign-in clicks, sign-ins,
+and first file. They are not sold or shared, and they are not joined to your sign-in.
+The measurement file does not contain your IP address.</p>
 
 <h2>Google user data</h2>
 <p>Phext Edit's use and transfer of information received from Google APIs adheres to the
@@ -3047,6 +3125,8 @@ User Data Policy</a>, including the Limited Use requirements.</p>
 <h2>Your choices</h2>
 <ul>
   <li>Sign out at any time from the status bar. This deletes the sign-in cookie.</li>
+  <li>Turn on Do Not Track or Global Privacy Control in your browser. The measurement
+    note described above is then not kept.</li>
   <li>Remove Phext Edit's access from your
     <a href="https://myaccount.google.com/connections">Google account</a>, your
     <a href="https://github.com/settings/applications">GitHub settings</a> or your
@@ -3527,6 +3607,128 @@ body {
 </div>
 
 <script>
+// MEASUREMENT — first-party funnel beacon. Same-origin POST /api/measure only.
+// window.track(name, extra) does nothing when Do Not Track or Global Privacy Control
+// is visible to the script. Names:
+//   landing       once per tab, when this page loads
+//   demo_start    call when a signed-out demo is shown
+//   signin_click  extra.provider is github, google, or x
+//   signin_done   sign-in finished; same provider
+//   file_first    once per tab, the first phext opened or created
+// The first call stores utm_* labels, click-id booleans, and the referrer host in
+// sessionStorage so they survive the sign-in redirect. Click ids are never the value.
+// A separate HTML document must include this block before track() exists.
+(function () {
+  var EVENTS = { landing: 1, demo_start: 1, signin_click: 1, signin_done: 1, file_first: 1 };
+  var PROVIDERS = { github: 1, google: 1, x: 1, token: 1 };
+  var ONCE = { landing: 1, demo_start: 1, file_first: 1 };
+  var ATTR = 'phext_attr';
+  var SID = 'phext_sid';
+  var SEEN = 'phext_seen';
+  var PENDING = 'phext_signin';
+
+  function optedOut() {
+    if (navigator.globalPrivacyControl === true) return true;
+    var dnt = navigator.doNotTrack || window.doNotTrack || navigator.msDoNotTrack;
+    return dnt === '1' || dnt === 'yes';
+  }
+  function read(key) {
+    try { return sessionStorage.getItem(key); } catch (e) { return null; }
+  }
+  function write(key, value) {
+    try { sessionStorage.setItem(key, value); } catch (e) {}
+  }
+  function clip(value) {
+    var s = String(value == null ? '' : value).trim().slice(0, 80);
+    return /^[A-Za-z0-9 ._+~-]*$/.test(s) ? s : '';
+  }
+  function hostOf(ref) {
+    try {
+      var host = new URL(ref).hostname.toLowerCase();
+      return /^[a-z0-9.-]+$/.test(host) && host.indexOf('..') === -1 && host.length <= 253 ? host : '';
+    } catch (e) { return ''; }
+  }
+  function attr() {
+    var saved = null;
+    try { saved = JSON.parse(read(ATTR) || 'null'); } catch (e) {}
+    if (saved && typeof saved === 'object' && !Array.isArray(saved) && typeof saved.utm_source === 'string')
+      return saved;
+    var q = new URLSearchParams(location.search);
+    function present(key) { var v = q.get(key); return !!(v && v.length); }
+    var fresh = {
+      utm_source: clip(q.get('utm_source')),
+      utm_medium: clip(q.get('utm_medium')),
+      utm_campaign: clip(q.get('utm_campaign')),
+      utm_term: clip(q.get('utm_term')),
+      utm_content: clip(q.get('utm_content')),
+      gclid: present('gclid'),
+      fbclid: present('fbclid'),
+      twclid: present('twclid'),
+      ref: hostOf(document.referrer)
+    };
+    write(ATTR, JSON.stringify(fresh));
+    return fresh;
+  }
+  function sid() {
+    var id = read(SID) || '';
+    if (!/^[0-9a-f]{32}$/.test(id)) {
+      var bytes = new Uint8Array(16);
+      if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(bytes);
+      else for (var i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+      id = '';
+      for (var j = 0; j < 16; j++) id += ('0' + bytes[j].toString(16)).slice(-2);
+      write(SID, id);
+    }
+    return id;
+  }
+  function seen() {
+    try {
+      var map = JSON.parse(read(SEEN) || '{}');
+      return map && typeof map === 'object' ? map : {};
+    } catch (e) { return {}; }
+  }
+  window.track = function (name, extra) {
+    try {
+      if (optedOut()) return;
+      if (!EVENTS[name]) {
+        if (name) console.warn('track: unknown event ' + name);
+        return;
+      }
+      var provider = extra && extra.provider;
+      if (name === 'signin_click' || name === 'signin_done') {
+        if (!PROVIDERS[provider]) return;
+        if (name === 'signin_click') write(PENDING, provider);
+      }
+      var map = seen();
+      var key = name === 'signin_click' ? name + ':' + provider : name;
+      if ((ONCE[name] || name === 'signin_click') && map[key]) return;
+      var a = attr();
+      var body = {
+        event: name,
+        sid: sid(),
+        utm_source: a.utm_source || '',
+        utm_medium: a.utm_medium || '',
+        utm_campaign: a.utm_campaign || '',
+        utm_term: a.utm_term || '',
+        utm_content: a.utm_content || '',
+        gclid: !!a.gclid,
+        fbclid: !!a.fbclid,
+        twclid: !!a.twclid,
+        ref: a.ref || ''
+      };
+      if (name === 'signin_click' || name === 'signin_done') body.provider = provider;
+      if (name === 'signin_done') {
+        try { sessionStorage.removeItem(PENDING); } catch (e) {}
+      }
+      var payload = JSON.stringify(body);
+      if (navigator.sendBeacon)
+        navigator.sendBeacon('/api/measure', new Blob([payload], { type: 'application/json' }));
+      map[key] = 1;
+      write(SEEN, JSON.stringify(map));
+    } catch (e) {}
+  };
+})();
+
 const $ = id => document.getElementById(id);
 
 // ── State ──
@@ -3947,8 +4149,12 @@ async function showAuthScreen(message, sessionFresh) {
     const nextPath = fromQuery && fromQuery.startsWith('/') && !fromQuery.includes(':') ? fromQuery : '/' + location.hash;
     const next = encodeURIComponent(nextPath);
     const label = { github: 'Sign in with GitHub', google: 'Sign in with Google', x: 'Sign in with X' };
-    for (const p of (s.providers || []))
-      html += `<a class="auth-btn" href="api/auth/${p}?next=${next}">${label[p] || p}</a>`;
+    for (const p of (s.providers || [])) {
+      const click = (p === 'github' || p === 'google' || p === 'x')
+        ? ` onclick="track('signin_click',{provider:'${p}'})"`
+        : '';
+      html += `<a class="auth-btn" href="api/auth/${p}?next=${next}"${click}>${label[p] || p}</a>`;
+    }
   }
   $('auth-providers').innerHTML = html;
   $('auth-prompt').textContent =
@@ -3992,6 +4198,7 @@ async function switchPhext(path) {
       const nav = await api('GET', '/api/nav');
       render(nav);
       if (activePanel === 'navtree') loadTree();
+      track('file_first');
       showMsg('📂 ' + res.message);
     } else { showMsg(res.message); }
   } catch(e) { showMsg('failed to open'); }
@@ -4002,13 +4209,19 @@ async function initApp() {
     // Show active file name
     const status = await api('GET', '/api/status');
     $('active-file').textContent = '📂 ' + status.file.split('/').pop();
+    track('file_first');
   } catch { /* auth will catch */ }
 }
 
 // Initial load
 (async () => {
+  track('landing');
   try {
     await loadSession();
+    let pendingProvider = '';
+    try { pendingProvider = sessionStorage.getItem('phext_signin') || ''; } catch (e) {}
+    if (session && session.signed_in && pendingProvider)
+      track('signin_done', { provider: pendingProvider });
     // Known to be signed out: show sign-in now rather than letting an API call 401.
     if (session && session.locked && !session.editor) {
       needsAuth = true;
@@ -4615,5 +4828,127 @@ mod http_tests {
         // Served at arbitrary paths, so the icon URL is absolute.
         assert!(NOT_FOUND_HTML.contains("type=\"image/svg+xml\" href=\"/favicon.svg\""));
         assert!(!NOT_FOUND_HTML.contains("favicon.ico"));
+    }
+}
+
+#[cfg(test)]
+mod measure_tests {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use phext_lattice::oauth::{Editors, Gate, Oauth};
+    use phext_lattice::MappedLattice;
+
+    #[test]
+    fn privacy_page_describes_the_measurement_note() {
+        let page = super::PRIVACY_HTML;
+        for phrase in [
+            "utm_source",
+            "utm_medium",
+            "utm_campaign",
+            "utm_term",
+            "utm_content",
+            "gclid",
+            "fbclid",
+            "twclid",
+            "Do Not Track",
+            "Global Privacy Control",
+            "sessionStorage",
+            "never sent and never stored",
+            "does not contain your IP address",
+            "loads no third-party analytics",
+        ] {
+            assert!(page.contains(phrase), "missing {phrase}");
+        }
+    }
+
+    #[test]
+    fn editor_page_defines_track() {
+        let page = super::INDEX_HTML;
+        assert!(page.contains("window.track"));
+        assert!(page.contains("/api/measure"));
+        assert!(page.contains("navigator.sendBeacon"));
+        assert!(page.contains("globalPrivacyControl"));
+        assert!(page.contains("track('landing')"));
+        assert!(page.contains("track('file_first')"));
+        assert!(page.contains("track('signin_click'"));
+        assert!(page.contains("track('signin_done'"));
+        for name in phext_lattice::measure::EVENTS {
+            assert!(page.contains(name), "{name}");
+        }
+        for provider in phext_lattice::measure::PROVIDERS {
+            assert!(page.contains(provider), "{provider}");
+        }
+    }
+
+    fn roundtrip(addr: std::net::SocketAddr, request: &str) -> String {
+        let mut client = TcpStream::connect(addr).unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        client.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
+        client.write_all(request.as_bytes()).unwrap();
+        let mut buf = String::new();
+        let _ = client.read_to_string(&mut buf);
+        buf
+    }
+
+    fn measure_request(body: &str) -> String {
+        format!(
+            "POST /api/measure HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: https://127.0.0.1\r\nX-Real-IP: 203.0.113.50\r\nCookie: phext_session=sekret-cookie\r\nReferer: https://ads.example/?gclid=CLICKIDSECRET\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+    }
+
+    #[test]
+    fn measure_post_is_public_and_nav_stays_locked() {
+        let log_dir = tempfile::tempdir().unwrap();
+        phext_lattice::measure::install_at(log_dir.path()).unwrap();
+
+        let mut phext = tempfile::NamedTempFile::new().unwrap();
+        phext.write_all(b"hello\n").unwrap();
+        phext.flush().unwrap();
+        let lattice = MappedLattice::open(phext.path()).unwrap();
+        let state = Arc::new(Mutex::new(super::AppState::new(
+            lattice,
+            phext.path().display().to_string(),
+        )));
+        let gate = Arc::new(Gate::new(Oauth::test_ready(), Editors::default()));
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state_s = Arc::clone(&state);
+        let gate_s = Arc::clone(&gate);
+        let server = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(3))).ok();
+                super::handle_request(&mut stream, &state_s, gate_s.as_ref());
+            }
+        });
+
+        let sid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let ok = format!(
+            r#"{{"event":"landing","sid":"{sid}","utm_campaign":"launch","utm_source":"google","gclid":true,"fbclid":false,"twclid":false,"ref":"ads.example"}}"#
+        );
+        let bad = format!(r#"{{"event":"landing","sid":"{sid}","gclid":"CLICKIDSECRET2"}}"#);
+        let r1 = roundtrip(addr, &measure_request(&ok));
+        let r2 = roundtrip(addr, &measure_request(&bad));
+        let r3 = roundtrip(addr, "GET /api/nav HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        server.join().unwrap();
+
+        assert!(r1.starts_with("HTTP/1.1 204 "), "{r1}");
+        assert!(r2.starts_with("HTTP/1.1 400 "), "{r2}");
+        assert!(r3.starts_with("HTTP/1.1 401 "), "{r3}");
+
+        let raw = std::fs::read_to_string(log_dir.path().join("measure.jsonl")).unwrap_or_default();
+        assert!(raw.contains(sid), "{raw}");
+        assert!(raw.contains("\"gclid\":true"), "{raw}");
+        assert!(raw.contains("launch"), "{raw}");
+        assert!(!raw.contains("CLICKIDSECRET"), "{raw}");
+        assert!(!raw.contains("CLICKIDSECRET2"), "{raw}");
+        assert!(!raw.contains("sekret-cookie"), "{raw}");
+        assert!(!raw.contains("203.0.113.50"), "{raw}");
     }
 }

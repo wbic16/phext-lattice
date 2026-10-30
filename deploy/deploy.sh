@@ -486,7 +486,7 @@ main() {
   local commit
   commit=$(as_owner git -C "$APP_DIR" rev-parse --short HEAD)
   printf 'Building %s\n' "$commit"
-  (cd "$APP_DIR" && as_owner cargo build --release --bin phext-edit)
+  (cd "$APP_DIR" && as_owner cargo build --release --bin phext-edit --bin phext-measure)
   [[ -x "${APP_DIR}/target/release/phext-edit" ]] || die "release binary was not produced."
 
   # ── Secrets ──
@@ -512,6 +512,11 @@ EOF
     printf 'Wrote %s/oauth.env (session secret not printed). Fill in the client lines (and PHEXT_EDITORS to restrict who gets in).\n' "$CONF_DIR"
   fi
 
+  # Funnel log. JSON lines, mode 0640, no IP addresses. See deploy/measure.md.
+  sudo mkdir -p /var/lib/phext-edit
+  sudo chown "$SERVICE_USER:$SERVICE_USER" /var/lib/phext-edit
+  sudo chmod 750 /var/lib/phext-edit
+
   # ── systemd ──
   local unit_tmp
   unit_tmp=$(mktemp)
@@ -526,6 +531,7 @@ Type=simple
 User=${SERVICE_USER}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=-${CONF_DIR}/oauth.env
+Environment=PHEXT_DATA_DIR=/var/lib/phext-edit
 ExecStart=${APP_DIR}/target/release/phext-edit --dir ${PHEXT_DIR} --home ${PHEXT_HOME} --home-coord ${PHEXT_HOME_COORD} --host 127.0.0.1 --port ${PORT}
 Restart=on-failure
 RestartSec=5
@@ -707,6 +713,7 @@ EOF
   printf '  listen:    127.0.0.1:%s\n' "$PORT"
   printf '  phexts:    %s\n' "$PHEXT_DIR"
   printf '  secrets:   %s/oauth.env\n' "$CONF_DIR"
+  printf '  measure:   /var/lib/phext-edit\n'
   printf '  nginx:     %s (%s)\n' "$available" "$nginx_result"
   printf '  tls:       %s\n' "$tls"
   printf '  redirect:  %s\n' "$redirect"
