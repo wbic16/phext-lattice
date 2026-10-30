@@ -114,6 +114,16 @@ phext-tts extract file.phext > pronunciation.md
 phext-tts special
 ```
 
+## Tests
+
+```bash
+cargo test
+cargo test --test e2e_local
+bash scripts/e2e.sh
+```
+
+`e2e_local` starts the built `phext-edit --local` binary on a free loopback port with a temporary directory. It checks the public pages, crawls same-origin links in the HTML, switches between two phext files through the editor's API, and requires each response to finish within 50 ms. External links are printed and not fetched.
+
 ## License
 
 MIT
