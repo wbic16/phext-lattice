@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 
@@ -17,7 +17,8 @@ use phext_lattice::{
     MappedLattice, Navigator, Sentron,
     DimensionDensity,
 };
-use phext_lattice::oauth::{status_text, Gate};
+use phext_lattice::oauth::{forwarded_https, security_header_block, status_text, Gate};
+use sha2::Digest;
 
 // ── API Types ──────────────────────────────────────────────────────────
 
@@ -419,25 +420,110 @@ fn read_body(reader: &mut BufReader<std::net::TcpStream>, headers: &HashMap<Stri
     String::from_utf8_lossy(&buf).to_string()
 }
 
-/// Status line and headers only. `no-store` keeps browsers from holding on to
-/// an old copy of the page or a stale API response.
-fn send_head(stream: &mut std::net::TcpStream, status: u16, content_type: &str, len: usize) {
-    let header = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
-        status, status_text(status), content_type, len
-    );
-    let _ = stream.write_all(header.as_bytes());
+const HTML: &str = "text/html; charset=utf-8";
+/// The shell is one embedded document (CSS and JS are inline), so a minute of
+/// freshness plus an ETag is enough. After that the browser revalidates.
+const SHELL_CACHE: &str = "public, max-age=60, must-revalidate";
+/// Favicon bytes are compiled in and change only when the binary does.
+const STATIC_CACHE: &str = "public, max-age=86400, must-revalidate";
+
+#[derive(Clone, Copy)]
+enum CacheClass {
+    /// API responses, errors, and anything tied to a session.
+    NoStore,
+    Shell,
+    Static,
 }
 
-fn send(stream: &mut std::net::TcpStream, status: u16, content_type: &str, body: &[u8]) {
-    send_head(stream, status, content_type, body.len());
-    let _ = stream.write_all(body);
+fn cache_control(class: CacheClass) -> &'static str {
+    match class {
+        CacheClass::NoStore => "no-store",
+        CacheClass::Shell => SHELL_CACHE,
+        CacheClass::Static => STATIC_CACHE,
+    }
+}
+
+fn strong_etag(body: &[u8]) -> String {
+    let digest = sha2::Sha256::digest(body);
+    let mut hex = String::with_capacity(2 + digest.len() * 2);
+    hex.push('"');
+    for byte in digest {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        hex.push(HEX[(byte >> 4) as usize] as char);
+        hex.push(HEX[(byte & 0xf) as usize] as char);
+    }
+    hex.push('"');
+    hex
+}
+
+fn if_none_match(headers: &HashMap<String, String>, etag: &str) -> bool {
+    let Some(value) = headers.get("if-none-match") else {
+        return false;
+    };
+    value.split(',').any(|part| {
+        let part = part.trim();
+        part == "*" || part == etag || part.strip_prefix("W/").map(str::trim) == Some(etag)
+    })
+}
+
+fn response_bytes(
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    class: CacheClass,
+    req_headers: &HashMap<String, String>,
+    head_only: bool,
+) -> Vec<u8> {
+    let https = forwarded_https(req_headers);
+    let etag = match class {
+        CacheClass::NoStore => None,
+        CacheClass::Shell | CacheClass::Static => Some(strong_etag(body)),
+    };
+    if status == 200 {
+        if let Some(ref tag) = etag {
+            if if_none_match(req_headers, tag) {
+                let head = format!(
+                    "HTTP/1.1 304 Not Modified\r\nETag: {tag}\r\nCache-Control: {}\r\nContent-Length: 0\r\nConnection: close\r\n{}\r\n",
+                    cache_control(class),
+                    security_header_block(https)
+                );
+                return head.into_bytes();
+            }
+        }
+    }
+    let etag_line = etag.map(|tag| format!("ETag: {tag}\r\n")).unwrap_or_default();
+    let mut out = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: {}\r\n{etag_line}Connection: close\r\n{}\r\n",
+        status,
+        status_text(status),
+        body.len(),
+        cache_control(class),
+        security_header_block(https)
+    )
+    .into_bytes();
+    if !head_only {
+        out.extend_from_slice(body);
+    }
+    out
+}
+
+fn send_response(
+    stream: &mut std::net::TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    class: CacheClass,
+    req_headers: &HashMap<String, String>,
+    head_only: bool,
+) {
+    let bytes = response_bytes(status, content_type, body, class, req_headers, head_only);
+    let _ = stream.write_all(&bytes);
     let _ = stream.flush();
 }
 
-fn json_response(stream: &mut std::net::TcpStream, value: &impl Serialize) {
+fn json_response(stream: &mut std::net::TcpStream, headers: &HashMap<String, String>, value: &impl Serialize) {
     let body = serde_json::to_string(value).unwrap_or_else(|_| "{}".into());
-    send(stream, 200, "application/json", body.as_bytes());
+    send_response(stream, 200, "application/json", body.as_bytes(), CacheClass::NoStore, headers, false);
 }
 
 /// Path without the query string. Fragments are not sent by the browser.
@@ -481,33 +567,40 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
     let mut reader = BufReader::new(cloned);
     let (method, path, headers) = match parse_request(&mut reader) { Some(v) => v, None => return };
 
-    if method == "OPTIONS" {
-        let h = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n\r\n";
-        let _ = stream.write_all(h.as_bytes());
-        return;
-    }
-
-    if path_route(&path) == "/favicon.ico" {
-        send(stream, 200, "image/svg+xml", FAVICON_SVG.as_bytes());
+    // Same-origin fetches do not need CORS. Nothing else in this repo calls
+    // the editor from another origin, and a wildcard would let any site read
+    // responses alongside the session cookie.
+    if let Some((content_type, body)) = icon_body(path_route(&path)) {
+        match method.as_str() {
+            "GET" => send_response(stream, 200, content_type, body, CacheClass::Static, &headers, false),
+            "HEAD" => send_response(stream, 200, content_type, body, CacheClass::Static, &headers, true),
+            _ => send_response(stream, 405, "text/plain", b"method not allowed", CacheClass::NoStore, &headers, false),
+        }
         return;
     }
 
     // Public documents, then a real 404. Both are answered before the gate so a
     // signed-out visitor is not handed 401 JSON. /api is unchanged: gate.route
     // still serves sign-in, and gate.admit still requires a token or session.
+    // HTML pages revalidate like the shell; crawler files are compiled-in bytes.
     if let Some(doc) = public_document(&path) {
+        let class = if doc.content_type.starts_with("text/html") {
+            CacheClass::Shell
+        } else {
+            CacheClass::Static
+        };
+        let bytes = doc.body.as_bytes();
         match method.as_str() {
-            "GET" => send(stream, 200, doc.content_type, doc.body.as_bytes()),
-            "HEAD" => send_head(stream, 200, doc.content_type, doc.body.len()),
-            _ => send(stream, 405, "text/plain", b"method not allowed"),
+            "GET" => send_response(stream, 200, doc.content_type, bytes, class, &headers, false),
+            "HEAD" => send_response(stream, 200, doc.content_type, bytes, class, &headers, true),
+            _ => send_response(stream, 405, "text/plain", b"method not allowed", CacheClass::NoStore, &headers, false),
         }
         return;
     }
     if !is_editor_shell(&path) && !is_api_path(&path) {
-        let kind = "text/html; charset=utf-8";
         match method.as_str() {
-            "HEAD" => send_head(stream, 404, kind, NOT_FOUND_HTML.len()),
-            _ => send(stream, 404, kind, NOT_FOUND_HTML.as_bytes()),
+            "HEAD" => send_response(stream, 404, HTML, NOT_FOUND_HTML.as_bytes(), CacheClass::NoStore, &headers, true),
+            _ => send_response(stream, 404, HTML, NOT_FOUND_HTML.as_bytes(), CacheClass::NoStore, &headers, false),
         }
         return;
     }
@@ -526,34 +619,34 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
 
     match (method.as_str(), path.as_str()) {
         ("GET", "/") | ("GET", "/index.html") => {
-            send(stream, 200, "text/html; charset=utf-8", INDEX_HTML.as_bytes());
+            send_response(stream, 200, HTML, INDEX_HTML.as_bytes(), CacheClass::Shell, &headers, false);
         }
         ("HEAD", "/") | ("HEAD", "/index.html") => {
-            send_head(stream, 200, "text/html; charset=utf-8", INDEX_HTML.len());
+            send_response(stream, 200, HTML, INDEX_HTML.as_bytes(), CacheClass::Shell, &headers, true);
         }
 
         // ── Phext file management ──
         ("GET", "/api/phexts") => {
-            json_response(stream, &state.list_phexts());
+            json_response(stream, &headers, &state.list_phexts());
         }
         ("POST", "/api/open") => {
             let body = read_body(&mut reader, &headers);
             let path_str = body.trim().to_string();
             match state.open_phext(&path_str) {
-                Ok(()) => json_response(stream, &ApiOk { ok: true, message: format!("opened {}", state.file_path) }),
-                Err(e) => json_response(stream, &ApiOk { ok: false, message: e }),
+                Ok(()) => json_response(stream, &headers, &ApiOk { ok: true, message: format!("opened {}", state.file_path) }),
+                Err(e) => json_response(stream, &headers, &ApiOk { ok: false, message: e }),
             }
         }
 
-        ("GET", "/api/nav") => { json_response(stream, &state.nav_json()); }
+        ("GET", "/api/nav") => { json_response(stream, &headers, &state.nav_json()); }
         ("GET", "/api/status") => {
             let buf = state.lattice.to_phext_bytes();
-            json_response(stream, &ApiStatus {
+            json_response(stream, &headers, &ApiStatus {
                 scrolls: state.overview.total_scrolls, bytes: buf.len(),
                 file: state.file_path.clone(), dirty: state.dirty,
             });
         }
-        ("GET", "/api/tree") => { json_response(stream, &state.tree_json()); }
+        ("GET", "/api/tree") => { json_response(stream, &headers, &state.tree_json()); }
 
         // Navigation
         ("POST", "/api/dim") => {
@@ -561,32 +654,32 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
             if let Ok(d) = body.trim().parse::<u8>() {
                 if (1..=9).contains(&d) { state.nav.select_dimension(d); }
             }
-            json_response(stream, &state.nav_json());
+            json_response(stream, &headers, &state.nav_json());
         }
-        ("POST", "/api/forward") => { state.nav.move_forward(); json_response(stream, &state.nav_json()); }
-        ("POST", "/api/backward") => { state.nav.move_backward(); json_response(stream, &state.nav_json()); }
+        ("POST", "/api/forward") => { state.nav.move_forward(); json_response(stream, &headers, &state.nav_json()); }
+        ("POST", "/api/backward") => { state.nav.move_backward(); json_response(stream, &headers, &state.nav_json()); }
         ("POST", "/api/next") => {
             let idx = state.lattice.index().clone();
             state.nav.next_populated(&idx);
-            json_response(stream, &state.nav_json());
+            json_response(stream, &headers, &state.nav_json());
         }
         ("POST", "/api/prev") => {
             let idx = state.lattice.index().clone();
             state.nav.prev_populated(&idx);
-            json_response(stream, &state.nav_json());
+            json_response(stream, &headers, &state.nav_json());
         }
         ("POST", "/api/goto") => {
             let body = read_body(&mut reader, &headers);
             if let Some(coord) = parse_coordinate(body.trim()) { state.nav.goto(coord); }
-            json_response(stream, &state.nav_json());
+            json_response(stream, &headers, &state.nav_json());
         }
         ("POST", "/api/home") => {
             if let Err(e) = state.go_home() { eprintln!("home: {}", e); }
-            json_response(stream, &state.nav_json());
+            json_response(stream, &headers, &state.nav_json());
         }
         ("POST", "/api/base") => {
             state.nav.goto(libphext::phext::default_coordinate());
-            json_response(stream, &state.nav_json());
+            json_response(stream, &headers, &state.nav_json());
         }
 
         // Edit
@@ -599,18 +692,18 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
                     state.lattice.write_scroll(coord, content.to_string());
                     state.dirty = true;
                     state.rebuild_overview();
-                    json_response(stream, &ApiOk { ok: true, message: "scroll updated".into() });
+                    json_response(stream, &headers, &ApiOk { ok: true, message: "scroll updated".into() });
                 } else {
-                    json_response(stream, &ApiOk { ok: false, message: "invalid coordinate".into() });
+                    json_response(stream, &headers, &ApiOk { ok: false, message: "invalid coordinate".into() });
                 }
             } else {
-                json_response(stream, &ApiOk { ok: false, message: "invalid json".into() });
+                json_response(stream, &headers, &ApiOk { ok: false, message: "invalid json".into() });
             }
         }
         ("POST", "/api/save") => {
             match state.lattice.save() {
-                Ok(()) => { state.dirty = false; json_response(stream, &ApiOk { ok: true, message: "saved".into() }); }
-                Err(e) => { json_response(stream, &ApiOk { ok: false, message: format!("save failed: {}", e) }); }
+                Ok(()) => { state.dirty = false; json_response(stream, &headers, &ApiOk { ok: true, message: "saved".into() }); }
+                Err(e) => { json_response(stream, &headers, &ApiOk { ok: false, message: format!("save failed: {}", e) }); }
             }
         }
 
@@ -619,27 +712,27 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
             let body = read_body(&mut reader, &headers);
             let query = body.trim();
             if query.is_empty() {
-                json_response(stream, &Vec::<ApiSearchHit>::new());
+                json_response(stream, &headers, &Vec::<ApiSearchHit>::new());
             } else {
                 let buf = state.lattice.to_phext_bytes();
                 let hits = phext_lattice::search_lattice_auto(&buf, state.lattice.index(), query, false, 50);
                 let api_hits: Vec<ApiSearchHit> = hits.into_iter().map(|h| ApiSearchHit {
                     coordinate: format!("{}", h.coordinate), context: h.context, offset: h.offset,
                 }).collect();
-                json_response(stream, &api_hits);
+                json_response(stream, &headers, &api_hits);
             }
         }
 
         // Zoom tiers
-        ("GET", "/api/zoom/z") => { json_response(stream, &state.zoom_z()); }
+        ("GET", "/api/zoom/z") => { json_response(stream, &headers, &state.zoom_z()); }
         ("GET", p) if p.starts_with("/api/zoom/y/") => {
-            json_response(stream, &state.zoom_y(&p["/api/zoom/y/".len()..]));
+            json_response(stream, &headers, &state.zoom_y(&p["/api/zoom/y/".len()..]));
         }
         ("GET", p) if p.starts_with("/api/zoom/x/") => {
             let rest = &p["/api/zoom/x/".len()..];
             let parts: Vec<&str> = rest.splitn(2, '/').collect();
-            if parts.len() == 2 { json_response(stream, &state.zoom_x(parts[0], parts[1])); }
-            else { send(stream, 400, "text/plain", b"expected /api/zoom/x/z.z.z/y.y.y"); }
+            if parts.len() == 2 { json_response(stream, &headers, &state.zoom_x(parts[0], parts[1])); }
+            else { send_response(stream, 400, "text/plain", b"expected /api/zoom/x/z.z.z/y.y.y", CacheClass::NoStore, &headers, false); }
         }
 
         // Scroll read
@@ -648,18 +741,18 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
             if let Some(coord) = parse_coordinate(coord_str) {
                 let content = state.lattice.read_scroll(&coord).unwrap_or_default();
                 let bytes = content.len();
-                json_response(stream, &ApiScroll { coordinate: format!("{}", coord), content, bytes });
+                json_response(stream, &headers, &ApiScroll { coordinate: format!("{}", coord), content, bytes });
             } else {
-                send(stream, 400, "text/plain", b"invalid coordinate");
+                send_response(stream, 400, "text/plain", b"invalid coordinate", CacheClass::NoStore, &headers, false);
             }
         }
 
         // Unknown API routes stay JSON. The editor shell's other methods keep
         // the plain-text 404 they already returned after a successful admit.
         _ if is_api_path(&path) => {
-            send(stream, 404, "application/json", API_NOT_FOUND);
+            send_response(stream, 404, "application/json", API_NOT_FOUND, CacheClass::NoStore, &headers, false);
         }
-        _ => { send(stream, 404, "text/plain", b"not found"); }
+        _ => { send_response(stream, 404, "text/plain", b"not found", CacheClass::NoStore, &headers, false); }
     }
 }
 
@@ -792,6 +885,63 @@ fn main() {
 
 const FAVICON_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">💎</text></svg>"#;
 
+fn icon_body(path: &str) -> Option<(&'static str, &'static [u8])> {
+    match path {
+        "/favicon.ico" => Some(("image/x-icon", favicon_ico())),
+        "/favicon.svg" => Some(("image/svg+xml", FAVICON_SVG.as_bytes())),
+        _ => None,
+    }
+}
+
+/// 16×16, 32-bit ICO. Browsers request `/favicon.ico` on their own; the
+/// `<link>` tag points at `/favicon.svg` instead.
+fn favicon_ico() -> &'static [u8] {
+    static ICO: OnceLock<Vec<u8>> = OnceLock::new();
+    ICO.get_or_init(build_favicon_ico)
+}
+
+fn build_favicon_ico() -> Vec<u8> {
+    const N: usize = 16;
+    let xor_len = N * N * 4;
+    let and_len = 64; // 1-bit mask, rows padded to 4 bytes
+    let image_len = 40 + xor_len + and_len;
+    let mut v = Vec::with_capacity(6 + 16 + image_len);
+    v.extend_from_slice(&[0, 0, 1, 0, 1, 0]);
+    v.extend_from_slice(&[
+        N as u8,
+        N as u8,
+        0,
+        0,
+        1,
+        0,
+        32,
+        0,
+    ]);
+    v.extend_from_slice(&(image_len as u32).to_le_bytes());
+    v.extend_from_slice(&22u32.to_le_bytes());
+    v.extend_from_slice(&40u32.to_le_bytes());
+    v.extend_from_slice(&(N as i32).to_le_bytes());
+    v.extend_from_slice(&((N * 2) as i32).to_le_bytes());
+    v.extend_from_slice(&1u16.to_le_bytes());
+    v.extend_from_slice(&32u16.to_le_bytes());
+    v.extend_from_slice(&0u32.to_le_bytes());
+    v.extend_from_slice(&(xor_len as u32).to_le_bytes());
+    v.extend_from_slice(&[0u8; 16]);
+    for y in (0..N).rev() {
+        for x in 0..N {
+            let dx = (x as i32 - 8).abs();
+            let dy = (y as i32 - 8).abs();
+            if dx + dy <= 6 {
+                v.extend_from_slice(&[0x55, 0xa8, 0xd4, 0xff]); // #d4a855
+            } else {
+                v.extend_from_slice(&[0x17, 0x17, 0x17, 0xff]);
+            }
+        }
+    }
+    v.extend(std::iter::repeat(0u8).take(and_len));
+    v
+}
+
 // ── Public pages (no sign-in) ──────────────────────────────────────────
 
 // Shared by the public pages (concat! needs a literal, hence a macro).
@@ -813,7 +963,7 @@ const ABOUT_HTML: &str = concat!(r#"<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="Phext Edit is a web editor for phext files: plain text arranged in 11 dimensions.">
 <title>Phext Edit: about</title>
-<link rel="icon" type="image/svg+xml" href="favicon.ico">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 "#, public_style!(), r#"
 </head>
 <body>
@@ -863,7 +1013,7 @@ const PRIVACY_HTML: &str = concat!(r#"<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="How Phext Edit handles the information it gets when you sign in.">
 <title>Phext Edit: privacy policy</title>
-<link rel="icon" type="image/svg+xml" href="favicon.ico">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 "#, public_style!(), r#"
 </head>
 <body>
@@ -942,7 +1092,7 @@ const TERMS_HTML: &str = concat!(r#"<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="Terms for Phext Edit: sign in with Google or GitHub, edit the phext files on this server, no ads.">
 <title>Phext Edit: terms of service</title>
-<link rel="icon" type="image/svg+xml" href="favicon.ico">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 "#, public_style!(), r#"
 </head>
 <body>
@@ -1019,7 +1169,7 @@ const NOT_FOUND_HTML: &str = concat!(r#"<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Phext Edit: page not found</title>
-<link rel="icon" type="image/svg+xml" href="/favicon.ico">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 "#, public_style!(), r#"
 </head>
 <body>
@@ -1043,7 +1193,7 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="phext-edit: browse and edit phext files, plain text arranged in 11 dimensions, from your browser.">
 <title>💎 phext-edit</title>
-<link rel="icon" type="image/svg+xml" href="favicon.ico">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <style>
 :root {
   --bg: #171717; --panel: #131313; --bar: #1c1c1c; --border: #2e2e2e;
@@ -1936,7 +2086,6 @@ mod tests {
             ("/terms?ref=about", "text/html", "will+support@phext.io"),
             ("/robots.txt", "text/plain", "Sitemap: https://edit.phext.io/sitemap.xml"),
             ("/sitemap.xml", "application/xml", "https://edit.phext.io/terms"),
-            ("/favicon.ico", "image/svg+xml", "svg"),
         ];
         for (path, kind, marker) in pages {
             let res = get(&gate, path);
@@ -1951,6 +2100,16 @@ mod tests {
         let post = http(&gate, "POST /terms HTTP/1.1\r\nHost: edit.phext.io\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         assert_eq!(post.status, 405);
         assert!(!post.body.contains("unauthorized"));
+
+        // PR 5 serves a real ICO at /favicon.ico and keeps the SVG at /favicon.svg.
+        let ico = get(&gate, "/favicon.ico");
+        assert_eq!(ico.status, 200);
+        assert!(ico.content_type.starts_with("image/x-icon"), "{}", ico.content_type);
+        assert!(!ico.body.contains("unauthorized"));
+        let svg = get(&gate, "/favicon.svg");
+        assert_eq!(svg.status, 200);
+        assert!(svg.content_type.starts_with("image/svg+xml"));
+        assert!(svg.body.contains("<svg"));
     }
 
     #[test]
@@ -2013,5 +2172,118 @@ mod tests {
         let start = get(&oauth, "/api/auth/github");
         assert_eq!(start.status, 302, "{}", start.body);
         assert!(!start.body.contains("Page not found"));
+    }
+}
+
+#[cfg(test)]
+mod http_tests {
+    use super::*;
+
+    fn hdr(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn head_of(bytes: &[u8]) -> String {
+        let end = bytes.windows(4).position(|w| w == b"\r\n\r\n").expect("header end");
+        String::from_utf8(bytes[..end].to_vec()).unwrap()
+    }
+
+    #[test]
+    fn shell_revalidates_and_api_responses_are_not_stored() {
+        let headers = hdr(&[]);
+        let bytes = response_bytes(200, HTML, INDEX_HTML.as_bytes(), CacheClass::Shell, &headers, false);
+        let head = head_of(&bytes);
+        assert!(head.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(head.contains(&format!("Cache-Control: {SHELL_CACHE}\r\n")));
+        assert!(head.contains("ETag: \""));
+        assert!(head.contains("X-Content-Type-Options: nosniff\r\n"));
+        assert!(head.contains("X-Frame-Options: DENY\r\n"));
+        assert!(head.contains("Referrer-Policy: strict-origin-when-cross-origin\r\n"));
+        assert!(head.contains("Permissions-Policy: accelerometer=()"));
+        assert!(head.contains("Content-Security-Policy: "));
+        assert!(head.contains("frame-ancestors 'none'"));
+        assert!(!head.contains("unsafe-eval"));
+        assert!(!head.to_ascii_lowercase().contains("access-control-allow-origin"));
+        assert!(!head.contains("Strict-Transport-Security"));
+        assert!(bytes.ends_with(INDEX_HTML.as_bytes()));
+
+        let etag = head.split("ETag: ").nth(1).unwrap().split("\r\n").next().unwrap().to_string();
+        let again = response_bytes(
+            200,
+            HTML,
+            INDEX_HTML.as_bytes(),
+            CacheClass::Shell,
+            &hdr(&[("if-none-match", &etag)]),
+            false,
+        );
+        assert!(head_of(&again).starts_with("HTTP/1.1 304 Not Modified"));
+        let end = again.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        assert_eq!(end + 4, again.len());
+
+        let weak = format!("W/{etag}");
+        let weak_bytes = response_bytes(
+            200,
+            HTML,
+            INDEX_HTML.as_bytes(),
+            CacheClass::Shell,
+            &hdr(&[("if-none-match", &weak)]),
+            false,
+        );
+        assert!(head_of(&weak_bytes).starts_with("HTTP/1.1 304 Not Modified"));
+
+        let api = response_bytes(200, "application/json", b"{\"ok\":true}", CacheClass::NoStore, &headers, false);
+        let api_head = head_of(&api);
+        assert!(api_head.contains("Cache-Control: no-store\r\n"));
+        assert!(!api_head.contains("ETag:"));
+        assert!(!api_head.to_ascii_lowercase().contains("access-control-allow-origin"));
+    }
+
+    #[test]
+    fn https_shell_carries_hsts_and_head_omits_the_body() {
+        let bytes = response_bytes(
+            200,
+            HTML,
+            b"<html></html>",
+            CacheClass::Shell,
+            &hdr(&[("x-forwarded-proto", "https")]),
+            true,
+        );
+        let head = head_of(&bytes);
+        assert!(head.contains("Strict-Transport-Security: max-age=31536000"));
+        assert!(head.contains("upgrade-insecure-requests"));
+        assert!(head.contains("Content-Length: 13\r\n"));
+        let end = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        assert_eq!(end + 4, bytes.len());
+    }
+
+    #[test]
+    fn favicon_ico_is_an_icon_and_the_svg_keeps_its_type() {
+        let (ico_type, ico) = icon_body("/favicon.ico").unwrap();
+        assert_eq!(ico_type, "image/x-icon");
+        assert_eq!(&ico[..4], &[0, 0, 1, 0]);
+        assert_eq!(ico[4], 1);
+        assert_eq!(ico[6], 16);
+        assert_eq!(ico[7], 16);
+        assert_eq!(u32::from_le_bytes(ico[14..18].try_into().unwrap()), 40 + 1024 + 64);
+        assert_eq!(u32::from_le_bytes(ico[18..22].try_into().unwrap()), 22);
+        assert_eq!(ico.len(), 6 + 16 + 40 + 16 * 16 * 4 + 64);
+        let (svg_type, svg) = icon_body("/favicon.svg").unwrap();
+        assert_eq!(svg_type, "image/svg+xml");
+        assert!(svg.starts_with(b"<svg"));
+        assert!(icon_body("/favicon.png").is_none());
+
+        let head = head_of(&response_bytes(200, ico_type, ico, CacheClass::Static, &hdr(&[]), false));
+        assert!(head.contains("Content-Type: image/x-icon\r\n"));
+        assert!(head.contains(&format!("Cache-Control: {STATIC_CACHE}\r\n")));
+    }
+
+    #[test]
+    fn pages_name_the_svg_icon() {
+        for page in [INDEX_HTML, ABOUT_HTML, PRIVACY_HTML, TERMS_HTML] {
+            assert!(page.contains("type=\"image/svg+xml\" href=\"favicon.svg\""));
+            assert!(!page.contains("favicon.ico"));
+        }
+        assert!(NOT_FOUND_HTML.contains("href=\"/favicon.svg\""));
+        assert!(!NOT_FOUND_HTML.contains("favicon.ico"));
     }
 }

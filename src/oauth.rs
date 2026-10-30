@@ -477,6 +477,13 @@ impl Editors {
 // ── Limiter ────────────────────────────────────────────────────────────
 
 /// In-memory cap on sign-in attempts per client address, per ten minutes.
+///
+/// Counts OAuth start/callback and a bearer token the server rejected (the
+/// token box sends that secret as `Authorization` on the next API call).
+/// Anonymous 401s are not counted, so opening the signed-out page does not
+/// spend the budget. The address is `X-Real-IP` when nginx sets it from
+/// `$remote_addr`; otherwise the last `X-Forwarded-For` hop, which is the
+/// one a single reverse proxy appends.
 pub struct Limiter {
     cap: usize,
     hits: Mutex<Vec<(String, Instant)>>,
@@ -511,6 +518,7 @@ pub struct Reply {
     pub content_type: &'static str,
     pub headers: Vec<(&'static str, String)>,
     pub body: Vec<u8>,
+    secure_transport: bool,
 }
 
 impl Reply {
@@ -520,11 +528,16 @@ impl Reply {
             content_type: "application/json",
             headers: Vec::new(),
             body: value.to_string().into_bytes(),
+            secure_transport: false,
         }
     }
 
     fn error(status: u16, message: &str) -> Self {
-        Self::json(status, json!({ "ok": false, "error": message }))
+        let mut reply = Self::json(status, json!({ "ok": false, "error": message }));
+        if status == 429 {
+            reply.headers.push(("Retry-After", "600".into()));
+        }
+        reply
     }
 
     fn redirect(location: String) -> Self {
@@ -533,6 +546,7 @@ impl Reply {
             content_type: "text/plain",
             headers: vec![("Location", location)],
             body: Vec::new(),
+            secure_transport: false,
         }
     }
 
@@ -541,14 +555,24 @@ impl Reply {
         self
     }
 
+    /// Remember whether the browser reached us over HTTPS (via nginx).
+    fn for_transport(mut self, headers: &HashMap<String, String>) -> Self {
+        self.secure_transport = forwarded_https(headers);
+        self
+    }
+
     /// Serialize as an HTTP/1.1 response with `Connection: close`.
+    ///
+    /// Auth and session bodies stay `Cache-Control: no-store`. There is no
+    /// `Access-Control-Allow-Origin`: the editor is same-origin only.
     pub fn write_to(&self, out: &mut impl std::io::Write) {
         let mut head = format!(
-            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n",
+            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n{}",
             self.status,
             status_text(self.status),
             self.content_type,
-            self.body.len()
+            self.body.len(),
+            security_header_block(self.secure_transport)
         );
         for (name, value) in &self.headers {
             head.push_str(&format!("{name}: {value}\r\n"));
@@ -560,12 +584,69 @@ impl Reply {
     }
 }
 
+/// One year. Matches `deploy/nginx-edit.phext.io.conf`. No
+/// `includeSubDomains`: this host is `edit.phext.io`, and a future
+/// sibling name under that host should not be pinned by accident.
+pub const HSTS_VALUE: &str = "max-age=31536000";
+
+/// Policy for the embedded editor and the public pages.
+///
+/// The shell is one HTML document: an inline script, an inline stylesheet,
+/// `onclick` attributes, and `style` attributes. A nonce or a hash does not
+/// cover event-handler or style attributes, so those would mean rewriting
+/// the shell. `unsafe-inline` stays for that reason. There is no
+/// `unsafe-eval`. Sign-in is a same-origin link to `/api/auth/...`, which
+/// 302s to Google or GitHub; top-level navigations are not restricted.
+/// `upgrade-insecure-requests` is added only when the browser connection is
+/// HTTPS, so a local `http://127.0.0.1` session keeps working.
+pub const CONTENT_SECURITY_POLICY: &str = concat!(
+    "default-src 'self'; ",
+    "script-src 'self' 'unsafe-inline'; ",
+    "style-src 'self' 'unsafe-inline'; ",
+    "img-src 'self'; ",
+    "font-src 'self'; ",
+    "connect-src 'self'; ",
+    "form-action 'self'; ",
+    "base-uri 'self'; ",
+    "frame-ancestors 'none'; ",
+    "object-src 'none'; ",
+    "frame-src 'none'"
+);
+
+pub fn forwarded_https(headers: &HashMap<String, String>) -> bool {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.split(',').next())
+        .map(|value| value.trim().eq_ignore_ascii_case("https"))
+        .unwrap_or(false)
+}
+
+pub fn security_header_block(https: bool) -> String {
+    let mut csp = CONTENT_SECURITY_POLICY.to_string();
+    if https {
+        csp.push_str("; upgrade-insecure-requests");
+    }
+    let mut block = format!(
+        "X-Content-Type-Options: nosniff\r\n\
+         X-Frame-Options: DENY\r\n\
+         Referrer-Policy: strict-origin-when-cross-origin\r\n\
+         Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()\r\n\
+         Content-Security-Policy: {csp}\r\n"
+    );
+    if https {
+        block.push_str(&format!("Strict-Transport-Security: {HSTS_VALUE}\r\n"));
+    }
+    block
+}
+
 pub fn status_text(status: u16) -> &'static str {
     match status {
         200 => "OK",
         204 => "No Content",
         302 => "Found",
+        304 => "Not Modified",
         400 => "Bad Request",
+        405 => "Method Not Allowed",
         401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
@@ -643,7 +724,7 @@ impl Gate {
             }
             _ => return None,
         };
-        Some(reply)
+        Some(reply.for_transport(headers))
     }
 
     /// Decides whether a non-auth request may proceed.
@@ -652,6 +733,7 @@ impl Gate {
         if route == "/" || route == "/index.html" || !self.locked() {
             return Ok(());
         }
+        let mut bearer_miss = false;
         if let Some(ref token) = self.token {
             let auth = headers.get("authorization").map(String::as_str).unwrap_or("");
             let given = if auth.len() >= 7 && auth[..7].eq_ignore_ascii_case("bearer ") {
@@ -662,20 +744,28 @@ impl Gate {
             if token_eq(token, given.trim()) {
                 return Ok(());
             }
+            bearer_miss = !given.trim().is_empty();
         }
-        let Some(session) = self.oauth.read_session(&cookies(headers)) else {
-            return Err(Reply::error(401, "unauthorized"));
-        };
-        if !self.editors.allows(&session.who, &session.email) {
-            return Err(Reply::error(403, "This account is not on the editor list."));
-        }
-        if method != "GET" && method != "HEAD" {
-            let csrf = headers.get("x-csrf-token").map(String::as_str).unwrap_or("");
-            if !self.oauth.csrf_matches(&session, csrf) {
-                return Err(Reply::error(403, "That request did not match this sign-in."));
+        if let Some(session) = self.oauth.read_session(&cookies(headers)) {
+            if !self.editors.allows(&session.who, &session.email) {
+                return Err(self.denied(headers, 403, "This account is not on the editor list."));
             }
+            if method != "GET" && method != "HEAD" {
+                let csrf = headers.get("x-csrf-token").map(String::as_str).unwrap_or("");
+                if !self.oauth.csrf_matches(&session, csrf) {
+                    return Err(self.denied(headers, 403, "That request did not match this sign-in."));
+                }
+            }
+            return Ok(());
         }
-        Ok(())
+        if bearer_miss && self.limits.hit(&client_key(headers)).is_err() {
+            return Err(self.denied(headers, 429, "Too many requests."));
+        }
+        Err(self.denied(headers, 401, "unauthorized"))
+    }
+
+    fn denied(&self, headers: &HashMap<String, String>, status: u16, message: &str) -> Reply {
+        Reply::error(status, message).for_transport(headers)
     }
 
     fn session_view(&self, headers: &HashMap<String, String>) -> Reply {
@@ -758,6 +848,7 @@ fn auth_failed(secure: bool) -> Reply {
         content_type: "text/html; charset=utf-8",
         headers: Vec::new(),
         body: b"<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>phext</title></head><body><p>Sign-in did not complete. <a href=\"./\">Back</a></p></body></html>".to_vec(),
+        secure_transport: false,
     }
     .cookie(cookie_header(PENDING_COOKIE, "", 0, secure))
 }
@@ -776,18 +867,26 @@ fn cookies(headers: &HashMap<String, String>) -> String {
 }
 
 fn client_key(headers: &HashMap<String, String>) -> String {
-    for name in ["x-real-ip", "x-forwarded-for"] {
-        if let Some(value) = headers.get(name) {
-            let value = value.split(',').next().unwrap_or("").trim();
-            if !value.is_empty()
-                && value.len() <= 64
-                && value.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | ':'))
-            {
-                return value.to_string();
-            }
+    if let Some(ip) = headers.get("x-real-ip").and_then(|value| clean_ip(value)) {
+        return ip;
+    }
+    if let Some(value) = headers.get("x-forwarded-for") {
+        if let Some(ip) = value.split(',').rev().find_map(clean_ip) {
+            return ip;
         }
     }
     "local".into()
+}
+
+fn clean_ip(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 64
+        || !value.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | ':'))
+    {
+        return None;
+    }
+    Some(value.to_string())
 }
 
 pub fn cookie_header(name: &str, value: &str, max_age: i64, secure: bool) -> String {
@@ -1332,5 +1431,85 @@ mod tests {
         assert_eq!(q["next"], "/#a");
         assert_eq!(q["code"], "ok");
         assert_eq!(q["bad"], "%zz");
+    }
+
+    fn written(reply: &Reply) -> String {
+        let mut buf = Vec::new();
+        reply.write_to(&mut buf);
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn auth_responses_stay_private_and_carry_security_headers() {
+        let gate = gate(Some("s3cret-token"), "github:100");
+        let text = written(&gate.route("GET", "/api/session", &headers(&[])).unwrap());
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(text.contains("Cache-Control: no-store\r\n"));
+        assert!(text.contains("X-Content-Type-Options: nosniff\r\n"));
+        assert!(text.contains("X-Frame-Options: DENY\r\n"));
+        assert!(text.contains("Referrer-Policy: strict-origin-when-cross-origin\r\n"));
+        assert!(text.contains("Permissions-Policy: accelerometer=()"));
+        assert!(text.contains("Content-Security-Policy: "));
+        assert!(text.contains("frame-ancestors 'none'"));
+        assert!(text.contains("script-src 'self' 'unsafe-inline'"));
+        assert!(!text.contains("unsafe-eval"));
+        assert!(!text.to_ascii_lowercase().contains("access-control-allow-origin"));
+        assert!(!text.contains("Strict-Transport-Security"));
+        assert!(!text.contains("upgrade-insecure-requests"));
+    }
+
+    #[test]
+    fn https_forwarding_adds_hsts_to_auth_responses() {
+        let gate = gate(None, "");
+        let text = written(
+            &gate
+                .route("GET", "/api/session", &headers(&[("x-forwarded-proto", "https")]))
+                .unwrap(),
+        );
+        assert!(text.contains(&format!("Strict-Transport-Security: {HSTS_VALUE}\r\n")));
+        assert!(text.contains("upgrade-insecure-requests"));
+    }
+
+    #[test]
+    fn wrong_bearer_tokens_are_rate_limited_per_address() {
+        let gate = gate(Some("s3cret-token"), "");
+        let bad = headers(&[("authorization", "Bearer nope"), ("x-real-ip", "198.51.100.20")]);
+        for _ in 0..AUTH_PER_IP {
+            assert_eq!(gate.admit("GET", "/api/status", &bad).unwrap_err().status, 401);
+        }
+        let blocked = gate.admit("GET", "/api/status", &bad).unwrap_err();
+        assert_eq!(blocked.status, 429);
+        assert!(written(&blocked).contains("Retry-After: 600\r\n"));
+        let other = headers(&[("authorization", "Bearer nope"), ("x-real-ip", "198.51.100.21")]);
+        assert_eq!(gate.admit("GET", "/api/status", &other).unwrap_err().status, 401);
+        let good = headers(&[("authorization", "Bearer s3cret-token"), ("x-real-ip", "198.51.100.20")]);
+        assert!(gate.admit("GET", "/api/status", &good).is_ok());
+        let anon = headers(&[("x-real-ip", "198.51.100.20")]);
+        assert_eq!(gate.admit("GET", "/api/status", &anon).unwrap_err().status, 401);
+    }
+
+    #[test]
+    fn oauth_start_is_rate_limited_per_address() {
+        let gate = gate(None, "github:100");
+        let h = headers(&[("x-real-ip", "203.0.113.4")]);
+        for _ in 0..AUTH_PER_IP {
+            assert_eq!(gate.route("GET", "/api/auth/github", &h).unwrap().status, 302);
+        }
+        let blocked = gate.route("GET", "/api/auth/github", &h).unwrap();
+        assert_eq!(blocked.status, 429);
+        assert!(written(&blocked).contains("Retry-After: 600\r\n"));
+        assert!(written(&blocked).contains("Cache-Control: no-store\r\n"));
+    }
+
+    #[test]
+    fn client_key_trusts_real_ip_then_the_appended_forwarded_hop() {
+        let both = headers(&[
+            ("x-real-ip", "203.0.113.8"),
+            ("x-forwarded-for", "1.2.3.4, 203.0.113.9"),
+        ]);
+        assert_eq!(client_key(&both), "203.0.113.8");
+        let forwarded = headers(&[("x-forwarded-for", "1.2.3.4, 203.0.113.9")]);
+        assert_eq!(client_key(&forwarded), "203.0.113.9");
+        assert_eq!(client_key(&headers(&[])), "local");
     }
 }
