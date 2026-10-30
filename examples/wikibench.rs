@@ -22,7 +22,7 @@ use libphext::phext::{self, Coordinate};
 use phext_lattice::index::LatticeIndex;
 use phext_lattice::mmap::MappedLattice;
 use phext_lattice::search::search_lattice_auto;
-use phext_lattice::{NameIndex, TermIndex};
+use phext_lattice::{IndexSpec, IndexedLattice, NameIndex, OpenMode, TermIndex, sidecar_dir};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
@@ -534,6 +534,9 @@ fn run(corpus: &Path, out: &Path, scale: usize, sq_bin: Option<PathBuf>) -> Valu
         r["retrieval"] = retrieval(corpus, &arts, &names, &lat, &db, &fdir);
     }
 
+    // ---------------------------------------------------------------- persisted indexes (sidecar)
+    r["sidecar"] = sidecar_bench(corpus, out, &arts, &lookups, scale);
+
     // ---------------------------------------------------------------- incremental updates (durable)
     let edits: Vec<usize> = (0..100).map(|_| rng.below(n)).collect();
     let edited = |i: usize, k: usize| format!("{}\nEdit {} at revision {}.", arts[i].text, title_of[i], k);
@@ -592,6 +595,134 @@ fn run(corpus: &Path, out: &Path, scale: usize, sq_bin: Option<PathBuf>) -> Valu
     upd["append_new_article"] = add;
     r["updates"] = upd;
     r
+}
+
+fn wiki_spec() -> IndexSpec {
+    IndexSpec::new("wikibench-v1",
+        Box::new(|c| (c.x.scroll == 1 || c.x.scroll == 4).then(|| rec(rec_id(c), 1))),
+        Box::new(|c| (c.x.scroll <= 2).then(|| rec(rec_id(c), 1))))
+}
+
+fn dir_bytes(p: &Path) -> u64 {
+    fs::read_dir(p).map(|d| d.filter_map(|e| e.ok()?.metadata().ok()).map(|m| m.len()).sum()).unwrap_or(0)
+}
+
+/// Build, cold-open, query, edit, and externally modify a phext with a persisted sidecar.
+/// Works on a private copy of wiki.phext so the other sections see the pristine file.
+fn sidecar_bench(corpus: &Path, out: &Path, arts: &[Article], lookups: &[usize], scale: usize) -> Value {
+    let dir = out.join("sidecar");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let phx = dir.join("wiki.phext");
+    fs::copy(out.join("wiki.phext"), &phx).unwrap();
+    let n = arts.len();
+    let mut o = json!({});
+
+    let t = Instant::now();
+    let (ix, mode) = IndexedLattice::open(&phx, wiki_spec()).unwrap();
+    assert_eq!(mode, OpenMode::Built);
+    o["build_ms"] = json!(ms(t.elapsed()));
+    let side = sidecar_dir(&phx);
+    o["bytes"] = json!({"parallel": fs::metadata(side.join("parallel.phext")).unwrap().len(),
+                        "tables": fs::metadata(side.join("tables.phext")).unwrap().len(),
+                        "source": fs::metadata(&phx).unwrap().len()});
+    drop(ix);
+
+    let probe = lookups[0];
+    o["cold_cache"] = json!(drop_caches());
+    let rss0 = rss_kb();
+    let t = Instant::now();
+    let (ix, mode) = IndexedLattice::open(&phx, wiki_spec()).unwrap();
+    let t_open = t.elapsed();
+    let body = ix.lattice().read_scroll(&rec(rec_id(&ix.resolve(&arts[probe].title).unwrap()), 2)).unwrap();
+    o["open_first_ms"] = json!(ms(t.elapsed()));
+    o["open_ms"] = json!(ms(t_open));
+    o["rss_kb"] = json!(rss_kb().saturating_sub(rss0));
+    assert_eq!(mode, OpenMode::Loaded { delta: 0 });
+    assert_eq!(body, arts[probe].text);
+
+    prewarm(&dir);
+    o["lookup_title"] = time_each(lookups, |&i| ix.lattice().read_scroll(&rec(rec_id(&ix.name(&arts[i].title).unwrap()), 2)).unwrap().len()).0;
+    o["lookup_by_coord"] = time_each(lookups, |&i| ix.lattice().read_scroll(&rec(i, 2)).unwrap().len()).0;
+
+    if scale == 1 {
+        let qs: Vec<Value> = fs::read_to_string(corpus.join("queries.jsonl")).unwrap().lines()
+            .map(|l| serde_json::from_str(l).unwrap()).collect();
+        let doc_len = |d: usize| arts.get(d).map(|a| a.text.len()).unwrap_or(0);
+        for kind in ["alias_lower", "keywords", "keywords_hard"] {
+            let q: Vec<(usize, String)> = qs.iter().filter(|v| v["kind"] == kind)
+                .map(|v| (v["gold"].as_u64().unwrap() as usize, v["q"].as_str().unwrap().to_string())).collect();
+            if kind == "alias_lower" {
+                let mut res = Vec::new();
+                let (l, _) = time_each(&q, |(_, s)| { res.push(ix.resolve(s).map(|c| rec_id(&c))); 1 });
+                o[kind] = hit_rate(&q, &res, l);
+            } else {
+                let mut res = Vec::new();
+                let (l, _) = time_each(&q, |(g, s)| {
+                    res.push((*g, ix.search(s, 10).iter().map(|h| rec_id(&h.coordinate)).collect()));
+                    1
+                });
+                o[kind] = score_quality(&res, &doc_len, l);
+            }
+        }
+    }
+    drop(ix);
+
+    // edit one article, save, and sync the sidecar
+    let (mut ix, _) = IndexedLattice::open(&phx, wiki_spec()).unwrap();
+    let mut rng = Rng(0xED17 ^ scale as u64);
+    let edits: Vec<usize> = (0..if n > 20000 { 5 } else { 20 }).map(|_| rng.below(n)).collect();
+    let mut changed = 0;
+    let mut delta = 0;
+    o["edit_save_sync"] = time_each(&edits, |&i| {
+        ix.lattice_mut().write_scroll(rec(i, 2), format!("{}\nSidecar edit of {}.", arts[i].text, arts[i].title));
+        let r = ix.save().unwrap();
+        changed += r.changed;
+        delta = r.delta;
+        1
+    }).0;
+    o["edit_changed_scrolls"] = json!(changed);
+    o["delta_after_edits"] = json!(delta);
+    let t = Instant::now();
+    ix.compact().unwrap();
+    o["compact_ms"] = json!(ms(t.elapsed()));
+    // the same edits again, timed without the source save, to isolate the sidecar's share
+    let t = Instant::now();
+    for &i in &edits { ix.lattice_mut().write_scroll(rec(i, 2), format!("{}\nSecond edit.", arts[i].text)); }
+    ix.lattice_mut().save().unwrap();
+    o["source_save_only_batch_ms"] = json!(ms(t.elapsed()));
+    drop(ix);
+    let t = Instant::now();
+    let (ix, mode) = IndexedLattice::open(&phx, wiki_spec()).unwrap();
+    o["open_after_external_save_ms"] = json!(ms(t.elapsed()));
+    o["open_after_external_save_mode"] = json!(format!("{:?}", mode));
+    assert_eq!(ix.search(&format!("sidecar edit {}", arts[edits[0]].title), 1).len(), 1);
+    drop(ix);
+
+    // another tool appends a record; the next open re-checks hashes and patches it in
+    let mut cur = rec(n - 1, 4);
+    let mut bytes = Vec::new();
+    for (f, text) in [(1, "Sidecar probe article".to_string()), (2, "Appended by another tool: permafrost thaw.".to_string())] {
+        let to = rec(n, f);
+        while cur.x.chapter < to.x.chapter { bytes.push(phext::CHAPTER_BREAK as u8); cur.chapter_break(); }
+        while cur.x.section < to.x.section { bytes.push(phext::SECTION_BREAK as u8); cur.section_break(); }
+        while cur.x.scroll < to.x.scroll { bytes.push(phext::SCROLL_BREAK as u8); cur.scroll_break(); }
+        bytes.extend_from_slice(text.as_bytes());
+    }
+    let mut f = fs::OpenOptions::new().append(true).open(&phx).unwrap();
+    f.write_all(&bytes).unwrap();
+    f.sync_all().unwrap();
+    drop(f);
+    let t = Instant::now();
+    let (ix, mode) = IndexedLattice::open(&phx, wiki_spec()).unwrap();
+    o["resync_after_append_ms"] = json!(ms(t.elapsed()));
+    o["resync_mode"] = json!(format!("{:?}", mode));
+    assert_eq!(ix.resolve("sidecar PROBE article"), Some(rec(n, 1)));
+    let t = Instant::now();
+    let _ = IndexedLattice::open(&phx, wiki_spec()).unwrap();
+    o["open_after_resync_ms"] = json!(ms(t.elapsed()));
+    o["sidecar_bytes_total"] = json!(dir_bytes(&side));
+    o
 }
 
 fn retrieval(corpus: &Path, arts: &[Article], names: &NameIndex, lat: &MappedLattice, db: &Connection, fdir: &Path) -> Value {

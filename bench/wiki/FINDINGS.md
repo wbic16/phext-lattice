@@ -7,23 +7,24 @@ Numbers are from [`RESULTS.md`](RESULTS.md) (scale 1 = 3,820 real articles / 4.1
 
 | dimension | phext today | best conventional | verdict |
 |---|---|---|---|
-| warm lookup | **0.7 µs** by coordinate, 2.1 µs by title (phext-lattice) | 4.1 µs SQLite | phext wins |
-| cold open | 191 ms + 175 MB RSS at 49 MB (index and `NameIndex` rebuilt each open) | 3.9 ms / 1.3 MB SQLite | phext loses, and it gets worse as the file grows |
+| warm lookup | **1.1 µs** by coordinate, 3.1 µs by title (phext-lattice; binary search since the span index became sorted arrays, was 0.7 / 2.1 µs with hashing) | 4.0 µs SQLite | phext wins |
+| cold open | **36 ms + 9.7 MB RSS** with the `IndexedLattice` sidecar; 166 ms / 143 MB rebuilding indexes in memory | 2.9 ms / 1.4 MB SQLite | much closer; the span table is still parsed on open, so it grows with scroll count |
 | storage | 1.20× payload, 1 inode | 0.63× ZIM (zstd clusters) | ZIM wins; phext beats SQLite (1.52×) and files (7.6×) |
 | link traversal | **43 µs** 2-hop BFS (phext-lattice) | 84 µs SQLite | phext wins |
 | backlinks | 7.9 ms (full scan) | 2.2 µs SQLite | phext loses: no reverse index |
-| edit one article | 124–237 ms at 49 MB (rewrites the whole file) | 0.3 ms SQLite / files | phext loses, and it gets worse as the file grows |
-| add one article | **0.16 ms** raw append, but 57 ms to re-index | 0.18 ms SQLite | the format wins; the tooling can't use it yet |
+| edit one article | 163 ms at 49 MB (rewrites the whole file); the sidecar delta adds ~21 ms | 0.3 ms SQLite / files | phext loses, and it gets worse as the file grows |
+| add one article | **0.16 ms** raw append; reopening re-indexes in 86 ms (sidecar resync) or 35 ms (span scan only) | 0.18 ms SQLite | the format wins; the tooling can't use it yet |
 | retrieval, vague queries | **R@1 0.338, 4.0 KB read, 38 µs** (`TermIndex`); grep-style search was 0.174 / 17 KB / 24 ms | R@1 0.328, 4.2 KB, 571 µs (FTS5) | phext wins since `TermIndex` |
 | retrieval, case noise | **100%, 0.6 µs** (`NameIndex::resolve`); exact-only was 0% | 100%, 331 µs SQLite NOCASE | phext wins since `NameIndex` |
 
 The format holds up well. Delimiters are 0.3% of the file. Record-per-section coordinates make
 lookup and traversal hash lookups, and a new article is an O(1) append. Every loss is a
-**tooling** gap: phext has no persisted index, no reverse index, and no write path that
-touches less than the whole file. The ranked term index and case folding gaps are closed:
-`phext_lattice::TermIndex` (BM25) and `phext_lattice::NameIndex` (exact + case-folded names)
-now ship in phext-lattice, and the benchmark uses them. Each remaining gap has a measured
-baseline that shows the target can be reached.
+**tooling** gap. Closed so far: ranked search (`TermIndex`), case-folded names
+(`NameIndex`), and persisted indexes (`IndexedLattice`, a parallel-phext sidecar with a
+per-save delta, so open no longer rebuilds anything and a save touches only the edited
+scrolls' index entries). Still open: a reverse-link index, and a source write path that
+touches less than the whole file. Each remaining gap has a measured baseline that shows the
+target can be reached.
 
 ## Tooling scorecard
 
@@ -32,14 +33,14 @@ taken from the best conventional store or from a prototype in the harness.
 
 | # | metric (key in JSON) | repo | today | target | how |
 |---|---|---|---|---|---|
-| 1 | open → first article, `open.phext_lattice.open_first_ms` | phext-lattice | 191 ms (index 63, `NameIndex` 128) | ≤ 10 ms, flat in file size | persist `LatticeIndex` + name map as a sidecar keyed by file checksum, or mmap a sorted span table |
-| 2 | RSS after open, `open.phext_lattice.rss_kb` | phext-lattice | 175 MB: 49 MB of touched mmap pages + ≈ 920 B/scroll of heap (span index + exact and folded name maps) | ≤ 32 B/scroll of heap | sorted `Vec<(packed coord, u32 start, u32 len)>` + binary search instead of `HashMap<Coordinate, ScrollSpan>` + `Vec<Coordinate>` |
-| 3 | index build throughput, `index_rebuild_warm_ms` | phext-lattice | 56 ms / 49 MB ≈ 0.9 GB/s | ≥ 4 GB/s | skip runs of bytes ≥ 0x20 (memchr-style) instead of a `match` per byte |
-| 4 | durable single edit, `updates.phext_lattice_save_each` | phext-lattice | 237 ms (14× scale 1) | ≤ 1 ms, flat | append-only edit journal (a phext of changed scrolls, fsync) replayed into the overlay; compact in the background |
-| 5 | append then readable, `phext_lattice_reopen_after_append_ms` | phext-lattice | 57 ms | ≤ 1 ms | `MappedLattice::refresh()` that remaps and indexes only the new tail |
+| 1 | open → first article, `sidecar.open_first_ms` | phext-lattice | ✅ 36 ms cold, 12 ms warm with `IndexedLattice` (in-memory rebuild: 166 ms) | ≤ 10 ms, flat in file size | most of what remains is parsing the 135k-row span table; binary-search it in the mmap instead |
+| 2 | RSS after open, `sidecar.rss_kb` | phext-lattice | ✅ 9.7 MB ≈ 73 B/scroll with `IndexedLattice` (in-memory rebuild: 143 MB) | ≤ 32 B/scroll of heap | `LatticeIndex` is now sorted arrays; pack the 9 dimensions (10 bits each) instead of 9 `usize`s |
+| 3 | index build throughput, `index_rebuild_warm_ms` | phext-lattice | 37 ms / 49 MB ≈ 1.3 GB/s | ≥ 4 GB/s | skip runs of bytes ≥ 0x20 (memchr-style) instead of a `match` per byte |
+| 4 | durable single edit, `updates.phext_lattice_save_each` | phext-lattice | 163 ms (`save()` no longer rescans; was 237 ms); sidecar delta adds ~21 ms (`sidecar.edit_save_sync`) | ≤ 1 ms, flat | append-only edit journal (a phext of changed scrolls, fsync) replayed into the overlay; compact in the background |
+| 5 | append then readable, `sidecar.resync_after_append_ms` | phext-lattice | 86 ms (scan + hash compare, recorded into the delta) | ≤ 5 ms | when the source only grew, check the old length's prefix and index just the tail |
 | 6 | backlinks, `backlinks.phext_lattice_scan` | phext-lattice | 7.9 ms | ≤ 10 µs | reverse-link map built when link scrolls are indexed (SQLite: 2.2 µs) |
-| 7 | vague-query R@1 / bytes read, `retrieval.keywords_hard` | phext-lattice | ✅ **0.338 / 4,011 B** with `TermIndex` (was 0.174 / 17,169 B) | ≥ 0.33 / ≤ 4.2 KB | done; FTS5 is 0.328 / 4,169 B. Next: persist the index so its 71 ms / 7.6 MB build (4 MB corpus) leaves open |
-| 8 | ranked search latency, `phext_lattice_term_index` | phext-lattice | ✅ 8.5–38 µs/query (grep-style was 24–38 ms) | ≤ 1 ms | done. Exact-text `search_lattice` still re-lowercases every scroll per term |
+| 7 | vague-query R@1 / bytes read, `retrieval.keywords_hard` | phext-lattice | ✅ **0.338 / 4,011 B** with `TermIndex` and the sidecar (was 0.174 / 17,169 B) | ≥ 0.33 / ≤ 4.2 KB | done; FTS5 is 0.328 / 4,169 B |
+| 8 | ranked search latency, `phext_lattice_term_index`, `sidecar.keywords*` | phext-lattice | ✅ 8–38 µs in memory, 63–133 µs from the sidecar mmap (grep-style was 24–38 ms; FTS5 265–562 µs) | ≤ 1 ms | done. Sidecar queries decode text postings per query; a binary postings scroll or a hot-term cache would close the gap to in-memory |
 | 9 | case-insensitive name hit rate, `retrieval.alias_lower` | phext-lattice | ✅ 100% at 0.6 µs with `NameIndex::resolve` (was 0%) | 100% | done; the folded map costs ≈ 1.5× the exact-only name map's build time (row 1) |
 | 10 | `fetch` p50, `lookup_warm.phext_libphext_fetch` | libphext-rs | 12.8 ms at 49 MB (linear) | ≤ 5 µs | a span index type in libphext (move `LatticeIndex` upstream), `fetch_indexed()` |
 | 11 | `replace` + write, `phext_libphext_replace_rewrite` | libphext-rs | 124 ms at 49 MB | O(scroll) | splice API returning (offset, old_len, new bytes) so callers can patch in place or journal |
@@ -47,14 +48,18 @@ taken from the best conventional store or from a prototype in the harness.
 | 13 | HTTP update, `updates.sq_http_update` | SQ | 72 ms at 49 MB, **not fsynced** | ≤ 1 ms, durable | `implode_ref` + `fs::write` of the whole phext on every mutation: journal + fsync (see #4) |
 | 14 | 2-hop traversal over HTTP, `traversal_2hop.sq_http_query_api` | SQ | 778 µs (18× phext-lattice) | ≤ 100 µs | server-side expand (`/api/v2/query?links=<coord>&depth=2`), so a BFS is one request |
 | 15 | cold start, `open.sq_http.open_first_ms` | SQ | 171 ms (explode into `HashMap<Coordinate, String>`) | ≤ 20 ms | host on `MappedLattice` instead of `explode` |
+| 17 | sidecar size, `sidecar.bytes` | phext-lattice | 2.5× the source (parallel 1.05×, tables 1.45×) | ≤ 1× | names tables repeat two 35-byte coordinates per row and per-scroll term vectors are plain text; pack coordinates, skip folded rows equal to the exact name |
+| 18 | sidecar build / compaction, `sidecar.build_ms`, `compact_ms` | phext-lattice | 2.5 s once; 367 ms per compaction at 49 MB | ≤ 1 s / ≤ 200 ms | both rewrite ~120 MB and fsync; build is single-threaded after tokenizing |
 | 16 | storage, `storage.json` | format | 1.20× payload | ≤ 0.65× with random access | seekable compressed phext: one zstd frame per chapter (≈ ZIM cluster) + span index; whole-file zstd-19 is 0.29× but sequential-only |
 
 ## What each comparison showed
 
 **Lookup latency.** Indexed phext is the fastest store measured. Lookup by coordinate is
-0.5–0.7 µs, and by title through the name map 1.0–2.1 µs, against 2.9–4.6 µs for files and
-SQLite. All of that speed depends on the index being in memory. Without it, `libphext::fetch`
-is a linear scan: 1.5 ms at 4 MB and 12.8 ms at 49 MB. SQ adds about 80 µs of HTTP per call,
+0.6–1.1 µs, and by title through the name map 1.3–3.1 µs, against 2.9–4.6 µs for files and
+SQLite. All of that speed depends on having an index. Without one, `libphext::fetch`
+is a linear scan: 1.5 ms at 4 MB and 13 ms at 49 MB. With the `IndexedLattice` sidecar the
+index is loaded instead of rebuilt: cold open drops from 166 ms to 36 ms at 49 MB, and title
+lookups binary-search the mmap'd name table (5.9 µs) instead of a heap map (3.1 µs). SQ adds about 80 µs of HTTP per call,
 mostly from the TCP connection it sets up for every request.
 
 **Storage overhead.** Phext structure is close to free: 13,892 delimiter bytes for 13,522 scrolls.
@@ -67,6 +72,17 @@ scale 10: the replicas are near-duplicates and compress unrealistically well.
 **Link traversal.** Storing links as coordinates pays off. phext-lattice runs a 2-hop BFS over
 about 40 nodes in 43 µs, 2× faster than SQLite and 7–25× faster than ZIM (through Python). Reverse traversal is the
 opposite: phext has no backlink index, so "what links here" scans every link scroll.
+
+**Persisted indexes.** `IndexedLattice` keeps a sidecar directory of phexts beside the
+source: `parallel.phext`, where the scroll at coordinate C is source scroll C's index entry
+(hash, document, token count, names, term frequencies), and `tables.phext`, which holds sorted,
+mmap-searchable span, name, document, and postings tables. A `save()` writes only `delta.phext`,
+parallel again: one entry per scroll changed since the base, with its old and new entries and
+its span correction. Opening applies the delta while parsing the span table, and every query
+merges base rows with the delta. Tests check that the results equal a fresh rebuild, including
+BM25 scores. When another tool rewrites or appends to the source, reopening compares every
+scroll's hash with its base entry (86–89 ms at 49 MB) and records only the differences. The cost
+is disk: the sidecar is 2.5× the source.
 
 **Incremental updates.** These show the clearest split between the format and the tooling.
 Appending a new article to a record-per-section phext is a single `O_APPEND` write plus fsync

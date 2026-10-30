@@ -2,12 +2,13 @@
 ///
 /// The core data structure for the editor. Instead of libphext's linear scan
 /// (get_subspace_coordinates is O(n) on every fetch), we do ONE scan on load
-/// to build a HashMap<Coordinate, ScrollSpan> for O(1) lookup thereafter.
+/// to build a sorted span table, then binary-search it (O(log n), ~17 probes
+/// for 135k scrolls). Sorted arrays also load straight from a persisted span
+/// table (see `sidecar`) without hashing, and take 88 bytes per scroll.
 ///
 /// For memory-mapped files, ScrollSpan stores byte offsets into the mmap,
 /// so we never copy scroll content until the user navigates to it.
 
-use std::collections::HashMap;
 use libphext::phext::{Coordinate, default_coordinate};
 
 /// A scroll's location within the raw phext byte buffer.
@@ -32,10 +33,10 @@ impl ScrollSpan {
 /// The lattice index: maps every populated coordinate to its byte span.
 #[derive(Debug, Clone)]
 pub struct LatticeIndex {
-    /// O(1) coordinate → byte span lookup.
-    entries: HashMap<Coordinate, ScrollSpan>,
-    /// All populated coordinates in document order (for sequential navigation).
+    /// All populated coordinates in document order (= sorted order).
     ordered: Vec<Coordinate>,
+    /// `spans[i]` is the byte span of `ordered[i]`.
+    spans: Vec<ScrollSpan>,
     /// Total size of the indexed buffer in bytes.
     buffer_len: usize,
 }
@@ -46,8 +47,7 @@ impl LatticeIndex {
     /// Time: O(n) where n = buffer length.
     /// Space: O(k) where k = number of populated scrolls.
     pub fn build(buffer: &[u8]) -> LatticeIndex {
-        let mut entries: HashMap<Coordinate, ScrollSpan> = HashMap::new();
-        let mut ordered: Vec<Coordinate> = Vec::new();
+        let mut entries: Vec<(Coordinate, ScrollSpan)> = Vec::new();
         let mut coord = default_coordinate();
         let mut scroll_start: usize = 0;
         let len = buffer.len();
@@ -71,8 +71,7 @@ impl LatticeIndex {
                 // Commit the current scroll span
                 let span = ScrollSpan { start: scroll_start, end: i };
                 if !span.is_empty() {
-                    entries.insert(coord, span);
-                    ordered.push(coord);
+                    entries.push((coord, span));
                 }
 
                 // Advance coordinate
@@ -97,31 +96,50 @@ impl LatticeIndex {
             let span = ScrollSpan { start: scroll_start, end: len };
             // Only record if non-empty content
             if !span.is_empty() {
-                entries.insert(coord, span);
-                ordered.push(coord);
+                entries.push((coord, span));
             }
         }
 
-        LatticeIndex {
-            entries,
-            ordered,
-            buffer_len: len,
-        }
+        LatticeIndex::from_entries(entries, len)
     }
 
-    /// Look up the byte span for a coordinate. O(1).
+    /// Build from (coordinate, span) pairs, e.g. a persisted span table or spans
+    /// recorded while serializing. Pairs are normally already in document order;
+    /// otherwise they are sorted. A repeated coordinate keeps its last span.
+    pub fn from_entries(mut entries: Vec<(Coordinate, ScrollSpan)>, buffer_len: usize) -> LatticeIndex {
+        if !entries.windows(2).all(|w| w[0].0 < w[1].0) {
+            entries.sort_by(|a, b| a.0.cmp(&b.0)); // stable: duplicates stay in input order
+            let mut deduped: Vec<(Coordinate, ScrollSpan)> = Vec::with_capacity(entries.len());
+            for e in entries {
+                match deduped.last_mut() {
+                    Some(last) if last.0 == e.0 => *last = e,
+                    _ => deduped.push(e),
+                }
+            }
+            entries = deduped;
+        }
+        let (ordered, spans) = entries.into_iter().unzip();
+        LatticeIndex { ordered, spans, buffer_len }
+    }
+
+    /// Look up the byte span for a coordinate. O(log n).
     pub fn get(&self, coord: &Coordinate) -> Option<&ScrollSpan> {
-        self.entries.get(coord)
+        self.ordered.binary_search(coord).ok().map(|i| &self.spans[i])
     }
 
     /// Check if a coordinate has content.
     pub fn contains(&self, coord: &Coordinate) -> bool {
-        self.entries.contains_key(coord)
+        self.ordered.binary_search(coord).is_ok()
     }
 
     /// Number of populated scrolls.
     pub fn scroll_count(&self) -> usize {
-        self.entries.len()
+        self.ordered.len()
+    }
+
+    /// Spans in document order, parallel to `coordinates()`.
+    pub fn spans(&self) -> &[ScrollSpan] {
+        &self.spans
     }
 
     /// Total buffer size.
@@ -262,6 +280,20 @@ mod tests {
         let index = LatticeIndex::build(&phext);
         let missing = to_coordinate("5.5.5/5.5.5/5.5.5");
         assert!(index.get(&missing).is_none());
+    }
+
+    #[test]
+    fn from_entries_sorts_and_keeps_last_duplicate() {
+        let a = to_coordinate("1.1.1/1.1.1/1.1.2");
+        let b = to_coordinate("1.1.1/1.1.1/1.1.1");
+        let idx = LatticeIndex::from_entries(vec![
+            (a, ScrollSpan { start: 0, end: 1 }),
+            (b, ScrollSpan { start: 2, end: 3 }),
+            (a, ScrollSpan { start: 4, end: 5 }),
+        ], 5);
+        assert_eq!(idx.coordinates(), &[b, a]);
+        assert_eq!(idx.get(&a), Some(&ScrollSpan { start: 4, end: 5 }));
+        assert_eq!(idx.spans().len(), 2);
     }
 
     #[test]

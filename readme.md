@@ -1,6 +1,6 @@
 # phext-lattice
 
-The foundation layer for phext-fluent editing. Memory-mapped 9D lattice with O(1) coordinate lookup.
+The foundation layer for phext-fluent editing. Memory-mapped 9D lattice with O(log n) coordinate lookup and persisted indexes.
 
 ## Performance (choose-your-own-adventure.phext, 4.26 MB)
 
@@ -28,12 +28,13 @@ bench/wiki/run_all.sh /tmp/wikibench 1 10
 ```
 src/
 ├── coordinate_ext.rs  — Dimension enum, dimensional navigation, CoordinateNav trait
-├── index.rs           — LatticeIndex: sparse coordinate → byte-span HashMap, O(1) lookup
+├── index.rs           — LatticeIndex: sorted coordinate → byte-span table, binary search
 ├── mmap.rs            — MappedLattice: memory-mapped phext with copy-on-write overlay
 ├── navigator.rs       — Navigator: 9D cursor model with history, marks, populated-jump
 ├── search.rs          — Parallel search with early termination
 ├── term_index.rs      — TermIndex: BM25 ranked full-text index over scrolls
 ├── names.rs           — NameIndex: title/alias → coordinate, exact and case-folded
+├── sidecar.rs         — IndexedLattice: spans, names, BM25 persisted in a parallel-phext sidecar
 ├── sentron.rs         — 2×4×5×8 neural topology
 ├── stats.rs           — Density, sparklines, lattice overview
 ├── cursor.rs          — Sub-scroll cursor with word navigation
@@ -51,7 +52,7 @@ web/
 
 **Memory-mapped I/O**: The phext file is mmap'd read-only. Scroll content is only materialized when navigated to. A 4 MB phext uses ~4 MB of virtual address space, not heap.
 
-**O(1) index**: One linear scan on load builds a `HashMap<Coordinate, ScrollSpan>`. Every subsequent lookup is a hash lookup, not a linear scan. This complements libphext's `explode()` function which also returns `HashMap<Coordinate, String>`.
+**Span index**: One linear scan on load (or a persisted span table, see below) builds a sorted coordinate → byte-span table. Every subsequent lookup is a binary search, not a linear scan, and the table costs 88 bytes per scroll. This complements libphext's `explode()` function which also returns `HashMap<Coordinate, String>`.
 
 **Copy-on-write overlay**: Edits go into an in-memory `HashMap<Coordinate, String>`. The mmap is never modified. On save, the phext is reconstructed from mmap spans + overlay, re-mapped, and the overlay clears. Byte-perfect roundtrip.
 
@@ -66,6 +67,25 @@ let terms = TermIndex::build(&lat);
 let page = names.resolve("ferrel cell");
 let hits = terms.search("glacier instability sea level", 10); // Vec<TermHit { coordinate, score }>
 ```
+
+**Persisted indexes**: `IndexedLattice` keeps the span index, `NameIndex`, and `TermIndex` in a sidecar directory (`wiki.phext` → `wiki.phext.idx/`), so open loads them instead of rebuilding them. Everything in it is phext. `parallel.phext` mirrors the source coordinate for coordinate: scroll C holds source scroll C's index entry (hash, names, term frequencies). `tables.phext` holds sorted span, name, document, and postings tables that are binary-searched straight from the mmap. `save()` writes only `delta.phext`, again parallel: one entry for each scroll changed since the base. Once the delta passes a threshold it is compacted into the base. If another tool changes the source, the next open compares scroll hashes and records only the scrolls that differ.
+
+```rust
+use phext_lattice::{IndexSpec, IndexedLattice, OpenMode};
+
+// record per section: scroll 1 = title, scroll 2 = body
+let spec = IndexSpec::new("wiki-v1",
+    Box::new(|c| (c.x.scroll == 1).then_some(*c)),                               // names
+    Box::new(|c| (c.x.scroll <= 2).then(|| { let mut d = *c; d.x.scroll = 1; d })) // term docs
+);
+let (mut wiki, mode) = IndexedLattice::open("wiki.phext", spec)?; // Built, Loaded { delta }, or Resynced { changed }
+let page = wiki.resolve("ferrel cell");
+let hits = wiki.search("glacier instability", 10);
+wiki.lattice_mut().write_scroll(page.unwrap(), "Ferrel cell".into());
+wiki.save()?; // source rewrite + delta for the edited scroll only
+```
+
+On the 49 MB wikibench phext: cold open 36 ms / 9.7 MB RSS (166 ms / 143 MB rebuilding in memory), save adds ~21 ms over the source rewrite, and the sidecar is 2.5× the source.
 
 **Navigator**: The 9D cursor model. Tracks position, active dimension, marks (bookmarks), and full navigation history with back/forward. The `next_populated` / `prev_populated` operations use binary search on the sorted coordinate list.
 

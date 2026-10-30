@@ -94,6 +94,32 @@ def main(work, *scales):
                 ["SQ HTTP update (no fsync)", lat(u.get("sq_http_update")), "—"]]
         print(table(["path", "edit one article", "add one article"], rows))
 
+        sc = r.get("sidecar")
+        if sc:
+            pl = o["phext_lattice"]
+            b = sc["bytes"]
+            print("### Persisted indexes (`IndexedLattice` sidecar)\n")
+            print(f"Sidecar: {mb(b['parallel'])} `parallel.phext` + {mb(b['tables'])} `tables.phext` "
+                  f"for a {mb(b['source'])} source; one-time build {sc['build_ms'] / 1000:.2f} s.\n")
+            rows = [["open → first article (cold)", f"{sc['open_first_ms']} ms", f"{pl['open_first_ms']} ms"],
+                    ["RSS added by open", f"{sc['rss_kb'] / 1024:.1f} MB", f"{pl['rss_kb'] / 1024:.1f} MB"],
+                    ["title → text (warm)", lat(sc["lookup_title"]), lat(lw["phext_lattice"])],
+                    ["coordinate → text (warm)", lat(sc["lookup_by_coord"]), lat(lw["phext_lattice_by_coord"])],
+                    ["edit one article + save", lat(sc["edit_save_sync"]) + " (source rewrite + delta)",
+                     lat(u["phext_lattice_save_each"]) + " (source rewrite only)"],
+                    ["source changed by another tool → reopen", f"{sc['open_after_external_save_ms']} ms (resync into delta)", f"{pl['open_first_ms']} ms (same full open)"],
+                    ["record appended by another tool → reopen", f"{sc['resync_after_append_ms']} ms", f"{pl['open_first_ms']} ms (same full open)"],
+                    ["fold delta into base (compact)", f"{sc['compact_ms']} ms", "—"]]
+            if "keywords_hard" in sc:
+                for kind in ("keywords", "keywords_hard"):
+                    v, ref = sc[kind], r["retrieval"][kind]["phext_lattice_term_index"]
+                    rows.append([f"{kind}: R@1 / p50", f"{v['recall@1']:.3f} / {lat(v['latency'])}",
+                                 f"{ref['recall@1']:.3f} / {lat(ref['latency'])} (in-memory `TermIndex`)"])
+                v = sc["alias_lower"]
+                rows.append(["alias_lower: hit rate / p50", f"{v['hit_rate']:.3f} / {lat(v['latency'])}",
+                             f"{r['retrieval']['alias_lower']['phext_lattice_names_resolve']['hit_rate']:.3f} (in-memory `NameIndex`)"])
+            print(table(["", "sidecar", "rebuilt in memory on open"], rows))
+
         if "retrieval" in r:
             print("### Agent retrieval\n")
             rr, zr = r["retrieval"], z.get("retrieval", {})

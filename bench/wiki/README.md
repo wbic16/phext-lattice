@@ -6,7 +6,7 @@ that expose? This harness measures five things for each store, from the same art
 
 | metric | what is measured |
 |---|---|
-| **lookup latency** | cold open → first article (page cache dropped), then warm title → text p50/p99 |
+| **lookup latency** | cold open → first article (page cache dropped), with and without persisted indexes, then warm title → text p50/p99 |
 | **storage overhead** | bytes on disk / raw article payload, inode count, zstd-19 size of single-file stores |
 | **link traversal** | 2-hop BFS from 200 seeds reading every node it reaches; "what links here" backlinks |
 | **incremental updates** | durable edit of one article; adding one new article |
@@ -69,6 +69,7 @@ format would naturally hold them.
 | `sq host` | SQ | HTTP `select`, `update`, and the v0.6 Coordinate Query API (`/api/v2/query` with a set) |
 | `NameIndex` | phext-lattice | title/alias scrolls → record, exact `get` and case-folded `resolve` |
 | `TermIndex` | phext-lattice | BM25 inverted index over title + body scrolls, grouped per record |
+| `IndexedLattice` | phext-lattice | the same spans, names, and BM25 index persisted in a parallel-phext sidecar (`wiki.phext.idx/`); measured on a private copy for build, cold open, queries, edit + save, compaction, and resync after another tool edits or appends |
 
 The benchmark charges `NameIndex` to phext-lattice's open time; `TermIndex` build time is reported separately.
 

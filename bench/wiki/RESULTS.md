@@ -21,53 +21,71 @@ phext: 13,892 delimiter bytes, 713,120 bytes of titles + link coordinates + alia
 
 | store / access path | time | RSS added |
 |---|---|---|
-| files | 2.01 ms | — |
-| sqlite | 4.71 ms | 1.4 MB |
-| zim (py) | 4.42 ms | — |
-| phext: libphext read + fetch | 7.3 ms | 4.6 MB |
-| phext: libphext explode | 6.28 ms (+read) | 4.1 MB |
-| phext-lattice mmap + index + names | 15.79 ms (index 6.3, names 9.49) | 13.9 MB |
-| SQ host (spawn + explode) | 40.87 ms | — |
+| files | 1.69 ms | — |
+| sqlite | 3.31 ms | 1.4 MB |
+| zim (py) | 4.16 ms | — |
+| phext: libphext read + fetch | 7.12 ms | 4.6 MB |
+| phext: libphext explode | 6.08 ms (+read) | 4.1 MB |
+| phext-lattice mmap + index + names | 14.06 ms (index 4.73, names 9.34) | 12.4 MB |
+| SQ host (spawn + explode) | 40.44 ms | — |
 
 ### Warm lookup (title → article text)
 
 | access path | p50 | p99 |
 |---|---|---|
-| files (dirent) | 3.1 µs | 5.2 µs |
-| sqlite (title index) | 2.9 µs | 7.6 µs |
-| sqlite (rowid) | 2.0 µs | 2.9 µs |
-| zim (title index, py) | 8.5 µs | 28.3 µs |
-| phext libphext::fetch (linear scan) | 1.4 ms | 2.6 ms |
-| phext libphext::explode map | 1.2 µs | 3.0 µs |
-| phext-lattice (name map + mmap) | 1.1 µs | 3.0 µs |
-| phext-lattice (by coordinate) | 0.5 µs | 1.5 µs |
-| SQ HTTP select (by coordinate) | 86.9 µs | 203.8 µs |
-| calibration: python sqlite3 | 4.1 µs | 8.4 µs |
-| calibration: python file read | 7.0 µs | 13.8 µs |
+| files (dirent) | 2.8 µs | 6.7 µs |
+| sqlite (title index) | 2.9 µs | 7.8 µs |
+| sqlite (rowid) | 2.0 µs | 3.0 µs |
+| zim (title index, py) | 8.5 µs | 31.0 µs |
+| phext libphext::fetch (linear scan) | 1.5 ms | 3.9 ms |
+| phext libphext::explode map | 1.1 µs | 2.7 µs |
+| phext-lattice (name map + mmap) | 1.3 µs | 3.2 µs |
+| phext-lattice (by coordinate) | 0.6 µs | 1.6 µs |
+| SQ HTTP select (by coordinate) | 80.1 µs | 387.0 µs |
+| calibration: python sqlite3 | 4.2 µs | 9.3 µs |
+| calibration: python file read | 6.7 µs | 13.4 µs |
 
 ### Link traversal (2-hop BFS reading every node, mean 40 nodes) and backlinks
 
 | store | BFS p50 | BFS p99 | backlinks p50 |
 |---|---|---|---|
-| files | 77.1 µs | 499.7 µs | 7.8 ms (scan) |
-| sqlite | 59.5 µs | 393.9 µs | 1.3 µs (index) |
-| zim (py) | 173.8 µs | 1.4 ms | 8.9 ms (scan) |
-| phext libphext explode map | 5.8 µs | 54.3 µs | — |
-| phext-lattice | 26.4 µs | 165.2 µs | 599.5 µs (scan) |
-| SQ HTTP (select + query set) | 875.5 µs | 5.7 ms | — |
+| files | 74.7 µs | 488.4 µs | 7.7 ms (scan) |
+| sqlite | 56.7 µs | 375.0 µs | 1.3 µs (index) |
+| zim (py) | 182.2 µs | 1.4 ms | 8.9 ms (scan) |
+| phext libphext explode map | 5.5 µs | 40.1 µs | — |
+| phext-lattice | 29.1 µs | 181.2 µs | 817.1 µs (scan) |
+| SQ HTTP (select + query set) | 862.7 µs | 5.1 ms | — |
 
 ### Incremental updates (durable unless noted)
 
 | path | edit one article | add one article |
 |---|---|---|
-| files (rewrite + fsync) | 296.1 µs | 354.4 µs |
-| sqlite WAL, synchronous=FULL, FTS triggers | 336.0 µs | 226.2 µs |
-| zim | full rebuild 2.37 s | full rebuild |
-| phext libphext::replace + rewrite file | 11.2 ms | — |
-| phext-lattice write_scroll + save() | 19.9 ms | — |
-| phext-lattice 100 edits, one save() | 18.26 ms total | — |
-| phext raw append at EOF + fsync | — | 166.7 µs (+4.22 ms re-index) |
-| SQ HTTP update (no fsync) | 4.4 ms | — |
+| files (rewrite + fsync) | 314.8 µs | 423.1 µs |
+| sqlite WAL, synchronous=FULL, FTS triggers | 463.5 µs | 205.6 µs |
+| zim | full rebuild 2.34 s | full rebuild |
+| phext libphext::replace + rewrite file | 10.6 ms | — |
+| phext-lattice write_scroll + save() | 15.0 ms | — |
+| phext-lattice 100 edits, one save() | 14.75 ms total | — |
+| phext raw append at EOF + fsync | — | 179.6 µs (+3.55 ms re-index) |
+| SQ HTTP update (no fsync) | 4.2 ms | — |
+
+### Persisted indexes (`IndexedLattice` sidecar)
+
+Sidecar: 5.03 MB `parallel.phext` + 7.16 MB `tables.phext` for a 4.79 MB source; one-time build 0.21 s.
+
+|  | sidecar | rebuilt in memory on open |
+|---|---|---|
+| open → first article (cold) | 3.73 ms | 14.06 ms |
+| RSS added by open | 1.4 MB | 12.4 MB |
+| title → text (warm) | 3.3 µs | 1.3 µs |
+| coordinate → text (warm) | 0.7 µs | 0.6 µs |
+| edit one article + save | 21.9 ms (source rewrite + delta) | 15.0 ms (source rewrite only) |
+| source changed by another tool → reopen | 14.14 ms (resync into delta) | 14.06 ms (same full open) |
+| record appended by another tool → reopen | 15.74 ms | 14.06 ms (same full open) |
+| fold delta into base (compact) | 72.91 ms | — |
+| keywords: R@1 / p50 | 0.946 / 62.7 µs | 0.946 / 8.3 µs (in-memory `TermIndex`) |
+| keywords_hard: R@1 / p50 | 0.338 / 133.2 µs | 0.338 / 37.7 µs (in-memory `TermIndex`) |
+| alias_lower: hit rate / p50 | 1.000 / 3.0 µs | 1.000 (in-memory `NameIndex`) |
 
 ### Agent retrieval
 
@@ -79,43 +97,43 @@ phext: 13,892 delimiter bytes, 713,120 bytes of titles + link coordinates + alia
 | phext_lattice_names_exact | 1.000 | 0.6 µs |
 | phext_lattice_names_resolve | 1.000 | 0.1 µs |
 | sqlite | 1.000 | 1.7 µs |
-| zim_title_index | 1.000 | 8.9 µs |
-| zim_suggestion_top1 | 1.000 | 14.9 µs |
-| zim_xapian_fulltext_top1 | 0.414 | 63.7 µs |
+| zim_title_index | 1.000 | 8.7 µs |
+| zim_suggestion_top1 | 1.000 | 15.0 µs |
+| zim_xapian_fulltext_top1 | 0.414 | 67.0 µs |
 
 **alias_lower** (lower-cased redirect title)
 
 | method | hit rate | p50 |
 |---|---|---|
-| files | 0.000 | 2.2 µs |
+| files | 0.000 | 2.1 µs |
 | phext_lattice_names_exact | 0.000 | 0.1 µs |
 | phext_lattice_names_resolve | 1.000 | 0.6 µs |
-| sqlite | 1.000 | 330.7 µs |
-| zim_title_index | 0.000 | 4.6 µs |
-| zim_suggestion_top1 | 0.000 | 2.7 µs |
-| zim_xapian_fulltext_top1 | 0.396 | 65.5 µs |
+| sqlite | 1.000 | 328.2 µs |
+| zim_title_index | 0.000 | 4.4 µs |
+| zim_suggestion_top1 | 0.000 | 2.6 µs |
+| zim_xapian_fulltext_top1 | 0.396 | 65.8 µs |
 
 **keywords**
 
 | method | n | R@1 | R@10 | MRR@10 | agent bytes read (p50) | p50 |
 |---|---|---|---|---|---|---|
-| files_grep | 50 | 0.980 | 1.000 | 0.990 | 1,276 | 29.5 ms |
-| phext_lattice_search_grep | 500 | 0.978 | 1.000 | 0.988 | 1,226 | 38.6 ms |
-| phext_lattice_term_index | 500 | 0.946 | 1.000 | 0.968 | 1,218 | 8.5 µs |
-| sqlite_fts5_bm25 | 500 | 0.948 | 1.000 | 0.969 | 1,218 | 262.0 µs |
-| zim_xapian | 500 | 0.962 | 0.996 | 0.977 | 1,226 | 63.4 µs |
+| files_grep | 50 | 0.980 | 1.000 | 0.990 | 1,276 | 28.5 ms |
+| phext_lattice_search_grep | 500 | 0.978 | 1.000 | 0.988 | 1,226 | 40.1 ms |
+| phext_lattice_term_index | 500 | 0.946 | 1.000 | 0.968 | 1,218 | 8.3 µs |
+| sqlite_fts5_bm25 | 500 | 0.948 | 1.000 | 0.969 | 1,218 | 265.1 µs |
+| zim_xapian | 500 | 0.962 | 0.996 | 0.977 | 1,226 | 63.6 µs |
 
 **keywords_hard**
 
 | method | n | R@1 | R@10 | MRR@10 | agent bytes read (p50) | p50 |
 |---|---|---|---|---|---|---|
-| files_grep | 50 | 0.160 | 0.460 | 0.233 | 22,809 | 23.6 ms |
-| phext_lattice_search_grep | 500 | 0.174 | 0.588 | 0.285 | 17,169 | 24.1 ms |
-| phext_lattice_term_index | 500 | 0.338 | 0.670 | 0.443 | 4,011 | 38.3 µs |
-| sqlite_fts5_bm25 | 500 | 0.328 | 0.674 | 0.436 | 4,169 | 571.4 µs |
-| zim_xapian | 500 | 0.274 | 0.666 | 0.387 | 7,520 | 141.8 µs |
+| files_grep | 50 | 0.160 | 0.460 | 0.233 | 22,809 | 23.0 ms |
+| phext_lattice_search_grep | 500 | 0.174 | 0.588 | 0.285 | 17,169 | 25.5 ms |
+| phext_lattice_term_index | 500 | 0.338 | 0.670 | 0.443 | 4,011 | 37.7 µs |
+| sqlite_fts5_bm25 | 500 | 0.328 | 0.674 | 0.436 | 4,169 | 562.2 µs |
+| zim_xapian | 500 | 0.274 | 0.666 | 0.387 | 7,520 | 148.7 µs |
 
-`NameIndex`: 20,386 names, 25 folded collisions, built as part of phext-lattice open (`names` above). `TermIndex` build: 70.92 ms, ~7.60 MB heap.
+`NameIndex`: 20,386 names, 25 folded collisions, built as part of phext-lattice open (`names` above). `TermIndex` build: 68.69 ms, ~7.60 MB heap.
 
 ## Scale 10: 38,200 articles, 120,370 links, 40.78 MB payload
 
@@ -136,51 +154,66 @@ phext: 138,929 delimiter bytes, 7,974,124 bytes of titles + link coordinates + a
 
 | store / access path | time | RSS added |
 |---|---|---|
-| files | 1.83 ms | — |
-| sqlite | 3.24 ms | 1.5 MB |
-| zim (py) | 21.93 ms | — |
-| phext: libphext read + fetch | 34.02 ms | 46.7 MB |
-| phext: libphext explode | 88.67 ms (+read) | 73.5 MB |
-| phext-lattice mmap + index + names | 190.85 ms (index 63.14, names 127.71) | 174.6 MB |
-| SQ host (spawn + explode) | 155.0 ms | — |
+| files | 1.12 ms | — |
+| sqlite | 2.93 ms | 1.4 MB |
+| zim (py) | 23.21 ms | — |
+| phext: libphext read + fetch | 33.17 ms | 46.6 MB |
+| phext: libphext explode | 94.17 ms (+read) | 73.5 MB |
+| phext-lattice mmap + index + names | 165.64 ms (index 43.55, names 122.09) | 142.6 MB |
+| SQ host (spawn + explode) | 156.77 ms | — |
 
 ### Warm lookup (title → article text)
 
 | access path | p50 | p99 |
 |---|---|---|
-| files (dirent) | 4.1 µs | 9.7 µs |
-| sqlite (title index) | 3.9 µs | 7.2 µs |
-| sqlite (rowid) | 2.3 µs | 39.8 µs |
-| zim (title index, py) | 42.8 µs | 5.0 ms |
-| phext libphext::fetch (linear scan) | 13.4 ms | 29.7 ms |
-| phext libphext::explode map | 1.8 µs | 3.0 µs |
-| phext-lattice (name map + mmap) | 2.1 µs | 3.9 µs |
-| phext-lattice (by coordinate) | 0.6 µs | 1.5 µs |
-| SQ HTTP select (by coordinate) | 86.0 µs | 228.3 µs |
-| calibration: python sqlite3 | 5.9 µs | 10.2 µs |
-| calibration: python file read | 8.0 µs | 14.6 µs |
+| files (dirent) | 4.2 µs | 10.5 µs |
+| sqlite (title index) | 4.0 µs | 7.8 µs |
+| sqlite (rowid) | 2.3 µs | 3.2 µs |
+| zim (title index, py) | 48.6 µs | 4.9 ms |
+| phext libphext::fetch (linear scan) | 13.3 ms | 30.0 ms |
+| phext libphext::explode map | 2.1 µs | 3.4 µs |
+| phext-lattice (name map + mmap) | 3.1 µs | 5.4 µs |
+| phext-lattice (by coordinate) | 1.1 µs | 2.4 µs |
+| SQ HTTP select (by coordinate) | 80.9 µs | 394.9 µs |
+| calibration: python sqlite3 | 5.9 µs | 12.1 µs |
+| calibration: python file read | 8.1 µs | 16.2 µs |
 
 ### Link traversal (2-hop BFS reading every node, mean 40 nodes) and backlinks
 
 | store | BFS p50 | BFS p99 | backlinks p50 |
 |---|---|---|---|
-| files | 123.0 µs | 601.8 µs | 114.5 ms (scan) |
-| sqlite | 82.2 µs | 534.3 µs | 2.2 µs (index) |
-| zim (py) | 1.1 ms | 15.3 ms | 368.1 ms (scan) |
-| phext libphext explode map | 8.2 µs | 76.0 µs | — |
-| phext-lattice | 42.8 µs | 191.5 µs | 7.8 ms (scan) |
-| SQ HTTP (select + query set) | 717.7 µs | 3.9 ms | — |
+| files | 128.8 µs | 537.4 µs | 116.0 ms (scan) |
+| sqlite | 81.2 µs | 349.1 µs | 2.2 µs (index) |
+| zim (py) | 1.1 ms | 17.5 ms | 361.4 ms (scan) |
+| phext libphext explode map | 8.7 µs | 77.9 µs | — |
+| phext-lattice | 56.6 µs | 241.3 µs | 9.4 ms (scan) |
+| SQ HTTP (select + query set) | 732.4 µs | 3.9 ms | — |
 
 ### Incremental updates (durable unless noted)
 
 | path | edit one article | add one article |
 |---|---|---|
-| files (rewrite + fsync) | 301.9 µs | 362.2 µs |
-| sqlite WAL, synchronous=FULL, FTS triggers | 370.9 µs | 189.9 µs |
-| zim | full rebuild 21.01 s | full rebuild |
-| phext libphext::replace + rewrite file | 122.8 ms | — |
-| phext-lattice write_scroll + save() | 252.5 ms | — |
-| phext-lattice 100 edits, one save() | 226.98 ms total | — |
-| phext raw append at EOF + fsync | — | 158.3 µs (+59.28 ms re-index) |
-| SQ HTTP update (no fsync) | 72.6 ms | — |
+| files (rewrite + fsync) | 459.7 µs | 404.1 µs |
+| sqlite WAL, synchronous=FULL, FTS triggers | 452.5 µs | 193.4 µs |
+| zim | full rebuild 20.97 s | full rebuild |
+| phext libphext::replace + rewrite file | 106.0 ms | — |
+| phext-lattice write_scroll + save() | 162.8 ms | — |
+| phext-lattice 100 edits, one save() | 162.25 ms total | — |
+| phext raw append at EOF + fsync | — | 157.7 µs (+34.52 ms re-index) |
+| SQ HTTP update (no fsync) | 72.9 ms | — |
+
+### Persisted indexes (`IndexedLattice` sidecar)
+
+Sidecar: 51.16 MB `parallel.phext` + 70.67 MB `tables.phext` for a 48.89 MB source; one-time build 2.48 s.
+
+|  | sidecar | rebuilt in memory on open |
+|---|---|---|
+| open → first article (cold) | 35.84 ms | 165.64 ms |
+| RSS added by open | 9.7 MB | 142.6 MB |
+| title → text (warm) | 5.9 µs | 3.1 µs |
+| coordinate → text (warm) | 1.3 µs | 1.1 µs |
+| edit one article + save | 184.0 ms (source rewrite + delta) | 162.8 ms (source rewrite only) |
+| source changed by another tool → reopen | 89.28 ms (resync into delta) | 165.64 ms (same full open) |
+| record appended by another tool → reopen | 86.03 ms | 165.64 ms (same full open) |
+| fold delta into base (compact) | 367.29 ms | — |
 
