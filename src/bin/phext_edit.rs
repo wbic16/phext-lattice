@@ -1029,6 +1029,27 @@ a { color: #4dc9c9; }
 nav { margin-bottom: 24px; font-size: 14px; }
 .dim { color: #9a9a9a; }
 footer { margin-top: 40px; font-size: 13px; color: #9a9a9a; border-top: 1px solid #2e2e2e; padding-top: 16px; }
+/* Mobile and accessibility for the public pages. Kept in this block so it
+   stays clear of the page copy. The dark background is the product theme. */
+.skip-link {
+  position: absolute; left: 8px; top: 0; transform: translateY(-120%);
+  background: #e8c547; color: #000; font-weight: bold; text-decoration: none;
+  padding: 8px 12px; border-radius: 4px; z-index: 5;
+}
+.skip-link:focus { transform: none; top: 8px; }
+:focus-visible { outline: 2px solid #e8c547; outline-offset: 3px; }
+main a, main code { overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  main { padding: 16px 16px 40px; }
+  nav a { display: inline-block; padding: 12px 8px; min-height: 44px; }
+  h1 { font-size: 26px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important; scroll-behavior: auto !important;
+  }
+}
 </style>"# } }
 
 const ABOUT_HTML: &str = concat!(r#"<!DOCTYPE html>
@@ -1042,7 +1063,8 @@ const ABOUT_HTML: &str = concat!(r#"<!DOCTYPE html>
 "#, public_style!(), r#"
 </head>
 <body>
-<main>
+<a class="skip-link" href='#content'>Skip to content</a>
+<main id="content">
 <nav><a href="./">Open the editor</a> · <a href="privacy">Privacy Policy</a></nav>
 <h1>💎 Phext Edit</h1>
 <p class="dim">A web editor for phext files.</p>
@@ -1092,7 +1114,8 @@ const PRIVACY_HTML: &str = concat!(r#"<!DOCTYPE html>
 "#, public_style!(), r#"
 </head>
 <body>
-<main>
+<a class="skip-link" href='#content'>Skip to content</a>
+<main id="content">
 <nav><a href="about">About Phext Edit</a> · <a href="./">Open the editor</a></nav>
 <h1>Privacy Policy</h1>
 <p class="dim">Effective 30 October 2026</p>
@@ -1173,7 +1196,7 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
 <style>
 :root {
   --bg: #171717; --panel: #131313; --bar: #1c1c1c; --border: #2e2e2e;
-  --text: #dedede; --dim: #808080; --coord: #d4a855;
+  --text: #dedede; --dim: #9a9a9a; --coord: #d4a855; --field-border: #767676;
   --z-color: #4dc9c9; --y-color: #c964c9; --x-color: #6bc96b;
   --active: #e8c547; --danger: #e05555;
   --trans-fast: 120ms ease; --trans-med: 200ms ease;
@@ -1363,66 +1386,158 @@ body {
 .auth-btn { display:block; background:var(--panel); border:1px solid var(--border); color:var(--text);
   font-family:inherit; font-size:14px; padding:10px 14px; border-radius:6px; text-decoration:none; cursor:pointer; }
 .auth-btn:hover { border-color:var(--coord); }
+
+/* ── Mobile layout and accessibility ─────────────────────────────────
+   Own block so it stays out of the way of other shell edits.
+   The product theme is dark (R3.6). A prefers-color-scheme light override
+   would fight that, so it is intentionally not set.
+   --dim is #9a9a9a: #808080 is only 4.32:1 on the coord bar (#1c1c1c).
+   Input borders use --field-border (#767676, 3.9:1 on #171717). Layout
+   rules stay on --border; those lines are separators, not the control. */
+.skip-link {
+  position: absolute; left: 8px; top: 0; transform: translateY(-120%);
+  background: var(--active); color: #000; font-weight: bold; text-decoration: none;
+  padding: 8px 12px; border-radius: 4px; z-index: 200;
+}
+.skip-link:focus { transform: none; top: 8px; }
+:focus-visible { outline: 2px solid var(--active); outline-offset: 2px; }
+#editor textarea:focus-visible,
+.overlay input:focus-visible,
+#auth-input:focus-visible { outline: 2px solid var(--active); outline-offset: 0; }
+.overlay input, .auth-btn { border-color: var(--field-border); }
+.overlay input::placeholder,
+#auth-input::placeholder { color: #a3a3a3; opacity: 1; }
+#panel-toggle { display: none; }
+#panel-backdrop { display: none; }
+button.tab, button.axon, button.nt-group, button.nt-scroll, button.hit,
+#status-bar button#active-file {
+  font: inherit; background: transparent; border: 0; color: inherit; cursor: pointer;
+}
+#panel-tabs button.tab { border-bottom: 2px solid transparent; padding: 0 8px; color: var(--dim); }
+#panel-tabs button.tab.active { color: var(--text); border-bottom-color: var(--coord); }
+button.axon, button.nt-group, button.nt-scroll, button.hit,
+#status-bar button#active-file { text-align: left; }
+button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
+#status-bar button.signout { font: inherit; }
+#status-bar button#active-file { padding: 0; }
+#phext-list button.hit { display: flex; gap: 10px; padding: 4px 8px; border-radius: 3px; }
+#phext-list button.hit:hover { background: #ffffff10; }
+#search-overlay { width: min(500px, calc(100vw - 16px)); }
+#goto-overlay { width: min(360px, calc(100vw - 16px)); }
+#phext-overlay { width: min(500px, calc(100vw - 16px)); }
+@media (max-width: 760px) {
+  #panel-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-height: 44px; min-width: 44px; padding: 8px 12px; margin-right: 4px;
+    background: transparent; color: var(--coord); border: 1px solid var(--coord);
+    border-radius: 6px; font: inherit; cursor: pointer; flex-shrink: 0;
+  }
+  #coord-bar { height: auto; min-height: 44px; flex-wrap: wrap; padding: 4px 8px; row-gap: 4px; }
+  #coord-text { min-width: 0; }
+  #main { position: relative; }
+  #left-panel {
+    position: absolute; top: 0; bottom: 0; left: 0; z-index: 20;
+    width: min(320px, calc(100% - 48px)); max-width: 100%;
+    transform: translateX(-105%); pointer-events: none;
+    box-shadow: 8px 0 24px #00000099;
+  }
+  #left-panel.drawer-open { transform: none; pointer-events: auto; }
+  #panel-backdrop.visible {
+    display: block; position: absolute; inset: 0; z-index: 19;
+    background: #00000066; border: 0; padding: 0; cursor: pointer;
+  }
+  #panel-tabs { height: auto; }
+  #panel-tabs button.tab, button.axon, button.nt-group, button.nt-scroll, button.hit,
+  #status-bar button.signout, #status-bar button#active-file,
+  #editor .editor-toolbar button, .auth-btn, #auth-input { min-height: 44px; }
+  button.axon, button.nt-group, button.nt-scroll, button.hit { padding: 10px 8px; }
+  #content { padding: 12px; }
+  #editor .editor-toolbar { height: auto; min-height: 44px; flex-wrap: wrap; padding: 4px 8px; }
+  #editor .editor-toolbar button { padding: 8px 12px; }
+  #editor textarea, .overlay input, #auth-input { font-size: 16px; }
+  #status-bar { height: auto; flex-wrap: wrap; align-items: center; padding: 8px 10px; gap: 8px; }
+  #status-bar > * { white-space: normal; }
+  #status-bar .help { flex-basis: 100%; white-space: normal; overflow: visible; text-overflow: unset; }
+  #status-bar button#active-file {
+    min-width: 0; max-width: 100%; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis;
+  }
+  .overlay {
+    top: 8px; left: 8px; right: 8px; width: auto; transform: none;
+    max-height: calc(100vh - 16px); overflow: auto;
+  }
+  #search-overlay, #goto-overlay, #phext-overlay { width: auto; }
+  #auth-screen { padding: 16px; overflow: auto; }
+  #auth-screen > div { width: min(400px, 100%); box-sizing: border-box; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important; scroll-behavior: auto !important;
+  }
+}
 </style>
 </head>
 <body>
+<a class="skip-link" href="#content">Skip to scroll</a>
 
-<div id="coord-bar">
+<header id="coord-bar">
+  <button type="button" id="panel-toggle" aria-controls="left-panel" aria-expanded="false" onclick="toggleDrawer()">Panel</button>
   <span id="coord-text">loading...</span>
   <span class="scrolls" id="scroll-count"></span>
   <span class="dirty" id="dirty-flag"></span>
-</div>
+</header>
 
-<div id="main">
-  <div id="left-panel">
-    <div id="panel-tabs">
-      <div class="tab active" id="tab-sentron" onclick="showPanel('sentron')">◉ Sentron</div>
-      <div class="tab" id="tab-navtree" onclick="showPanel('navtree')">🌳 Nav</div>
+<main id="main">
+  <button type="button" id="panel-backdrop" aria-label="Close lattice panel" hidden onclick="closeDrawer()"></button>
+  <nav id="left-panel" aria-label="Lattice">
+    <div id="panel-tabs" role="tablist" aria-label="Lattice panels">
+      <button type="button" class="tab active" id="tab-sentron" role="tab" aria-selected="true" aria-controls="sentron-panel" tabindex="0" onclick="showPanel('sentron')">◉ Sentron</button>
+      <button type="button" class="tab" id="tab-navtree" role="tab" aria-selected="false" aria-controls="navtree-panel" tabindex="-1" onclick="showPanel('navtree')">🌳 Nav</button>
     </div>
-    <div id="sentron-panel"></div>
-    <div id="navtree-panel"></div>
-  </div>
+    <div id="sentron-panel" role="tabpanel" aria-labelledby="tab-sentron"></div>
+    <div id="navtree-panel" role="tabpanel" aria-labelledby="tab-navtree"></div>
+  </nav>
   <div id="content-area">
-    <div id="content"></div>
+    <div id="content" tabindex="-1"></div>
     <div id="editor">
       <div class="editor-toolbar">
         <span class="coord-label" id="edit-coord"></span>
-        <button class="save-btn" onclick="saveScroll()">Save (Ctrl+S)</button>
-        <button onclick="cancelEdit()">Cancel (Esc)</button>
+        <button type="button" class="save-btn" onclick="saveScroll()">Save (Ctrl+S)</button>
+        <button type="button" onclick="cancelEdit()">Cancel (Esc)</button>
       </div>
-      <textarea id="edit-textarea" spellcheck="false"></textarea>
+      <textarea id="edit-textarea" aria-label="Scroll text" spellcheck="false"></textarea>
     </div>
   </div>
-</div>
+</main>
 
-<div id="status-bar">
+<div id="status-bar" role="region" aria-label="Editor status">
   <span class="mode lattice" id="mode-label">LATTICE</span>
-  <span id="active-file" style="color:var(--dim);cursor:pointer" onclick="openPhextPicker()" title="Click to switch phext"></span>
+  <button type="button" id="active-file" style="color:var(--dim);cursor:pointer" onclick="openPhextPicker()" title="Switch phext"></button>
   <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  t:tree  /:search  g:goto  Home:BASE</span>
-  <span class="msg" id="status-msg"></span>
-  <span id="signout" class="signout" style="display:none" onclick="signOut()" title="Sign out"></span>
+  <span class="msg" id="status-msg" role="status" aria-live="polite"></span>
+  <button type="button" id="signout" class="signout" style="display:none" onclick="signOut()" title="Sign out"></button>
 </div>
 
-<div class="overlay" id="search-overlay">
-  <input id="search-input" placeholder="search scrolls..." autocomplete="off" />
-  <div id="search-results"></div>
+<div class="overlay" id="search-overlay" role="dialog" aria-label="Search scrolls">
+  <input id="search-input" aria-label="Search scrolls" placeholder="search scrolls..." autocomplete="off" />
+  <div id="search-results" aria-live="polite"></div>
 </div>
-<div class="overlay" id="goto-overlay">
-  <input id="goto-input" placeholder="z.z.z/y.y.y/x.x.x" autocomplete="off" />
+<div class="overlay" id="goto-overlay" role="dialog" aria-label="Go to coordinate">
+  <input id="goto-input" aria-label="Go to coordinate" placeholder="z.z.z/y.y.y/x.x.x" autocomplete="off" />
 </div>
-<div class="overlay" id="phext-overlay" style="width:500px;max-height:500px">
+<div class="overlay" id="phext-overlay" role="dialog" aria-label="Switch phext" style="max-height:500px">
   <div style="color:var(--dim);font-size:11px;margin-bottom:6px">Select a phext file:</div>
   <div id="phext-list" style="max-height:400px;overflow-y:auto"></div>
 </div>
-<div id="auth-screen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:100;align-items:center;justify-content:center">
+<div id="auth-screen" role="dialog" aria-modal="true" aria-labelledby="auth-prompt" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:100;align-items:center;justify-content:center">
   <div style="text-align:center;max-width:400px">
     <div style="font-size:24px;margin-bottom:16px;color:var(--coord)">💎 phext-edit</div>
     <div id="auth-prompt" style="color:var(--dim);margin-bottom:20px">Enter your access token to continue</div>
     <div id="auth-providers" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
-    <input id="auth-input" type="password" placeholder="token" autocomplete="off"
-      style="width:100%;background:var(--panel);border:1px solid var(--border);color:var(--text);
-      font-family:inherit;font-size:14px;padding:10px 14px;border-radius:6px;outline:none;text-align:center" />
-    <div id="auth-error" style="color:var(--danger);margin-top:8px;font-size:12px"></div>
+    <input id="auth-input" type="password" aria-label="Access token" placeholder="token" autocomplete="off"
+      style="width:100%;background:var(--panel);border:1px solid var(--field-border);color:var(--text);
+      font-family:inherit;font-size:14px;padding:10px 14px;border-radius:6px;text-align:center" />
+    <div id="auth-error" role="alert" style="color:var(--danger);margin-top:8px;font-size:12px"></div>
     <div style="color:var(--dim);margin-top:28px;font-size:12px;line-height:1.6">
       A web editor for phext: plain text arranged in 11 dimensions.<br>
       Sign-in only checks who you are; nothing is shared or sold.<br>
@@ -1471,12 +1586,73 @@ function setMode(m) {
 
 function showPanel(name) {
   activePanel = name;
-  $('sentron-panel').style.display = (name === 'sentron') ? '' : 'none';
-  $('navtree-panel').style.display = (name === 'navtree') ? '' : 'none';
-  $('tab-sentron').className = 'tab' + (name === 'sentron' ? ' active' : '');
-  $('tab-navtree').className = 'tab' + (name === 'navtree' ? ' active' : '');
+  const sentron = name === 'sentron';
+  $('sentron-panel').style.display = sentron ? '' : 'none';
+  $('navtree-panel').style.display = sentron ? 'none' : '';
+  $('tab-sentron').className = 'tab' + (sentron ? ' active' : '');
+  $('tab-navtree').className = 'tab' + (sentron ? '' : ' active');
+  $('tab-sentron').setAttribute('aria-selected', sentron ? 'true' : 'false');
+  $('tab-navtree').setAttribute('aria-selected', sentron ? 'false' : 'true');
+  $('tab-sentron').tabIndex = sentron ? 0 : -1;
+  $('tab-navtree').tabIndex = sentron ? -1 : 0;
   if (name === 'navtree' && !treeData) loadTree();
+  if (window.matchMedia('(max-width: 760px)').matches) setDrawer(true);
 }
+
+function drawerNarrow() { return window.matchMedia('(max-width: 760px)').matches; }
+
+function setDrawer(open) {
+  const show = !!(open && drawerNarrow());
+  const panel = $('left-panel');
+  const toggle = $('panel-toggle');
+  const backdrop = $('panel-backdrop');
+  const wasOpen = !!(panel && panel.classList.contains('drawer-open'));
+  if (panel) {
+    panel.classList.toggle('drawer-open', show);
+    panel.inert = drawerNarrow() && !show;
+  }
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', show ? 'true' : 'false');
+    toggle.textContent = show ? 'Close' : 'Panel';
+  }
+  if (backdrop) {
+    backdrop.hidden = !show;
+    backdrop.classList.toggle('visible', show);
+  }
+  if (wasOpen && !show && panel && toggle && panel.contains(document.activeElement)) toggle.focus();
+}
+
+function toggleDrawer() {
+  const open = !$('left-panel').classList.contains('drawer-open');
+  setDrawer(open);
+  if (open) {
+    const tab = activePanel === 'navtree' ? $('tab-navtree') : $('tab-sentron');
+    // inert is cleared in setDrawer; focus waits until that takes effect.
+    if (tab) requestAnimationFrame(() => tab.focus());
+  }
+}
+
+function closeDrawer() {
+  setDrawer(false);
+  const toggle = $('panel-toggle');
+  if (toggle && drawerNarrow()) toggle.focus();
+}
+
+$('panel-tabs').addEventListener('keydown', (e) => {
+  const tabs = ['sentron', 'navtree'];
+  const i = Math.max(0, tabs.indexOf(activePanel));
+  let next = -1;
+  if (e.key === 'ArrowRight') next = (i + 1) % tabs.length;
+  else if (e.key === 'ArrowLeft') next = (i - 1 + tabs.length) % tabs.length;
+  else if (e.key === 'Home') next = 0;
+  else if (e.key === 'End') next = tabs.length - 1;
+  else return;
+  e.preventDefault();
+  showPanel(tabs[next]);
+  $('tab-' + tabs[next]).focus();
+});
+window.matchMedia('(max-width: 760px)').addEventListener('change', () => setDrawer(false));
+setDrawer(false);
 
 async function api(method, path, body) {
   const opts = { method, headers: {} };
@@ -1527,27 +1703,27 @@ function renderSentron(nav) {
   for (const a of s.axons.filter(a => a.group === 'spatial')) {
     const active = a.dimension === p.dimension_index ? 'active' : '';
     const marker = a.dimension === p.dimension_index ? '▸' : ' ';
-    html += `<div class="axon spatial ${active}" onclick="selectDim(${a.dimension})">
+    html += `<button type="button" class="axon spatial ${active}" aria-pressed="${active ? 'true' : 'false'}" onclick="selectDim(${a.dimension})">
       <span class="marker">${marker}</span><span class="dim-num">${a.dimension}</span>
       <span class="dim-name">${a.name}</span><span class="dim-val">${a.value}</span>
-      <span class="counts">−${a.backward} +${a.forward}</span></div>`;
+      <span class="counts">−${a.backward} +${a.forward}</span></button>`;
   }
   html += '<div class="group-label">── temporal ──</div>';
   for (const a of s.axons.filter(a => a.group === 'temporal')) {
     const active = a.dimension === p.dimension_index ? 'active' : '';
     const marker = a.dimension === p.dimension_index ? '▸' : ' ';
-    html += `<div class="axon temporal ${active}" onclick="selectDim(${a.dimension})">
+    html += `<button type="button" class="axon temporal ${active}" aria-pressed="${active ? 'true' : 'false'}" onclick="selectDim(${a.dimension})">
       <span class="marker">${marker}</span><span class="dim-num">${a.dimension}</span>
       <span class="dim-name">${a.name}</span><span class="dim-val">${a.value}</span>
-      <span class="counts">−${a.backward} +${a.forward}</span></div>`;
+      <span class="counts">−${a.backward} +${a.forward}</span></button>`;
   }
   for (const a of s.axons.filter(a => a.group === 'neuron')) {
     const active = a.dimension === p.dimension_index ? 'active' : '';
     const marker = a.dimension === p.dimension_index ? '▸' : ' ';
-    html += `<div class="axon neuron ${active}" onclick="selectDim(${a.dimension})">
+    html += `<button type="button" class="axon neuron ${active}" aria-pressed="${active ? 'true' : 'false'}" onclick="selectDim(${a.dimension})">
       <span class="marker">${marker}</span><span class="dim-num">${a.dimension}</span>
       <span class="dim-name">${a.name}</span><span class="dim-val">${a.value}</span>
-      <span class="counts">← neuron</span></div>`;
+      <span class="counts">← neuron</span></button>`;
   }
   if (nav.densities && nav.densities.length) {
     html += '<div class="densities">';
@@ -1606,10 +1782,10 @@ function renderTree() {
     const zExpanded = !!treeExpanded[zk];
     const zCurrent = curCoord.startsWith(zk + '/') ? ' current' : '';
 
-    html += `<div class="nt-group${zCurrent}" onclick="toggleZ('${zk}')">
+    html += `<button type="button" class="nt-group${zCurrent}" aria-expanded="${zExpanded ? 'true' : 'false'}" onclick="toggleZ('${zk}')">
       <span class="nt-arrow${zExpanded ? ' open' : ''}">▶</span>
       <span class="nt-label">${zk}</span>
-      <span class="nt-count">${zCount}</span></div>`;
+      <span class="nt-count">${zCount}</span></button>`;
     html += `<div class="nt-children${zExpanded ? '' : ' collapsed'}" id="nt-z-${zk.replace(/\./g,'-')}">`;
 
     if (zExpanded) {
@@ -1620,18 +1796,18 @@ function renderTree() {
         const yExpanded = !!treeExpanded[zyKey];
         const yCurrent = curCoord.startsWith(zyKey + '/') ? ' current' : '';
 
-        html += `<div class="nt-group${yCurrent}" onclick="toggleY('${escAttr(zk)}','${escAttr(yk)}')">
+        html += `<button type="button" class="nt-group${yCurrent}" aria-expanded="${yExpanded ? 'true' : 'false'}" onclick="toggleY('${escAttr(zk)}','${escAttr(yk)}')">
           <span class="nt-arrow${yExpanded ? ' open' : ''}">▶</span>
           <span class="nt-label" style="color:var(--y-color)">${yk}</span>
-          <span class="nt-count">${scrolls.length}</span></div>`;
+          <span class="nt-count">${scrolls.length}</span></button>`;
         html += `<div class="nt-children${yExpanded ? '' : ' collapsed'}" id="nt-y-${zyKey.replace(/[\/.]/g,'-')}">`;
 
         if (yExpanded) {
           html += `<div class="subspace-header d4"><span class="sh-dim">4D</span><span class="sh-desc">Y=${yk} · ${scrolls.length} scrolls</span></div>`;
           for (const s of scrolls) {
             const isCur = s.full === curCoord ? ' current' : '';
-            html += `<div class="nt-scroll${isCur}" onclick="treeNav('${escAttr(s.full)}')">
-              <span class="nt-coord">${s.x}</span></div>`;
+            html += `<button type="button" class="nt-scroll${isCur}" onclick="treeNav('${escAttr(s.full)}')">
+              <span class="nt-coord">${s.x}</span></button>`;
           }
         }
         html += '</div>';
@@ -1658,6 +1834,7 @@ function toggleY(zk, yk) {
 
 async function treeNav(coord) {
   render(await api('POST', '/api/goto', coord));
+  if (drawerNarrow()) setDrawer(false);
 }
 
 function highlightTreeNode(coord) {
@@ -1711,9 +1888,9 @@ async function doSearch(query) {
   const el = $('search-results');
   if (!hits.length) { el.innerHTML = '<div style="color:var(--dim);padding:8px">no results</div>'; return; }
   el.innerHTML = hits.map(h =>
-    `<div class="hit" onclick="jumpToHit('${escAttr(h.coordinate)}')">
+    `<button type="button" class="hit" onclick="jumpToHit('${escAttr(h.coordinate)}')">
       <span class="hit-coord">${escHtml(h.coordinate)}</span>
-      <span class="hit-ctx">${escHtml(h.context)}</span></div>`
+      <span class="hit-ctx">${escHtml(h.context)}</span></button>`
   ).join('');
 }
 function jumpToHit(coord) { closeOverlays(); gotoCoord(coord); }
@@ -1762,6 +1939,14 @@ document.addEventListener('keydown', async (e) => {
     }
     return;
   }
+
+  if (e.key === 'Escape' && $('left-panel').classList.contains('drawer-open')) {
+    closeDrawer();
+    e.preventDefault();
+    return;
+  }
+  const focusTag = (e.target && e.target.tagName) || '';
+  if (focusTag === 'INPUT' || focusTag === 'TEXTAREA' || focusTag === 'BUTTON' || focusTag === 'A' || focusTag === 'SELECT') return;
 
   const k = e.key;
   if (k >= '1' && k <= '9') { await selectDim(parseInt(k)); e.preventDefault(); }
@@ -1825,7 +2010,7 @@ async function showAuthScreen(message, sessionFresh) {
   let html = '';
   if (s.signed_in) {
     html += `<div style="color:var(--text)">Signed in as ${escHtml(s.name || s.handle)} <span style="color:var(--dim)">(${escHtml(s.who)})</span></div>`;
-    html += `<button class="auth-btn" onclick="signOut()">Sign out</button>`;
+    html += `<button type="button" class="auth-btn" onclick="signOut()">Sign out</button>`;
   } else {
     const next = encodeURIComponent('/' + location.hash);
     const label = { github: 'Sign in with GitHub', google: 'Sign in with Google' };
@@ -1841,7 +2026,16 @@ async function showAuthScreen(message, sessionFresh) {
   $('auth-input').style.display = tokenOk ? '' : 'none';
   $('auth-error').textContent = message || '';
   $('auth-screen').style.display = 'flex';
+  setBackgroundInert(true);
   if (tokenOk) $('auth-input').focus();
+}
+function setBackgroundInert(on) {
+  document.querySelectorAll('body > :not(#auth-screen)').forEach(el => { el.inert = on; });
+}
+function hideAuthScreen() {
+  $('auth-screen').style.display = 'none';
+  setBackgroundInert(false);
+  setDrawer($('left-panel').classList.contains('drawer-open'));
 }
 async function signOut() {
   localStorage.removeItem('phext-token');
@@ -1858,7 +2052,7 @@ $('auth-input').addEventListener('keydown', async (e) => {
       // Success — hide auth screen
       localStorage.setItem('phext-token', authToken);
       needsAuth = false;
-      $('auth-screen').style.display = 'none';
+      hideAuthScreen();
       $('auth-error').textContent = '';
       if (!/^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(location.hash.replace(/^#/, '')))
         render(await api('POST', '/api/home'));
@@ -1879,9 +2073,9 @@ async function openPhextPicker() {
     for (const f of files) {
       const kb = (f.bytes / 1024).toFixed(1);
       const isCurrent = lastNav && f.path === lastNav.position?.file;
-      html += `<div class="hit" onclick="switchPhext('${escAttr(f.path)}')">
+      html += `<button type="button" class="hit" onclick="switchPhext('${escAttr(f.path)}')">
         <span class="hit-coord">${escHtml(f.name)}</span>
-        <span class="hit-ctx">${kb} KB</span></div>`;
+        <span class="hit-ctx">${kb} KB</span></button>`;
     }
     $('phext-list').innerHTML = html || '<div style="color:var(--dim);padding:8px">no phext files</div>';
     mode = 'phext-pick';
@@ -1907,7 +2101,9 @@ async function initApp() {
   try {
     // Show active file name
     const status = await api('GET', '/api/status');
-    $('active-file').textContent = '📂 ' + status.file.split('/').pop();
+    const fileName = status.file.split('/').pop();
+    $('active-file').textContent = '📂 ' + fileName;
+    $('active-file').setAttribute('aria-label', 'Switch phext, current file ' + fileName);
   } catch { /* auth will catch */ }
 }
 
@@ -1936,3 +2132,97 @@ async function initApp() {
 </body>
 </html>
 "##;
+
+#[cfg(test)]
+mod a11y {
+    use super::{ABOUT_HTML, INDEX_HTML, PRIVACY_HTML};
+
+    fn channel(c: f64) -> f64 {
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    }
+
+    fn luminance(hex: &str) -> f64 {
+        let hex = hex.trim_start_matches('#');
+        let r = u8::from_str_radix(&hex[0..2], 16).unwrap() as f64 / 255.0;
+        let g = u8::from_str_radix(&hex[2..4], 16).unwrap() as f64 / 255.0;
+        let b = u8::from_str_radix(&hex[4..6], 16).unwrap() as f64 / 255.0;
+        0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+    }
+
+    fn contrast(a: &str, b: &str) -> f64 {
+        let (l1, l2) = (luminance(a), luminance(b));
+        let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    #[test]
+    fn editor_shell_is_responsive_and_labeled() {
+        let html = INDEX_HTML;
+        assert!(html.contains("width=device-width"), "viewport meta is still present");
+        assert!(html.contains("@media (max-width: 760px)"), "phone layout needs a breakpoint");
+        assert!(html.contains("width: 320px"), "desktop panel stays 320px");
+        assert!(html.contains("drawer-open"), "phone panel is a drawer");
+        assert!(html.contains("class=\"skip-link\""));
+        assert!(html.contains("role=\"tablist\""));
+        assert!(html.contains("role=\"tab\""));
+        assert!(html.contains("aria-live=\"polite\""));
+        assert!(html.contains("aria-label=\"Search scrolls\""));
+        assert!(html.contains("aria-label=\"Go to coordinate\""));
+        assert!(html.contains("aria-label=\"Scroll text\""));
+        assert!(html.contains("aria-label=\"Access token\""));
+        assert!(html.contains("id=\"panel-toggle\""));
+        assert!(html.contains("prefers-reduced-motion"));
+        assert!(html.contains("<button type=\"button\" id=\"signout\""));
+        assert!(html.contains("type=\"button\" class=\"axon spatial"));
+        assert!(html.contains("type=\"button\" class=\"nt-group"));
+        assert!(html.contains("type=\"button\" class=\"hit\""));
+        assert!(!html.contains("<div class=\"tab"), "tabs are buttons, not click-only divs");
+        assert!(!html.contains("--dim: #808080"), "dim grey failed AA on the coord bar");
+        assert!(html.contains("--dim: #9a9a9a"));
+        assert!(html.contains("--field-border: #767676"));
+    }
+
+    #[test]
+    fn public_pages_are_responsive() {
+        for page in [ABOUT_HTML, PRIVACY_HTML] {
+            assert!(page.contains("width=device-width"));
+            assert!(page.contains("@media (max-width: 760px)"));
+            assert!(page.contains("class=\"skip-link\""));
+            assert!(page.contains("prefers-reduced-motion"));
+            assert!(page.contains("id=\"content\""));
+        }
+    }
+
+    #[test]
+    fn text_and_control_colors_meet_wcag_aa() {
+        // Text on the surfaces it actually sits on. 4.5:1 is AA for normal text.
+        for (fg, bg) in [
+            ("#dedede", "#171717"),
+            ("#9a9a9a", "#171717"),
+            ("#9a9a9a", "#131313"),
+            ("#9a9a9a", "#1c1c1c"),
+            ("#9a9a9a", "#101010"),
+            ("#d4a855", "#171717"),
+            ("#d4a855", "#1c1c1c"),
+            ("#d4a855", "#2a2312"),
+            ("#4dc9c9", "#171717"),
+            ("#4dc9c9", "#131313"),
+            ("#c964c9", "#131313"),
+            ("#6bc96b", "#131313"),
+            ("#e8c547", "#171717"),
+            ("#e05555", "#1c1c1c"),
+            ("#a3a3a3", "#171717"),
+            ("#000000", "#4dc9c9"),
+            ("#000000", "#6bc96b"),
+            ("#000000", "#d4a855"),
+        ] {
+            let ratio = contrast(fg, bg);
+            assert!(ratio >= 4.5, "{fg} on {bg} is {ratio:.2}, below AA 4.5");
+        }
+        // The previous dim grey fails on the coordinate bar. Keep that from coming back.
+        assert!(contrast("#808080", "#1c1c1c") < 4.5);
+        // Input border against the page. 3:1 is AA for UI boundaries.
+        assert!(contrast("#767676", "#171717") >= 3.0);
+        assert!(contrast("#2e2e2e", "#171717") < 3.0);
+    }
+}
