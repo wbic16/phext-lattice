@@ -738,6 +738,7 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="phext-edit: browse and edit phext files, plain text arranged in 11 dimensions, from your browser.">
 <title>💎 phext-edit</title>
 <link rel="icon" type="image/svg+xml" href="favicon.ico">
 <style>
@@ -1382,8 +1383,8 @@ async function loadSession() {
     so.style.display = 'none';
   }
 }
-async function showAuthScreen(message) {
-  await loadSession();
+async function showAuthScreen(message, sessionFresh) {
+  if (!sessionFresh) await loadSession();
   const s = session || {};
   // Older servers have no /api/session: fall back to the token prompt.
   const tokenOk = !session || s.token;
@@ -1480,6 +1481,12 @@ async function initApp() {
 (async () => {
   try {
     await loadSession();
+    // Known to be signed out: show sign-in now rather than letting an API call 401.
+    if (session && session.locked && !session.editor && !authToken) {
+      needsAuth = true;
+      await showAuthScreen('', true);
+      return;
+    }
     const hash = location.hash.replace(/^#/, '');
     if (hash && /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash))
       render(await api('POST', '/api/goto', hash));
