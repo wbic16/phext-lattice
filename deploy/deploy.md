@@ -14,8 +14,13 @@ bash /source/phext-lattice/deploy/deploy.sh
 ```
 
 Sign-in settings live in `/etc/phext-edit/oauth.env` (see step 4b below; use
-`https://edit.phext.io` as the homepage and
 `https://edit.phext.io/api/auth/<provider>/callback` as the callback).
+
+For the Google consent screen (Branding), use `https://edit.phext.io/about` as
+the application home page and `https://edit.phext.io/privacy` as the privacy
+policy link. Both are served by phext-edit itself and open without signing in;
+Google rejects a homepage that sits behind a login. Add `phext.io` under
+authorized domains.
 
 ## mirrorborn.us/editor (previous setup)
 
