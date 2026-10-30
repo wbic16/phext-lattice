@@ -456,6 +456,21 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
         return;
     }
 
+    // Public pages: readable without signing in (OAuth app homepage + privacy policy)
+    let public = match path.as_str() {
+        "/about" => Some(ABOUT_HTML),
+        "/privacy" => Some(PRIVACY_HTML),
+        _ => None,
+    };
+    if let Some(page) = public {
+        match method.as_str() {
+            "GET" => send(stream, 200, "text/html; charset=utf-8", page.as_bytes()),
+            "HEAD" => send_head(stream, 200, "text/html; charset=utf-8", page.len()),
+            _ => send(stream, 405, "text/plain", b"method not allowed"),
+        }
+        return;
+    }
+
     // Sign-in endpoints, then auth check (token or session) — GET / stays open
     if let Some(reply) = gate.route(&method, &path, &headers) {
         reply.write_to(stream);
@@ -731,6 +746,149 @@ fn main() {
 
 const FAVICON_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">💎</text></svg>"#;
 
+// ── Public pages (no sign-in) ──────────────────────────────────────────
+
+// Shared by the public pages (concat! needs a literal, hence a macro).
+macro_rules! public_style { () => { r#"<style>
+body { margin: 0; background: #171717; color: #dedede; font: 15px/1.6 system-ui, sans-serif; }
+main { max-width: 720px; margin: 0 auto; padding: 32px 16px 48px; }
+h1 { color: #d4a855; font-size: 28px; margin: 0 0 8px; }
+h2 { color: #d4a855; font-size: 18px; margin: 28px 0 8px; }
+a { color: #4dc9c9; }
+nav { margin-bottom: 24px; font-size: 14px; }
+.dim { color: #9a9a9a; }
+footer { margin-top: 40px; font-size: 13px; color: #9a9a9a; border-top: 1px solid #2e2e2e; padding-top: 16px; }
+</style>"# } }
+
+const ABOUT_HTML: &str = concat!(r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Phext Edit is a web editor for phext files: plain text arranged in 11 dimensions.">
+<title>Phext Edit: about</title>
+<link rel="icon" type="image/svg+xml" href="favicon.ico">
+"#, public_style!(), r#"
+</head>
+<body>
+<main>
+<nav><a href="./">Open the editor</a> · <a href="privacy">Privacy Policy</a></nav>
+<h1>💎 Phext Edit</h1>
+<p class="dim">A web editor for phext files.</p>
+
+<h2>What it does</h2>
+<p>Phext is plain text arranged in 11 dimensions. A phext file holds many scrolls, and each
+scroll lives at a coordinate such as <code>1.1.1/1.1.1/1.1.1</code>. Phext Edit lets you work
+with those files from a browser:</p>
+<ul>
+  <li>move through a phext by coordinate, or step to the next or previous scroll that has text</li>
+  <li>read and edit any scroll, then save it back to the phext file on the server</li>
+  <li>browse the file as a tree of its dimensions and search its text</li>
+  <li>switch between the phext files the server hosts</li>
+</ul>
+<p>Phext Edit is part of the open-source
+<a href="https://github.com/wbic16/phext-lattice">phext-lattice</a> project.</p>
+
+<h2>Why it asks you to sign in</h2>
+<p>The files on this server can be changed, so only approved editors may open them. You can
+sign in with your Google or GitHub account. Sign-in is used for one thing: to check who you
+are, so the server can tell whether your account is on its list of editors.</p>
+<ul>
+  <li><b>Google</b> sign-in asks for your basic profile and email address
+    (<code>openid</code>, <code>email</code>, <code>profile</code>).</li>
+  <li><b>GitHub</b> sign-in asks for read-only access to your public profile
+    (<code>read:user</code>).</li>
+</ul>
+<p>Phext Edit does not read your Gmail, Drive, contacts, calendar or repositories. It does
+not post anything for you, and it does not share or sell your information. The
+<a href="privacy">Privacy Policy</a> gives the details.</p>
+
+<footer>Phext Edit · <a href="privacy">Privacy Policy</a> ·
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
+</main>
+</body>
+</html>
+"#);
+
+const PRIVACY_HTML: &str = concat!(r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="How Phext Edit handles the information it gets when you sign in.">
+<title>Phext Edit: privacy policy</title>
+<link rel="icon" type="image/svg+xml" href="favicon.ico">
+"#, public_style!(), r#"
+</head>
+<body>
+<main>
+<nav><a href="about">About Phext Edit</a> · <a href="./">Open the editor</a></nav>
+<h1>Privacy Policy</h1>
+<p class="dim">Effective 30 October 2026</p>
+
+<p>This policy covers Phext Edit, the web editor for phext files. It explains what Phext Edit
+learns when you sign in, how that information is used, and what happens to it.</p>
+
+<h2>What we receive</h2>
+<p>When you sign in with <b>Google</b>, Phext Edit asks for the <code>openid</code>,
+<code>email</code> and <code>profile</code> scopes. Google sends your account ID, your name, and
+your email address with whether Google has verified it.</p>
+<p>When you sign in with <b>GitHub</b>, Phext Edit asks for the <code>read:user</code> scope.
+GitHub sends your account ID, username, display name, and your public email address if you
+have one.</p>
+<p>Phext Edit asks for nothing else. It cannot see your Gmail, Drive, contacts, calendar or
+repositories.</p>
+
+<h2>How it is used</h2>
+<p>Your sign-in details are used only to:</p>
+<ul>
+  <li>check whether your account may use the editor, by comparing your account ID or verified
+    email with the server's list of editors</li>
+  <li>show your name or username in the editor so you can see who is signed in</li>
+</ul>
+<p>They are not used for advertising, profiling or analytics, and they are not sold or shared
+with anyone.</p>
+
+<h2>What is stored, and for how long</h2>
+<ul>
+  <li><b>Sign-in cookie.</b> After you sign in, your account ID, username, name and verified
+    email go into a signed, HttpOnly cookie in your own browser. It expires after 14 days, or
+    when you sign out. The server keeps no account database.</li>
+  <li><b>Provider tokens.</b> The access token Google or GitHub returns is used once to read
+    your profile, then thrown away. It is never saved, and Phext Edit never acts on your account.</li>
+  <li><b>Your edits.</b> Text you save is written into the phext files on the server. Those
+    files belong to the server's owner and are not tied to your account.</li>
+  <li><b>Server logs.</b> The web server keeps standard access logs (IP address, time, page
+    requested and browser) to keep the service running and secure. These logs do not include
+    your account details.</li>
+</ul>
+<p>Phext Edit uses no third-party analytics, advertising or tracking scripts.</p>
+
+<h2>Google user data</h2>
+<p>Phext Edit's use and transfer of information received from Google APIs adheres to the
+<a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services
+User Data Policy</a>, including the Limited Use requirements.</p>
+
+<h2>Your choices</h2>
+<ul>
+  <li>Sign out at any time from the status bar. This deletes the sign-in cookie.</li>
+  <li>Remove Phext Edit's access from your
+    <a href="https://myaccount.google.com/connections">Google account</a> or your
+    <a href="https://github.com/settings/applications">GitHub settings</a>.</li>
+  <li>Email questions or requests about your data to
+    <a href="mailto:will+support@phext.io">will+support@phext.io</a>.</li>
+</ul>
+
+<h2>Changes</h2>
+<p>If this policy changes, the new version will be posted on this page with a new effective date.</p>
+
+<footer>Phext Edit · <a href="about">About</a> ·
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
+</main>
+</body>
+</html>
+"#);
+
 // ── Embedded Frontend ──────────────────────────────────────────────────
 
 const INDEX_HTML: &str = r##"<!DOCTYPE html>
@@ -994,6 +1152,11 @@ body {
       style="width:100%;background:var(--panel);border:1px solid var(--border);color:var(--text);
       font-family:inherit;font-size:14px;padding:10px 14px;border-radius:6px;outline:none;text-align:center" />
     <div id="auth-error" style="color:var(--danger);margin-top:8px;font-size:12px"></div>
+    <div style="color:var(--dim);margin-top:28px;font-size:12px;line-height:1.6">
+      A web editor for phext: plain text arranged in 11 dimensions.<br>
+      Sign-in only checks who you are; nothing is shared or sold.<br>
+      <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a>
+    </div>
   </div>
 </div>
 
