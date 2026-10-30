@@ -635,19 +635,234 @@ fn get_flag(args: &[String], flag: &str) -> Option<String> {
     args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
 }
 
+/// First argument that is not a flag or a flag's value.
+fn positional_file(args: &[String]) -> Option<String> {
+    const VALUED: &[&str] = &[
+        "--port", "--host", "--dir", "--token", "--home", "--home-coord",
+    ];
+    let mut i = 1;
+    while i < args.len() {
+        let arg = &args[i];
+        if VALUED.contains(&arg.as_str()) {
+            i += 2;
+            continue;
+        }
+        if arg == "--local" || arg == "--help" || arg == "-h" {
+            i += 1;
+            continue;
+        }
+        if arg.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        return Some(arg.clone());
+    }
+    None
+}
+
+/// `--local` listen address. An omitted `--host` is loopback. Anything else
+/// must already be loopback, or startup is refused.
+fn resolve_local_host(host: Option<&str>) -> Result<String, String> {
+    match host.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok("127.0.0.1".to_string()),
+        Some(host) if phext_lattice::oauth::is_loopback_bind(host) => {
+            if host.contains(':') && !host.starts_with('[') {
+                Ok(format!("[{host}]"))
+            } else {
+                Ok(host.to_string())
+            }
+        }
+        Some(host) => Err(format!(
+            "--local disables authentication and is only allowed when the server binds to a loopback address (127.0.0.1 or ::1).\nRefusing to listen on {host}.\nPass --host 127.0.0.1 or --host ::1, or omit --host."
+        )),
+    }
+}
+
+/// `PHEXT_DATA_DIR` when it is set, otherwise a directory next to the process
+/// that is not the production library.
+fn resolve_data_dir(env_value: Option<&str>) -> String {
+    match env_value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(dir) => dir.to_string(),
+        None => ".phext-local".to_string(),
+    }
+}
+
+/// Create the local data directory and a starter phext when it has none.
+fn ensure_local_data_dir(dir: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
+    let mut any = false;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry.path().extension().map(|ext| ext == "phext").unwrap_or(false) {
+                any = true;
+                break;
+            }
+        }
+    }
+    if !any {
+        let welcome = dir.join("welcome.phext");
+        std::fs::write(
+            &welcome,
+            b"Local development phext.\nThis directory is separate from the production library.\n",
+        )
+        .map_err(|err| format!("cannot write {}: {err}", welcome.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    use phext_lattice::oauth::{Editors, Oauth};
+    use phext_lattice::MappedLattice;
+
+    use super::*;
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        std::iter::once("phext-edit".to_string()).chain(args.iter().map(|s| (*s).to_string())).collect()
+    }
+
+    fn serve(local: bool) -> (u16, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.phext");
+        std::fs::write(&path, b"local note\n").unwrap();
+        let lattice = MappedLattice::open(&path).unwrap();
+        let mut app = AppState::new(lattice, path.to_string_lossy().to_string());
+        app.phext_dir = Some(dir.path().to_string_lossy().to_string());
+        let state = Arc::new(Mutex::new(app));
+        let gate = Gate::new(Some("test-token".into()), Oauth::closed(), Editors::default());
+        if local {
+            gate.enable_local();
+        }
+        let gate = Arc::new(gate);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for incoming in listener.incoming() {
+                let Ok(mut stream) = incoming else { break };
+                let state = Arc::clone(&state);
+                let gate = Arc::clone(&gate);
+                handle_request(&mut stream, &state, &gate);
+            }
+        });
+        (port, dir)
+    }
+
+    fn http(port: u16, method: &str, path: &str, extra: &str) -> (u16, String) {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        stream.set_write_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let req = format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n{extra}\r\n"
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut status = String::new();
+        reader.read_line(&mut status).unwrap();
+        let code: u16 = status.split_whitespace().nth(1).unwrap().parse().unwrap();
+        let mut body = String::new();
+        reader.read_to_string(&mut body).unwrap();
+        (code, body)
+    }
+
+    #[test]
+    fn protected_routes_require_auth_without_local() {
+        let (port, _dir) = serve(false);
+        let (code, body) = http(port, "GET", "/api/status", "");
+        assert_eq!(code, 401, "{body}");
+        let (code, _) = http(port, "GET", "/api/nav", "");
+        assert_eq!(code, 401);
+        let (code, body) = http(port, "GET", "/api/session", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"signed_in\":false"));
+        assert!(!body.contains("local:developer"));
+    }
+
+    #[test]
+    fn local_on_loopback_admits_protected_routes() {
+        let (port, _dir) = serve(true);
+        let (code, body) = http(port, "GET", "/api/status", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("note.phext"));
+        let (code, _) = http(port, "GET", "/api/nav", "");
+        assert_eq!(code, 200);
+        let (code, body) = http(port, "GET", "/api/session", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("local:developer"));
+        assert!(body.contains("\"editor\":true"));
+        let (code, _) = http(port, "GET", "/api/status", "X-Forwarded-For: 203.0.113.9\r\n");
+        assert_eq!(code, 403);
+        let (code, _) = http(port, "GET", "/api/status", "Host: edit.phext.io\r\n");
+        assert_eq!(code, 403);
+    }
+
+    #[test]
+    fn local_with_a_non_loopback_bind_is_refused() {
+        let err = resolve_local_host(Some("0.0.0.0")).unwrap_err();
+        assert!(err.contains("loopback"), "{err}");
+        assert!(err.contains("0.0.0.0"), "{err}");
+        assert!(err.contains("127.0.0.1"), "{err}");
+        assert!(resolve_local_host(Some("192.168.1.10")).is_err());
+        assert!(resolve_local_host(Some("edit.phext.io")).is_err());
+        assert!(resolve_local_host(Some("::")).is_err());
+        assert_eq!(resolve_local_host(None).unwrap(), "127.0.0.1");
+        assert_eq!(resolve_local_host(Some("127.0.0.1")).unwrap(), "127.0.0.1");
+        assert_eq!(resolve_local_host(Some("::1")).unwrap(), "[::1]");
+        assert_eq!(resolve_local_host(Some("localhost")).unwrap(), "localhost");
+        let public: std::net::SocketAddr = "8.8.8.8:8080".parse().unwrap();
+        let loopback: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let v6: std::net::SocketAddr = "[::1]:8080".parse().unwrap();
+        assert!(!public.ip().is_loopback());
+        assert!(loopback.ip().is_loopback());
+        assert!(v6.ip().is_loopback());
+    }
+
+    #[test]
+    fn local_data_dir_defaults_away_from_production() {
+        assert_eq!(resolve_data_dir(None), ".phext-local");
+        assert_eq!(resolve_data_dir(Some("  ")), ".phext-local");
+        assert_eq!(resolve_data_dir(Some("/var/lib/phext-edit")), "/var/lib/phext-edit");
+        let dir = tempfile::tempdir().unwrap();
+        ensure_local_data_dir(dir.path()).unwrap();
+        assert!(dir.path().join("welcome.phext").is_file());
+        ensure_local_data_dir(dir.path()).unwrap();
+        let phexts: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.path().extension().map(|ext| ext == "phext").unwrap_or(false))
+            .collect();
+        assert_eq!(phexts.len(), 1);
+    }
+
+    #[test]
+    fn positional_file_skips_local_and_valued_flags() {
+        assert_eq!(positional_file(&argv(&["--local"])), None);
+        assert_eq!(positional_file(&argv(&["--local", "notes.phext"])).as_deref(), Some("notes.phext"));
+        assert_eq!(positional_file(&argv(&["--port", "9", "notes.phext"])).as_deref(), Some("notes.phext"));
+        assert_eq!(positional_file(&argv(&["notes.phext", "--local"])).as_deref(), Some("notes.phext"));
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
+    if args.len() < 2 || args.iter().any(|a| a == "--help" || a == "-h") {
         eprintln!("phext-edit — web-served phext editor");
         eprintln!();
         eprintln!("Usage: phext-edit <file.phext> [options]");
         eprintln!("       phext-edit --dir <directory> [options]");
+        eprintln!("       phext-edit --local [options]");
         eprintln!();
         eprintln!("Options:");
         eprintln!("  --port <port>     HTTP port (default: 8080)");
-        eprintln!("  --host <addr>     Listen address (default: 0.0.0.0; use 127.0.0.1 behind nginx)");
+        eprintln!("  --host <addr>     Listen address (default: 0.0.0.0; 127.0.0.1 with --local)");
         eprintln!("  --dir <path>      Serve all .phext files in directory");
         eprintln!("  --token <token>   Require auth token for API access");
+        eprintln!("  --local           Local dev: no sign-in. Loopback bind only.");
+        eprintln!("                    Phexts: --dir, else PHEXT_DATA_DIR, else ./.phext-local");
+        eprintln!("  --help            Show this help");
         eprintln!();
         eprintln!("GitHub/Google sign-in (environment):");
         eprintln!("  PHEXT_PUBLIC_URL, PHEXT_SESSION_SECRET, PHEXT_EDITORS, PHEXT_COOKIE_SECURE=1");
@@ -655,12 +870,24 @@ fn main() {
         std::process::exit(1);
     }
 
+    let local = args.iter().any(|a| a == "--local");
     let port: u16 = get_flag(&args, "--port").and_then(|p| p.parse().ok()).unwrap_or(8080);
-    let host = get_flag(&args, "--host").unwrap_or_else(|| "0.0.0.0".to_string());
+    let host = if local {
+        match resolve_local_host(get_flag(&args, "--host").as_deref()) {
+            Ok(host) => host,
+            Err(message) => {
+                eprintln!("error: {message}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        get_flag(&args, "--host").unwrap_or_else(|| "0.0.0.0".to_string())
+    };
     let token = get_flag(&args, "--token");
-    let dir = get_flag(&args, "--dir");
-    let home_file = get_flag(&args, "--home")
-        .or_else(|| std::env::var("PHEXT_HOME").ok())
+    let mut dir = get_flag(&args, "--dir");
+    // `--local` does not inherit PHEXT_HOME: that variable points at the deployed library.
+    let mut home_file = get_flag(&args, "--home")
+        .or_else(|| if local { None } else { std::env::var("PHEXT_HOME").ok() })
         .map(|h| h.trim().to_string())
         .filter(|h| !h.is_empty())
         .map(|h| match (&dir, std::path::Path::new(&h).is_absolute()) {
@@ -680,6 +907,17 @@ fn main() {
             parsed
         });
 
+    let positional = positional_file(&args);
+    if local && dir.is_none() && positional.is_none() && get_flag(&args, "--home").is_none() {
+        let data = resolve_data_dir(std::env::var("PHEXT_DATA_DIR").ok().as_deref());
+        if let Err(message) = ensure_local_data_dir(std::path::Path::new(&data)) {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        dir = Some(data);
+        home_file = None;
+    }
+
     // Determine initial file: the home file if set, else the first .phext by name
     let file_path = if let Some(ref h) = home_file {
         h.clone()
@@ -697,6 +935,14 @@ fn main() {
             eprintln!("No .phext files found in {}", d);
             std::process::exit(1);
         })
+    } else if local {
+        match positional {
+            Some(file) => file,
+            None => {
+                eprintln!("error: --local needs a .phext file or --dir.");
+                std::process::exit(1);
+            }
+        }
     } else {
         args[1].clone()
     };
@@ -718,6 +964,31 @@ fn main() {
         eprintln!("Failed to bind {}:{}: {}", host, port, e);
         std::process::exit(1);
     });
+
+    if local {
+        match listener.local_addr() {
+            Ok(addr) if addr.ip().is_loopback() => {}
+            Ok(addr) => {
+                eprintln!("error: --local refuses to start: bound address {addr} is not loopback.");
+                std::process::exit(1);
+            }
+            Err(err) => {
+                eprintln!("error: --local refuses to start: {err}");
+                std::process::exit(1);
+            }
+        }
+        gate.enable_local();
+        let phexts = dir.as_deref().unwrap_or(file_path.as_str());
+        eprintln!();
+        eprintln!("****************************************************************");
+        eprintln!("WARNING: --local is set. Authentication is DISABLED.");
+        eprintln!("         Every direct request is admitted as a local developer.");
+        eprintln!("         Listening on {host}:{port} (loopback only).");
+        eprintln!("         Phexts: {phexts}");
+        eprintln!("         Do not put this process behind a reverse proxy.");
+        eprintln!("****************************************************************");
+        eprintln!();
+    }
 
     let scroll_count = state.lock().unwrap().overview.total_scrolls;
     let phext_count = state.lock().unwrap().list_phexts().len();
