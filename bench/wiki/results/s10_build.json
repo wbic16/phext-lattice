@@ -1,9 +1,9 @@
 {
   "build_ms": {
-    "files": 27109.17,
-    "phext": 111.6,
-    "sqlite_fts": 4255.19,
-    "sqlite_nofts": 928.81
+    "files": 41417.77,
+    "phext": 109.92,
+    "sqlite_fts": 4393.13,
+    "sqlite_nofts": 1175.9
   },
   "scale": 10
 }

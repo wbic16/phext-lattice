@@ -67,9 +67,10 @@ format would naturally hold them.
 | `MappedLattice` | phext-lattice | mmap + `LatticeIndex` (coordinate → byte span), copy-on-write overlay, `save()` |
 | `search_lattice_auto` | phext-lattice | parallel case-insensitive substring search, used grep-style for retrieval |
 | `sq host` | SQ | HTTP `select`, `update`, and the v0.6 Coordinate Query API (`/api/v2/query` with a set) |
+| `NameIndex` | phext-lattice | title/alias scrolls → record, exact `get` and case-folded `resolve` |
+| `TermIndex` | phext-lattice | BM25 inverted index over title + body scrolls, grouped per record |
 
-Two prototypes sit next to them to put a number on what missing tooling would buy:
-a case-folded name map and an in-memory BM25 term index built from lattice scrolls.
+The benchmark charges `NameIndex` to phext-lattice's open time; `TermIndex` build time is reported separately.
 
 ## Caveats
 

@@ -32,6 +32,8 @@ src/
 ├── mmap.rs            — MappedLattice: memory-mapped phext with copy-on-write overlay
 ├── navigator.rs       — Navigator: 9D cursor model with history, marks, populated-jump
 ├── search.rs          — Parallel search with early termination
+├── term_index.rs      — TermIndex: BM25 ranked full-text index over scrolls
+├── names.rs           — NameIndex: title/alias → coordinate, exact and case-folded
 ├── sentron.rs         — 2×4×5×8 neural topology
 ├── stats.rs           — Density, sparklines, lattice overview
 ├── cursor.rs          — Sub-scroll cursor with word navigation
@@ -52,6 +54,18 @@ web/
 **O(1) index**: One linear scan on load builds a `HashMap<Coordinate, ScrollSpan>`. Every subsequent lookup is a hash lookup, not a linear scan. This complements libphext's `explode()` function which also returns `HashMap<Coordinate, String>`.
 
 **Copy-on-write overlay**: Edits go into an in-memory `HashMap<Coordinate, String>`. The mmap is never modified. On save, the phext is reconstructed from mmap spans + overlay, re-mapped, and the overlay clears. Byte-perfect roundtrip.
+
+**Ranked search and names**: `search.rs` finds exact text by scanning. `TermIndex` is an inverted index with BM25 ranking for "which scrolls are most about these words". Scrolls can be grouped into documents (e.g. a record's title + body), and `upsert`/`remove` keep it current after edits. `NameIndex` maps the lines of chosen scrolls (titles, aliases) to coordinates, with a case-folded fallback, so `resolve("ferrel cell")` finds "Ferrel cell".
+
+```rust
+use phext_lattice::{MappedLattice, NameIndex, TermIndex};
+
+let lat = MappedLattice::open("wiki.phext")?;
+let names = NameIndex::from_scrolls(&lat, |c| (c.x.scroll == 1).then_some(*c));
+let terms = TermIndex::build(&lat);
+let page = names.resolve("ferrel cell");
+let hits = terms.search("glacier instability sea level", 10); // Vec<TermHit { coordinate, score }>
+```
 
 **Navigator**: The 9D cursor model. Tracks position, active dimension, marks (bookmarks), and full navigation history with back/forward. The `next_populated` / `prev_populated` operations use binary search on the sorted coordinate list.
 
