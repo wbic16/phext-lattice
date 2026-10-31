@@ -1,0 +1,69 @@
+{
+  "scale": 10,
+  "articles": 38200,
+  "build_ms": 20972.77,
+  "build_nofts_ms": 6737.85,
+  "size_bytes": 37097309,
+  "size_nofts_bytes": 25677599,
+  "cold_cache": true,
+  "open_first_ms": 23.21,
+  "lookup_warm": {
+    "zim_by_title": {
+      "n": 2000,
+      "p50_us": 48.6,
+      "p90_us": 3190.34,
+      "p99_us": 4944.81,
+      "mean_us": 947.32
+    },
+    "zim_by_path": {
+      "n": 2000,
+      "p50_us": 38.63,
+      "p90_us": 3212.14,
+      "p99_us": 4988.63,
+      "mean_us": 951.1
+    },
+    "py_sqlite_by_title": {
+      "n": 2000,
+      "p50_us": 5.92,
+      "p90_us": 7.33,
+      "p99_us": 12.12,
+      "mean_us": 6.69
+    },
+    "py_file_read": {
+      "n": 2000,
+      "p50_us": 8.05,
+      "p90_us": 8.96,
+      "p99_us": 16.24,
+      "mean_us": 8.42
+    }
+  },
+  "python_overhead_note": "compare py_sqlite_by_title here with sqlite in rust_results.json to calibrate",
+  "traversal_2hop": {
+    "n": 200,
+    "p50_us": 1111.11,
+    "p90_us": 12061.09,
+    "p99_us": 17483.69,
+    "mean_us": 3972.42
+  },
+  "backlinks_scan": {
+    "n": 5,
+    "p50_us": 361449.31,
+    "p90_us": 403766.99,
+    "p99_us": 403766.99,
+    "mean_us": 356227.93
+  },
+  "original_zim": {
+    "path": "wikipedia_en_climate_change_mini_2024-06.zim",
+    "size_bytes": 8978471,
+    "entries": 20568,
+    "articles": 3821,
+    "open_first_ms": 3.7,
+    "lookup_warm_by_path_html": {
+      "n": 2000,
+      "p50_us": 7.79,
+      "p90_us": 9.72,
+      "p99_us": 863.59,
+      "mean_us": 31.79
+    }
+  }
+}

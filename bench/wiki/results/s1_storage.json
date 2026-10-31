@@ -1,0 +1,50 @@
+{
+  "payload_bytes": 4063566,
+  "articles": 3820,
+  "stores": {
+    "files": {
+      "apparent_bytes": 5808189,
+      "allocated_bytes": 30486528,
+      "inodes": 24208,
+      "overhead_vs_payload": 7.502
+    },
+    "sqlite_fts5": {
+      "apparent_bytes": 8970240,
+      "allocated_bytes": 8970240,
+      "inodes": 1,
+      "overhead_vs_payload": 2.207,
+      "zstd19_bytes": 2931317
+    },
+    "sqlite_nofts": {
+      "apparent_bytes": 6090752,
+      "allocated_bytes": 6090752,
+      "inodes": 1,
+      "overhead_vs_payload": 1.499,
+      "zstd19_bytes": 1388308
+    },
+    "phext": {
+      "apparent_bytes": 4790578,
+      "allocated_bytes": 4792320,
+      "inodes": 1,
+      "overhead_vs_payload": 1.179,
+      "zstd19_bytes": 1184300
+    },
+    "zim_xapian": {
+      "apparent_bytes": 3870391,
+      "allocated_bytes": 3870720,
+      "inodes": 1,
+      "overhead_vs_payload": 0.953
+    },
+    "zim_nofts": {
+      "apparent_bytes": 2485894,
+      "allocated_bytes": 2486272,
+      "inodes": 1,
+      "overhead_vs_payload": 0.612
+    }
+  },
+  "phext_breakdown": {
+    "delimiter_bytes": 13892,
+    "non_payload_bytes": 713120,
+    "note": "non_payload = titles + link coordinates + aliases"
+  }
+}

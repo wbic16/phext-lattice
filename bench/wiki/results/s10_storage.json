@@ -1,0 +1,50 @@
+{
+  "payload_bytes": 40777000,
+  "articles": 38200,
+  "stores": {
+    "files": {
+      "apparent_bytes": 60723285,
+      "allocated_bytes": 310513664,
+      "inodes": 242061,
+      "overhead_vs_payload": 7.615
+    },
+    "sqlite_fts5": {
+      "apparent_bytes": 87216128,
+      "allocated_bytes": 87216128,
+      "inodes": 1,
+      "overhead_vs_payload": 2.139,
+      "zstd19_bytes": 8211724
+    },
+    "sqlite_nofts": {
+      "apparent_bytes": 61804544,
+      "allocated_bytes": 61804544,
+      "inodes": 1,
+      "overhead_vs_payload": 1.516,
+      "zstd19_bytes": 3310129
+    },
+    "phext": {
+      "apparent_bytes": 48890053,
+      "allocated_bytes": 48893952,
+      "inodes": 1,
+      "overhead_vs_payload": 1.199,
+      "zstd19_bytes": 1967921
+    },
+    "zim_xapian": {
+      "apparent_bytes": 37097309,
+      "allocated_bytes": 37097472,
+      "inodes": 1,
+      "overhead_vs_payload": 0.91
+    },
+    "zim_nofts": {
+      "apparent_bytes": 25677599,
+      "allocated_bytes": 25677824,
+      "inodes": 1,
+      "overhead_vs_payload": 0.63
+    }
+  },
+  "phext_breakdown": {
+    "delimiter_bytes": 138929,
+    "non_payload_bytes": 7974124,
+    "note": "non_payload = titles + link coordinates + aliases"
+  }
+}

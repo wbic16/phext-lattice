@@ -54,21 +54,38 @@ fn search_scroll(
         Err(_) => return Vec::new(),
     };
 
-    // Avoid allocation for case-sensitive searches
+    // Avoid allocation for case-sensitive searches. Lowercasing can change byte
+    // lengths outside ASCII ('İ' → "i̇", 'K' (Kelvin) → 'k'), so non-ASCII scrolls
+    // keep a lowered-byte → original-byte map for translating match offsets back.
     let search_content;
+    let mut origin: Vec<usize> = Vec::new();
     let search_in = if case_sensitive {
         content
+    } else if content.is_ascii() {
+        search_content = content.to_ascii_lowercase();
+        &search_content
     } else {
-        search_content = content.to_lowercase();
+        let mut lowered = String::with_capacity(content.len());
+        origin.reserve(content.len() + 1);
+        for (i, c) in content.char_indices() {
+            for lc in c.to_lowercase() {
+                lowered.push(lc);
+            }
+            origin.resize(lowered.len(), i);
+        }
+        origin.push(content.len());
+        search_content = lowered;
         &search_content
     };
+    let to_content = |pos: usize| if origin.is_empty() { pos } else { origin[pos] };
 
     let needle = if case_sensitive { pattern } else { pattern_lower };
     let mut hits = Vec::new();
     let mut start = 0;
 
     while let Some(pos) = search_in[start..].find(needle) {
-        let absolute_pos = start + pos;
+        let absolute_pos = to_content(start + pos);
+        let match_end = to_content(start + pos + needle.len()).max(absolute_pos);
 
         // Build context snippet
         let ctx_start = content[..absolute_pos]
@@ -78,10 +95,10 @@ fn search_scroll(
             .map(|(i, _)| i)
             .unwrap_or(0);
 
-        let ctx_end = content[absolute_pos + pattern.len()..]
+        let ctx_end = content[match_end..]
             .char_indices()
             .nth(CONTEXT_RADIUS)
-            .map(|(i, _)| absolute_pos + pattern.len() + i)
+            .map(|(i, _)| match_end + i)
             .unwrap_or(content.len());
 
         let mut context = String::with_capacity(ctx_end - ctx_start + 4);
@@ -96,7 +113,7 @@ fn search_scroll(
         hits.push(SearchHit {
             coordinate: coord,
             offset: absolute_pos,
-            length: pattern.len(),
+            length: match_end - absolute_pos,
             context,
         });
 
@@ -104,7 +121,7 @@ fn search_scroll(
             break;
         }
 
-        start = absolute_pos + pattern.len();
+        start += pos + needle.len();
     }
 
     hits
@@ -378,5 +395,21 @@ mod tests {
             assert!(window[0].coordinate <= window[1].coordinate,
                 "Out of order: {} > {}", window[0].coordinate, window[1].coordinate);
         }
+    }
+
+    #[test]
+    fn case_insensitive_offsets_survive_length_changing_lowercase() {
+        // 'İ' lowercases to 3 bytes (from 2) and the Kelvin sign to 1 byte (from 3),
+        // so offsets in the lowered copy drift from the original scroll.
+        let scroll = "İİİ Paris \u{212A}elvin end of a long scroll about İzmir and Paris";
+        let index = LatticeIndex::build(scroll.as_bytes());
+        let hits = search_lattice(scroll.as_bytes(), &index, "paris", false, 10);
+        assert_eq!(hits.len(), 2);
+        for h in &hits {
+            assert_eq!(&scroll[h.offset..h.offset + h.length], "Paris");
+        }
+        let kelvin = search_lattice(scroll.as_bytes(), &index, "kelvin", false, 10);
+        assert_eq!(kelvin.len(), 1);
+        assert_eq!(&scroll[kelvin[0].offset..kelvin[0].offset + kelvin[0].length], "\u{212A}elvin");
     }
 }
