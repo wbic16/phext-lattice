@@ -543,6 +543,7 @@ fn public_document(path: &str) -> Option<PublicDocument> {
         "/privacy" => ("text/html; charset=utf-8", PRIVACY_HTML),
         "/terms" => ("text/html; charset=utf-8", TERMS_HTML),
         "/up-goer-five.html" => ("text/html; charset=utf-8", UP_GOER_FIVE_HTML),
+        "/tts-demo.html" => ("text/html; charset=utf-8", TTS_DEMO_HTML),
         "/robots.txt" => ("text/plain; charset=utf-8", ROBOTS_TXT),
         "/sitemap.xml" => ("application/xml; charset=utf-8", SITEMAP_XML),
         _ => return None,
@@ -1415,6 +1416,10 @@ Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></foote
 // The Up Goer Five editor page lives as a file under web/ (it carries a large
 // inline atlas) and is compiled in, so it serves exactly like the pages above.
 const UP_GOER_FIVE_HTML: &str = include_str!("../../web/up-goer-five.html");
+
+// The TTS demo page likewise lives as a file under web/ and is compiled in, so
+// it serves exactly like the pages above.
+const TTS_DEMO_HTML: &str = include_str!("../../web/tts-demo.html");
 
 // Canonical host is https://edit.phext.io (repeated below; tests check both files).
 // Disallow comes before Allow so a first-match crawler still blocks /api.
