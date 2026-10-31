@@ -1696,7 +1696,7 @@ body {
 <div id="status-bar">
   <span class="mode lattice" id="mode-label">LATTICE</span>
   <span id="active-file" style="color:var(--dim);cursor:pointer" onclick="openPhextPicker()" title="Click to switch phext"></span>
-  <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  t:tree  /:search  g:goto  Home:BASE</span>
+  <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  u:UG5  t:tree  /:search  g:goto  Home:BASE</span>
   <span class="msg" id="status-msg"></span>
   <span id="signout" class="signout" style="display:none" onclick="signOut()" title="Sign out"></span>
 </div>
@@ -1759,7 +1759,7 @@ function setMode(m) {
   $('content').style.display = (m === 'lattice') ? '' : 'none';
   $('editor').style.display = (m === 'edit') ? 'flex' : 'none';
   const help = {
-    lattice: '1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  t:tree  /:search  g:goto  Home:BASE  Ctrl+S:save',
+    lattice: '1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  u:UG5  t:tree  /:search  g:goto  Home:BASE  Ctrl+S:save',
     edit: 'Ctrl+S:save  Esc:cancel',
     search: 'Enter:search  Esc:close',
     goto: 'Enter:go  Esc:close',
@@ -1987,12 +1987,15 @@ function enterEdit() {
 // UG5 mode for the current scroll: stash its text and coordinate for the
 // UG5 page (same origin), then navigate there. The page reads and clears
 // 'phext-edit:ug5-handoff' from localStorage and pre-fills its editor.
+// Text source mirrors enterEdit: the live textarea while editing (so
+// unsaved edits carry over), else the current scroll's content.
 function openUG5() {
   if (!lastNav || !lastNav.scroll) return;
+  const text = mode === 'edit' ? $('edit-textarea').value : (lastNav.scroll.content || '');
   try {
     localStorage.setItem('phext-edit:ug5-handoff', JSON.stringify({
       coordinate: lastNav.position.coordinate,
-      text: $('edit-textarea').value,
+      text: text,
     }));
   } catch (e) { /* storage blocked: the UG5 page still opens, just empty */ }
   location.href = '/up-goer-five.html';
@@ -2092,6 +2095,7 @@ document.addEventListener('keydown', async (e) => {
   else if (k === '/' || (k === 'f' && e.ctrlKey)) { openSearch(); e.preventDefault(); }
   else if (k === 'g') { openGoto(); e.preventDefault(); }
   else if (k === 'e' || k === 'Enter') { enterEdit(); e.preventDefault(); }
+  else if (k === 'u') { openUG5(); e.preventDefault(); }
   else if (k === 't') { showPanel(activePanel === 'navtree' ? 'sentron' : 'navtree'); e.preventDefault(); }
   else if (k === 'Home') { await jumpBase(); e.preventDefault(); }
 });
