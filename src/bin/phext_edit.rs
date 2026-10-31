@@ -544,6 +544,7 @@ fn public_document(path: &str) -> Option<PublicDocument> {
         "/terms" => ("text/html; charset=utf-8", TERMS_HTML),
         "/up-goer-five.html" => ("text/html; charset=utf-8", UP_GOER_FIVE_HTML),
         "/tts-demo.html" => ("text/html; charset=utf-8", TTS_DEMO_HTML),
+        "/phext-tts.js" => ("text/javascript; charset=utf-8", PHEXT_TTS_JS),
         "/robots.txt" => ("text/plain; charset=utf-8", ROBOTS_TXT),
         "/sitemap.xml" => ("application/xml; charset=utf-8", SITEMAP_XML),
         _ => return None,
@@ -1420,6 +1421,11 @@ const UP_GOER_FIVE_HTML: &str = include_str!("../../web/up-goer-five.html");
 // The TTS demo page likewise lives as a file under web/ and is compiled in, so
 // it serves exactly like the pages above.
 const TTS_DEMO_HTML: &str = include_str!("../../web/tts-demo.html");
+
+// The TTS demo's script likewise lives as a file under web/ and is compiled
+// in, so the demo page's <script src="phext-tts.js"> resolves like the pages
+// above. It is not HTML, so it takes the static cache class.
+const PHEXT_TTS_JS: &str = include_str!("../../web/phext-tts.js");
 
 // Canonical host is https://edit.phext.io (repeated below; tests check both files).
 // Disallow comes before Allow so a first-match crawler still blocks /api.
