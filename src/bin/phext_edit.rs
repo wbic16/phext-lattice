@@ -1686,6 +1686,7 @@ body {
         <span class="coord-label" id="edit-coord"></span>
         <button class="save-btn" onclick="saveScroll()">Save (Ctrl+S)</button>
         <button onclick="cancelEdit()">Cancel (Esc)</button>
+        <button onclick="openUG5()" title="Open this scroll in the Up Goer Five editor">UG5</button>
       </div>
       <textarea id="edit-textarea" spellcheck="false"></textarea>
     </div>
@@ -1981,6 +1982,20 @@ function enterEdit() {
   $('edit-coord').textContent = lastNav.position.coordinate;
   $('edit-textarea').value = lastNav.scroll.content || '';
   $('edit-textarea').focus();
+}
+
+// UG5 mode for the current scroll: stash its text and coordinate for the
+// UG5 page (same origin), then navigate there. The page reads and clears
+// 'phext-edit:ug5-handoff' from localStorage and pre-fills its editor.
+function openUG5() {
+  if (!lastNav || !lastNav.scroll) return;
+  try {
+    localStorage.setItem('phext-edit:ug5-handoff', JSON.stringify({
+      coordinate: lastNav.position.coordinate,
+      text: $('edit-textarea').value,
+    }));
+  } catch (e) { /* storage blocked: the UG5 page still opens, just empty */ }
+  location.href = '/up-goer-five.html';
 }
 async function saveScroll() {
   const coord = lastNav.position.coordinate;
