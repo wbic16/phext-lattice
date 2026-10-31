@@ -542,6 +542,9 @@ fn public_document(path: &str) -> Option<PublicDocument> {
         "/about" => ("text/html; charset=utf-8", ABOUT_HTML),
         "/privacy" => ("text/html; charset=utf-8", PRIVACY_HTML),
         "/terms" => ("text/html; charset=utf-8", TERMS_HTML),
+        "/up-goer-five.html" => ("text/html; charset=utf-8", UP_GOER_FIVE_HTML),
+        "/tts-demo.html" => ("text/html; charset=utf-8", TTS_DEMO_HTML),
+        "/phext-tts.js" => ("text/javascript; charset=utf-8", PHEXT_TTS_JS),
         "/robots.txt" => ("text/plain; charset=utf-8", ROBOTS_TXT),
         "/sitemap.xml" => ("application/xml; charset=utf-8", SITEMAP_XML),
         _ => return None,
@@ -1411,6 +1414,19 @@ Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></foote
 </html>
 "#);
 
+// The Up Goer Five editor page lives as a file under web/ (it carries a large
+// inline atlas) and is compiled in, so it serves exactly like the pages above.
+const UP_GOER_FIVE_HTML: &str = include_str!("../../web/up-goer-five.html");
+
+// The TTS demo page likewise lives as a file under web/ and is compiled in, so
+// it serves exactly like the pages above.
+const TTS_DEMO_HTML: &str = include_str!("../../web/tts-demo.html");
+
+// The TTS demo's script likewise lives as a file under web/ and is compiled
+// in, so the demo page's <script src="phext-tts.js"> resolves like the pages
+// above. It is not HTML, so it takes the static cache class.
+const PHEXT_TTS_JS: &str = include_str!("../../web/phext-tts.js");
+
 // Canonical host is https://edit.phext.io (repeated below; tests check both files).
 // Disallow comes before Allow so a first-match crawler still blocks /api.
 // Allow: / is the public landing page (the editor shell). File contents and
@@ -1686,6 +1702,7 @@ body {
         <span class="coord-label" id="edit-coord"></span>
         <button class="save-btn" onclick="saveScroll()">Save (Ctrl+S)</button>
         <button onclick="cancelEdit()">Cancel (Esc)</button>
+        <button onclick="openUG5()" title="Open this scroll in the Up Goer Five editor">UG5</button>
       </div>
       <textarea id="edit-textarea" spellcheck="false"></textarea>
     </div>
@@ -1695,7 +1712,7 @@ body {
 <div id="status-bar">
   <span class="mode lattice" id="mode-label">LATTICE</span>
   <span id="active-file" style="color:var(--dim);cursor:pointer" onclick="openPhextPicker()" title="Click to switch phext"></span>
-  <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  t:tree  /:search  g:goto  Home:BASE</span>
+  <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  u:UG5  t:tree  /:search  g:goto  Home:BASE</span>
   <span class="msg" id="status-msg"></span>
   <span id="signout" class="signout" style="display:none" onclick="signOut()" title="Sign out"></span>
 </div>
@@ -1758,7 +1775,7 @@ function setMode(m) {
   $('content').style.display = (m === 'lattice') ? '' : 'none';
   $('editor').style.display = (m === 'edit') ? 'flex' : 'none';
   const help = {
-    lattice: '1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  t:tree  /:search  g:goto  Home:BASE  Ctrl+S:save',
+    lattice: '1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  u:UG5  t:tree  /:search  g:goto  Home:BASE  Ctrl+S:save',
     edit: 'Ctrl+S:save  Esc:cancel',
     search: 'Enter:search  Esc:close',
     goto: 'Enter:go  Esc:close',
@@ -1982,6 +1999,23 @@ function enterEdit() {
   $('edit-textarea').value = lastNav.scroll.content || '';
   $('edit-textarea').focus();
 }
+
+// UG5 mode for the current scroll: stash its text and coordinate for the
+// UG5 page (same origin), then navigate there. The page reads and clears
+// 'phext-edit:ug5-handoff' from localStorage and pre-fills its editor.
+// Text source mirrors enterEdit: the live textarea while editing (so
+// unsaved edits carry over), else the current scroll's content.
+function openUG5() {
+  if (!lastNav || !lastNav.scroll) return;
+  const text = mode === 'edit' ? $('edit-textarea').value : (lastNav.scroll.content || '');
+  try {
+    localStorage.setItem('phext-edit:ug5-handoff', JSON.stringify({
+      coordinate: lastNav.position.coordinate,
+      text: text,
+    }));
+  } catch (e) { /* storage blocked: the UG5 page still opens, just empty */ }
+  location.href = '/up-goer-five.html';
+}
 async function saveScroll() {
   const coord = lastNav.position.coordinate;
   const content = $('edit-textarea').value;
@@ -2077,6 +2111,7 @@ document.addEventListener('keydown', async (e) => {
   else if (k === '/' || (k === 'f' && e.ctrlKey)) { openSearch(); e.preventDefault(); }
   else if (k === 'g') { openGoto(); e.preventDefault(); }
   else if (k === 'e' || k === 'Enter') { enterEdit(); e.preventDefault(); }
+  else if (k === 'u') { openUG5(); e.preventDefault(); }
   else if (k === 't') { showPanel(activePanel === 'navtree' ? 'sentron' : 'navtree'); e.preventDefault(); }
   else if (k === 'Home') { await jumpBase(); e.preventDefault(); }
 });
