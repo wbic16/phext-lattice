@@ -1263,6 +1263,16 @@ with those files from a browser:</p>
 <p>Phext Edit is part of the open-source
 <a href="https://github.com/wbic16/phext-lattice">phext-lattice</a> project.</p>
 
+<h2>Public utilities</h2>
+<p>Some parts of this site need no sign-in at all:</p>
+<ul>
+  <li><a href="up-goer-five.html">Up Goer Five</a>: check writing against the ten hundred
+  most used words, and see each word's phext coordinate.</li>
+  <li><a href="tts-demo.html">Coordinate TTS demo</a>: hear phext coordinates spoken aloud.</li>
+  <li><a href="learn-you-phext.html">Learn You Phext</a>: an introduction to phext that is
+  itself a phext, scroll by scroll.</li>
+</ul>
+
 <h2>Why it asks you to sign in</h2>
 <p>The files on this server can be changed, so only approved editors may open them. You can
 sign in with your Google or GitHub account. Sign-in is used for one thing: to check who you
@@ -1755,7 +1765,8 @@ body {
     <div style="color:var(--dim);margin-top:28px;font-size:12px;line-height:1.6">
       A web editor for phext: plain text arranged in 11 dimensions.<br>
       Sign-in only checks who you are; nothing is shared or sold.<br>
-      <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a>
+      <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a><br>
+      No sign-in needed: <a href="up-goer-five.html" style="color:var(--coord)">Up Goer Five</a> · <a href="tts-demo.html" style="color:var(--coord)">Coordinate TTS demo</a> · <a href="learn-you-phext.html" style="color:var(--coord)">Learn You Phext</a>
     </div>
   </div>
 </div>
