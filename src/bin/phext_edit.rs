@@ -544,6 +544,8 @@ fn public_document(path: &str) -> Option<PublicDocument> {
         "/terms" => ("text/html; charset=utf-8", TERMS_HTML),
         "/up-goer-five.html" => ("text/html; charset=utf-8", UP_GOER_FIVE_HTML),
         "/tts-demo.html" => ("text/html; charset=utf-8", TTS_DEMO_HTML),
+        "/learn-you-phext.html" => ("text/html; charset=utf-8", LEARN_YOU_PHEXT_HTML),
+        "/learn-you-phext.phext" => ("text/plain; charset=utf-8", LEARN_YOU_PHEXT),
         "/phext-tts.js" => ("text/javascript; charset=utf-8", PHEXT_TTS_JS),
         "/robots.txt" => ("text/plain; charset=utf-8", ROBOTS_TXT),
         "/sitemap.xml" => ("application/xml; charset=utf-8", SITEMAP_XML),
@@ -1427,6 +1429,16 @@ const TTS_DEMO_HTML: &str = include_str!("../../web/tts-demo.html");
 // above. It is not HTML, so it takes the static cache class.
 const PHEXT_TTS_JS: &str = include_str!("../../web/phext-tts.js");
 
+// The Learn You Phext intro page likewise lives as a file under web/ and is
+// compiled in, so it serves exactly like the pages above.
+const LEARN_YOU_PHEXT_HTML: &str = include_str!("../../web/learn-you-phext.html");
+
+// The intro's phext itself likewise lives as a file under web/ and is compiled
+// in, served raw so a visitor can take the very file the page teaches from
+// (delimiters and all) and host it in their own SQ. It is not HTML, so it
+// takes the static cache class.
+const LEARN_YOU_PHEXT: &str = include_str!("../../web/learn-you-phext.phext");
+
 // Canonical host is https://edit.phext.io (repeated below; tests check both files).
 // Disallow comes before Allow so a first-match crawler still blocks /api.
 // Allow: / is the public landing page (the editor shell). File contents and
@@ -1449,6 +1461,9 @@ const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>https://edit.phext.io/about</loc></url>
   <url><loc>https://edit.phext.io/privacy</loc></url>
   <url><loc>https://edit.phext.io/terms</loc></url>
+  <url><loc>https://edit.phext.io/up-goer-five.html</loc></url>
+  <url><loc>https://edit.phext.io/tts-demo.html</loc></url>
+  <url><loc>https://edit.phext.io/learn-you-phext.html</loc></url>
 </urlset>
 "#;
 
