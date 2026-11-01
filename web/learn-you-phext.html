@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Learn You Phext · phext-edit</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<style>
+  :root {
+    --bg: #171717; --panel: #131313; --bar: #1c1c1c; --border: #2e2e2e;
+    --text: #dedede; --dim: #808080; --coord: #d4a855;
+    --z-color: #4dc9c9; --y-color: #c964c9; --x-color: #6bc96b;
+    --active: #e8c547; --danger: #e05555;
+    --trans-fast: 120ms ease; --trans-med: 200ms ease;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+         font-size: 13px; line-height: 1.5; }
+  a { color: var(--z-color); }
+
+  /* Top bar mirrors the editor's #coord-bar (36px, --bar, gold label). */
+  #topbar { height: 36px; background: var(--bar); border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 16px; gap: 14px;
+            color: var(--coord); font-weight: bold; flex-shrink: 0; }
+  #topbar .brand { color: var(--coord); text-decoration: none; }
+  #topbar .brand:hover { color: var(--active); }
+  #topbar .page-name { color: var(--text); font-weight: normal; }
+  #topbar .back { margin-left: auto; font-weight: normal; font-size: 12px;
+                  color: var(--coord); text-decoration: none; cursor: pointer;
+                  padding: 4px 12px; border: 1px solid var(--coord); border-radius: 6px;
+                  background: #2a2312; white-space: nowrap;
+                  transition: background var(--trans-fast), color var(--trans-fast); }
+  #topbar .back:hover { background: var(--coord); color: #000; }
+
+  header.intro { padding: 16px 22px 2px; }
+  h1 { color: var(--coord); font-size: 20px; margin: 0 0 6px; }
+  header.intro p { margin: 2px 0; color: var(--dim); max-width: 75ch; }
+  .coord { color: var(--coord); }
+  main { display: grid; grid-template-columns: minmax(320px, .9fr) minmax(340px, 1.4fr);
+         gap: 16px; padding: 12px 22px 22px; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+          padding: 12px 14px; }
+  .card h2 { margin: 0 0 8px; font-size: 12px; font-weight: normal; color: var(--dim); }
+  .trow { display: block; width: 100%; text-align: left; padding: 5px 8px;
+          border: 0; border-bottom: 1px solid var(--border); background: transparent;
+          color: var(--text); font-family: inherit; font-size: 12px; cursor: pointer;
+          transition: background var(--trans-fast); }
+  .trow:hover { background: #ffffff10; }
+  .trow .c { color: var(--coord); font-size: 11px; display: block; }
+  .trow.on { background: #2a2312; }
+  .trow.on .c { color: var(--active); }
+  #bigcoord { font-size: 20px; margin: 2px 0 8px; word-break: break-all; color: var(--coord); }
+  #bigcoord .sep { color: var(--dim); font-weight: 700; }
+  .scrollwrap { border: 1px solid var(--border); border-radius: 4px; background: var(--bg); }
+  #scroll { font: 13px/1.6 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+            padding: 16px 20px; margin: 0; white-space: pre-wrap;
+            word-wrap: break-word; overflow-wrap: break-word; min-height: 300px; }
+  .navrow { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+  .btn { font-family: inherit; font-size: 12px; color: var(--coord); cursor: pointer;
+         padding: 4px 12px; border: 1px solid var(--coord); border-radius: 6px;
+         background: #2a2312; white-space: nowrap; text-decoration: none;
+         transition: background var(--trans-fast), color var(--trans-fast); }
+  .btn:hover { background: var(--coord); color: #000; }
+  .btn[disabled] { opacity: .35; pointer-events: none; }
+  .status { font-size: 12px; color: var(--dim); margin-left: auto; }
+  footer { margin: 0 22px 22px; padding-top: 16px; border-top: 1px solid var(--border);
+           color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="topbar">
+  <a class="brand" href="/">&#128142; phext-edit</a>
+  <span class="page-name">Learn You Phext</span>
+  <a class="back" href="/">&larr; back to phext-edit</a>
+</div>
+<header class="intro">
+  <h1>Learn You Phext</h1>
+  <p>An introduction to phext that <em>is</em> a phext: plain text cut into scrolls,
+     every scroll at a coordinate <span class="coord">a.b.c/d.e.f/g.h.i</span> inside its own file.
+     The table of contents below is parsed from the phext itself, in your browser,
+     with the same delimiter rules as the reference parser &mdash; pick a coordinate and read
+     exactly that scroll, nothing else. That is the everyday phext move: toc to navigate,
+     select to read.</p>
+  <p>Coordinates are internal to a phext: the scheme is shared, the addresses are local
+     to each file. This phext is non-personal teaching material, written for anyone.</p>
+  <p><button class="btn" id="download">Download learn-you-phext.phext</button>
+     <span class="status">16 scrolls &middot; 13,216 bytes &middot; the raw file, delimiters and all</span></p>
+</header>
+<main>
+  <section class="card">
+    <h2>Table of contents &mdash; <span id="toccount"></span> scrolls</h2>
+    <div id="toc"></div>
+  </section>
+  <section class="card">
+    <h2>Scroll</h2>
+    <div id="bigcoord"></div>
+    <div class="scrollwrap"><pre id="scroll"></pre></div>
+    <div class="navrow">
+      <button class="btn" id="prev">&larr; previous scroll</button>
+      <button class="btn" id="next">next scroll &rarr;</button>
+      <span class="status" id="pos"></span>
+    </div>
+  </section>
+</main>
+<footer>
+  Learn You Phext &middot; MIT licensed &middot; Copyright &copy; 2026 Will Bickford &mdash;
+  take it, copy it, cut it where your own history says to cut. Part of
+  <a href="/">phext-edit</a> &mdash; the built-in phext for the public read-only demo exocortex:
+  free, open, decentralized, trusted, interoperable.
+</footer>
+<script id="lyp-core">
+"use strict";
+// The whole phext, verbatim: its control-byte delimiters ride as JSON
+// unicode escapes, and JSON.parse restores the exact text.
+const RAW_PHEXT = "Learn You Phext\nStart here.\n\nThis file is a phext: plain text with addresses. It teaches phext by being one. Every idea in it lives in a scroll, every scroll lives at a coordinate, and you can fetch any scroll on its own without reading the rest.\n\nIf you are reading this through SQ, you just used the whole trick: a table of contents (toc) told you this coordinate exists, and a select fetched exactly this scroll.\n\nHow to read this file:\n- Get the table of contents and pick a coordinate.\n- Select one scroll at a time. Each scroll stands on its own.\n- Part 3 is the machinery. Part 4 is practice. Part 5 is the principles and your turn to write.\n\nThis demo is non-personal teaching material, written for anyone. It is MIT licensed (Part 5), and it is the built-in phext for the public read-only demo exocortex.\u0017Why this exists: the Exocortex principles\n\nAn exocortex is memory that lives outside a single head and outside a single machine: text, addressed so that people and agents can find it again, share it, and build on it.\n\nThis demo follows five principles, and so does everything we build on it:\n\n1. Free: no toll on reading, learning, or building.\n2. Open: the format and the tools are inspectable. This file is plain text all the way down.\n3. Decentralized: no single server is the exocortex. Anyone can host a copy of this file, and the copies are equal.\n4. Trusted: claims carry receipts. When this file states a fact about phext, you can test it against the file itself.\n5. Interoperable: phext is an encoding layer, like ASCII and UTF-8 before it. Any tool that can read text can start reading phext.\n\nHold every phext tool, this one included, to those five words.\u0017License: MIT\n\nCopyright (c) 2026 Will Bickford\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n\nThe same text ships beside this file as LICENSE, so the license survives even if the scrolls are rearranged.\u0019What is a phext?\n\nA phext is plain text where chunks of text carry addresses.\n\nOrdinary text gives you position inside one stream: this line, then the next. Phext keeps that and adds structure on top: the text is cut into scrolls, and each scroll sits at a coordinate, so a reader (human or agent) can jump straight to one chunk, quote it, or replace it, without dragging the whole file along.\n\nPhext is an interoperable encoding layer, in the same family as ASCII and UTF-8: it says how characters are arranged and addressed, not what they must mean. Meaning is up to the minds writing and reading.\n\nInvented by Will Bickford. This file is one phext: the lesson and the example at the same time.\u0017Scrolls: the unit of phext\n\nA scroll is a run of plain text between delimiters. It is the smallest addressed unit in a phext: coordinates name scrolls, and tools fetch, replace, and count scrolls.\n\nThree facts to keep:\n\n1. A scroll is just text. Read it with any text tool and it reads fine.\n2. A scroll that uses none of the phext structure, no delimiters at all, is still valid: it is one scroll of plain text at the first coordinate. Phext degrades to plain text, never below it.\n3. Scroll content is text, so a phext is valid UTF-8 within each scroll. Arbitrary binary does not ride raw; it rides as text (for example, base64) inside a scroll.\n\nYou are reading a scroll right now. Its coordinate is 1.1.1/1.1.1/2.1.2.\u0017Coordinates: addresses inside one file\n\nA coordinate looks like this: 1.1.1/1.1.1/2.1.2. Nine numbers in three groups of three. It names exactly one scroll.\n\nThe rule that matters most: coordinates are internal to a phext.\n\nThe coordinate scheme is shared; anyone can read the address format. But an address only identifies a scroll within its own file. The coordinate 1.1.1/1.1.1/1.1.1 in this file is the welcome scroll. The same coordinate in a different phext is a different scroll in that file, and means nothing here.\n\nSo a full reference is always a pair: which phext, plus which coordinate. Leave out the file and the address dangles.\n\nA page number only means something once you name the book. Coordinates work the same way, and that locality is a feature: files stay self-contained and portable.\u0019Delimiters: where one scroll ends\n\nScrolls are separated by delimiter bytes: single ASCII control characters inside the text. There are nine, arranged from the largest division to the smallest:\n\nLibrary 0x01, Shelf 0x1F, Series 0x1E, Collection 0x1D, Volume 0x1C, Book 0x1A, Chapter 0x19, Section 0x18, Scroll 0x17.\n\nYou will never see them in a normal reading view; renderers hide control bytes. But they are really in the file: open this phext in a hex editor and you can find them between scrolls.\n\nWhat a delimiter does: it ends the current scroll, moves one step along its dimension, and resets every smaller dimension back to 1. A chapter delimiter starts a new chapter at its first scroll. A scroll delimiter just starts the next scroll.\n\nDelimiters are personal: where a mind cuts its stream is personal to that mind's history. The format fixes the bytes; it does not fix where you must cut.\u0017The dimensions, counted honestly\n\nStart with plain text. A page of text already has two dimensions: position along a line, and line down the page. Every text file you have ever read lives in those two.\n\nPhext adds nine structural dimensions on top, one per delimiter level: library, shelf, series, collection, volume, book, chapter, section, scroll.\n\nNine plus two is eleven: phext is an 11-dimensional plain hypertext format.\n\nA coordinate only writes the nine structural dimensions (for example 1.1.1/1.1.1/1.1.1), because the other two belong to the text inside the scroll, addressed the way text always is: by line and by position along the line.\n\nMost writing uses only the smallest few dimensions, the way this file mostly uses chapter and scroll. The rest is headroom: sparse space a growing corpus can expand into without renumbering what already exists.\u0017Anatomy of a coordinate\n\nTake 1.1.1/1.1.1/3.1.3, the coordinate of this scroll.\n\nRead it as three groups of three:\n\n- First group (library.shelf.series): the library-scale container. Almost always 1.1.1 in a small phext, like this one.\n- Second group (collection.volume.book): the middle shelves. Part 5 of this file lives in book 2, at coordinates like 1.1.1/1.1.2/1.1.1, because a book delimiter (0x1A) moved us there and reset everything below it.\n- Third group (chapter.section.scroll): the fine address you will use daily. This file is organised by chapter: one chapter per part, scrolls inside it.\n\nCoordinates are 1-indexed: counting starts at 1, and the first scroll of any phext sits at 1.1.1/1.1.1/1.1.1.\n\nSparse is normal. Nothing requires coordinates to be dense or consecutive; empty space between scrolls is room to grow, not an error.\u0019Reading a phext with SQ\n\nSQ is the reference tool for hosting a phext. It loads the file, serves its table of contents, and fetches scrolls by coordinate.\n\nWith a phext hosted, a visitor can ask for:\n\n- toc: every coordinate in the file, each with a preview of its scroll. The map of the whole phext in one call.\n- select with a coordinate: the full text of that one scroll, nothing else.\n- status: which phext is hosted, its size in bytes, and how many scrolls it holds.\n\nTry it on this file: ask for the toc, find 1.1.1/1.1.1/4.1.2, and select it. That scroll is this lesson worked as an example.\n\nReading is the default posture of the public demo: anyone may toc and select. Nobody needs the whole file to learn from one scroll.\u0017A worked example: selecting one scroll\n\nGoal: read only the delimiters lesson, nothing else.\n\n1. Ask SQ for the toc. Among the lines you will find one for 1.1.1/1.1.1/3.1.1, previewed with its first words: Delimiters: where one scroll ends.\n2. Select that coordinate. SQ returns the scroll text alone: the delimiter table, the reset rule, and the note that delimiters are personal.\n3. Notice what did not happen: the other fifteen scrolls stayed where they were. You spent one small request instead of downloading and searching a whole file.\n\nThat is the everyday phext move: toc to navigate, select to read. Coordinates turn a text file into an address space: stable places you can point at, link to, and return to.\u0017Writing and updating a single scroll\n\nReading is half the story. A phext is written scroll by scroll:\n\n- To create or replace a scroll, write its text at its coordinate. Through SQ that is the update operation: the new text overwrites exactly that scroll, and the file is saved. Every other scroll is untouched.\n- To add text to an existing scroll without replacing it, SQ offers insert, which appends to that scroll.\n- To write a brand-new phext, write plain text and place delimiter bytes where scrolls should end. Any tool that can emit the control bytes, or a small script, can author one. This file was built that way.\n\nOne honest cost: SQ saves by rewriting the whole phext file on each change. Fine for books and demos; something a very large, busy phext has to plan around.\n\nThe public demo is read-only, so try writing on your own copy. That is the point of MIT: take the file; it is yours to change.\u0017Empty space and growing a phext\n\nMost of a phext's coordinate space is empty, and that is by design.\n\nBecause higher delimiters reset the smaller dimensions, and because coordinates need not be consecutive, you can leave whole chapters, books, or volumes unclaimed and fill them years later. Existing scrolls keep their coordinates; growth does not renumber the past.\n\nTwo habits follow:\n\n- Address by meaning, not by packing. Put a scroll where it belongs in the structure, even if its neighbours are far away.\n- One fact per scroll, roughly. Fine-grained scrolls are what make toc, select, and single-scroll updates fast and legible.\n\nThis demo uses 16 scrolls in a space that could hold vastly more. The emptiness is not waste. It is the room the format promises.\u001aPhext principles, in one place\n\n- Phext is an interoperable encoding layer: characters at addresses, like UTF-8 and ASCII before it. It constrains arrangement, not meaning.\n- A scroll using none of the structure is still plain text. Phext never makes text less readable than it was.\n- Coordinates are internal to a phext. The scheme is shared; the addresses are local to each file.\n- Delimiters are personal. Where a mind cuts its stream is personal to that mind's history.\n- Phext is valid UTF-8 within each scroll. It is a text format, end to end.\n- Neuralese is a format riding phext, not phext itself. Formats can layer on the encoding layer without becoming it.\n\nAnd the house rules for everything built here: MIT licensed; free, open, decentralized, trusted, interoperable.\u0017Make your own phext\n\nYou now know enough to start:\n\n1. Write some text. Split it into chunks you might want to address on their own.\n2. Join the chunks with the scroll delimiter (0x17). Start a new chapter with the chapter delimiter (0x19) when the topic turns. That is a valid phext already.\n3. Host it with SQ, ask for the toc, and select a scroll back. If the coordinates match where you meant to be, you have written phext correctly.\n4. Grow it in the empty space. Add scrolls at new coordinates; never renumber the old ones.\n\nEverything in this demo, including this file, is MIT licensed, so your starting point can be this very text: copy it, cut it where your own history says to cut, and write on.\u0017Colophon\n\nLearn You Phext, version 1, 2026-11-01.\n\nBuilt as the built-in phext for the public read-only demo exocortex. Written from scratch as teaching material: no scroll in this file is copied from any personal phext, log, or correspondence. That exclusion is deliberate and permanent for this demo: a teaching file should be safe to hand to a stranger.\n\nStructure: 16 scrolls. Part 1 (welcome, principles, license) is chapter 1 of book 1; Parts 2 to 4 are chapters 2 to 4 of book 1; Part 5 (principles in one place, make your own, this colophon) is in book 2, reached by a book delimiter, so the file demonstrates the hierarchy it teaches.\n\nCopyright (c) 2026 Will Bickford. MIT licensed; see the license scroll at 1.1.1/1.1.1/1.1.3 or the LICENSE file beside this one.\n\nEvidence before story: every format claim in this file can be checked against the file itself with a parser, a hex editor, or SQ.";
+
+// Delimiter levels, highest to lowest, as in parse_phext.py / libphext:
+// library, shelf, series, collection, volume, book, chapter, section, scroll.
+const DELIM_LEVEL = { "\u0001": 0, "\u001f": 1, "\u001e": 2, "\u001d": 3,
+                      "\u001c": 4, "\u001a": 5, "\u0019": 6, "\u0018": 7, "\u0017": 8 };
+
+function fmtCoord(c) {
+  return c[0] + "." + c[1] + "." + c[2] + "/" + c[3] + "." + c[4] + "." + c[5] +
+         "/" + c[6] + "." + c[7] + "." + c[8];
+}
+
+// Walk the text once: a delimiter ends the current scroll, increments its
+// level, and resets every lower level to 1. Coordinates are 1-indexed and
+// the first scroll sits at 1.1.1/1.1.1/1.1.1.
+function parsePhext(text) {
+  const coord = [1, 1, 1, 1, 1, 1, 1, 1, 1];
+  const scrolls = [];
+  let buf = "", current = fmtCoord(coord);
+  for (const ch of text) {
+    const lvl = DELIM_LEVEL[ch];
+    if (lvl === undefined) { buf += ch; continue; }
+    scrolls.push({ coord: current, text: buf });
+    buf = "";
+    coord[lvl] += 1;
+    for (let j = lvl + 1; j < 9; j++) coord[j] = 1;
+    current = fmtCoord(coord);
+  }
+  scrolls.push({ coord: current, text: buf });
+  if (scrolls.length && scrolls[scrolls.length - 1].text === "") scrolls.pop();
+  return scrolls;
+}
+
+function titleOf(text) {
+  for (const line of text.split("\n")) {
+    const t = line.trim().replace(/^#+/, "").trim();
+    if (t) return t.length > 110 ? t.slice(0, 110) : t;
+  }
+  return "(empty)";
+}
+</script>
+<script>
+"use strict";
+const SCROLLS = parsePhext(RAW_PHEXT);
+const tocEl = document.getElementById("toc");
+const scrollEl = document.getElementById("scroll");
+const bigEl = document.getElementById("bigcoord");
+const posEl = document.getElementById("pos");
+const prevBtn = document.getElementById("prev");
+const nextBtn = document.getElementById("next");
+let currentIdx = -1;
+
+document.getElementById("toccount").textContent = SCROLLS.length;
+
+const rows = SCROLLS.map((s, i) => {
+  const b = document.createElement("button");
+  b.className = "trow";
+  const c = document.createElement("span");
+  c.className = "c";
+  c.textContent = s.coord;
+  const t = document.createElement("span");
+  t.textContent = titleOf(s.text);
+  b.append(c, t);
+  b.addEventListener("click", () => select(i, true));
+  tocEl.appendChild(b);
+  return b;
+});
+
+function select(i, pushHash) {
+  if (i < 0 || i >= SCROLLS.length) return;
+  currentIdx = i;
+  const s = SCROLLS[i];
+  scrollEl.textContent = s.text;
+  bigEl.innerHTML = "";
+  s.coord.split("/").forEach((part, k) => {
+    if (k) { const sep = document.createElement("span"); sep.className = "sep"; sep.textContent = " / "; bigEl.appendChild(sep); }
+    bigEl.appendChild(document.createTextNode(part));
+  });
+  posEl.textContent = "scroll " + (i + 1) + " of " + SCROLLS.length;
+  prevBtn.disabled = i === 0;
+  nextBtn.disabled = i === SCROLLS.length - 1;
+  rows.forEach((r, k) => r.classList.toggle("on", k === i));
+  if (pushHash) history.replaceState(null, "", "#" + s.coord);
+}
+
+prevBtn.addEventListener("click", () => select(currentIdx - 1, true));
+nextBtn.addEventListener("click", () => select(currentIdx + 1, true));
+
+document.getElementById("download").addEventListener("click", () => {
+  const blob = new Blob([RAW_PHEXT], { type: "text/plain; charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "learn-you-phext.phext";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+});
+
+const fromHash = SCROLLS.findIndex(s => "#" + s.coord === location.hash);
+select(fromHash >= 0 ? fromHash : 0, false);
+</script>
+</body>
+</html>
