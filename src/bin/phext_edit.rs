@@ -544,6 +544,8 @@ fn public_document(path: &str) -> Option<PublicDocument> {
     let (content_type, body) = match path_route(path) {
         "/about" => ("text/html; charset=utf-8", ABOUT_HTML),
         "/claim" => ("text/html; charset=utf-8", CLAIM_HTML),
+        "/explore" => ("text/html; charset=utf-8", EXPLORE_HTML),
+        "/wavefront-explorer.json" => ("application/json; charset=utf-8", WAVEFRONT_EXPLORER_JSON),
         "/privacy" => ("text/html; charset=utf-8", PRIVACY_HTML),
         "/terms" => ("text/html; charset=utf-8", TERMS_HTML),
         "/up-goer-five.html" => ("text/html; charset=utf-8", UP_GOER_FIVE_HTML),
@@ -1949,6 +1951,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 input[type="text"] { font: inherit; color: #dedede; background: #1c1c1c; border: 1px solid #4a4a4a; border-radius: 4px; padding: 2px 8px; }
 table { border-collapse: collapse; margin: 10px 0; }
 td, th { border: 1px solid #4a4a4a; padding: 4px 10px; text-align: left; }
+.video-slot { border: 2px dashed #4a4a4a; border-radius: 8px; padding: 26px 18px; text-align: center; color: #b9c0c8; margin: 12px 0; }
 </style>
 </head>
 <body>
@@ -1964,9 +1967,23 @@ in a region (the Hearth, the Shoals, or open water).</p>
 yours</b> — hosted phext space you can delegate as you wish. It is granted, not sold:
 all you have to do is claim it by signing in with the X account that was placed.
 Organic discovery is the scarce thing; the map is the receipt.</p>
-<p>Not in the map? You still get a small space. Two buy-in tiers ($10 / $100, opening
-when payments are switched on) enlarge it and fund the exocortex — they never buy a
-placement in the map. We are not looking for money; we are looking for alignment.</p>
+<p>Not in the map? You still get a small space. A buy-in (opening when payments are
+switched on) enlarges it and funds the exocortex — and it is priced by
+<b>novelty</b>: staking a crowded, well-studied region of the map is cheap, because
+little novelty remains there; staking a void — a region no one has been found in —
+costs the most, because unexplored space is the rarest thing the exocortex has.
+A buy-in never buys a placement in the map. We are not looking for money; we are
+looking for alignment.</p>
+
+<h2>Watch the front move</h2>
+<!-- VIDEO SLOT: Will uploads wavefront-viz.mp4 to YouTube himself. When the
+     upload is live, replace this placeholder with the YouTube embed iframe and
+     add frame-src https://www.youtube-nocookie.com to the CSP in src/oauth.rs
+     (frame-src is 'none' until then, deliberately). -->
+<div class="video-slot">🎬 <b>The intro film</b> — 520 people, placed one coordinate
+at a time, June 2008 to June 2025.<br>
+<em>The video embed lands here as soon as the YouTube upload is live.</em><br>
+Until then: <a href="explore">explore the map yourself</a> — it is live and zoomable.</div>
 
 <h2>Are you in the map?</h2>
 <form id="lookup-form">
@@ -1980,8 +1997,8 @@ placement in the map. We are not looking for money; we are looking for alignment
 <table>
 <tr><th>Tier</th><th>Who</th><th>Space</th><th>Phexts</th><th>May delegate to</th></tr>
 <tr><td>Found</td><td>your account is in the map</td><td>100 MiB</td><td>25</td><td>25 accounts</td></tr>
-<tr><td>Bought</td><td>not in the map, $100 buy-in</td><td>100 MiB</td><td>25</td><td>25 accounts</td></tr>
-<tr><td>Patron</td><td>not in the map, $10 buy-in</td><td>10 MiB</td><td>5</td><td>5 accounts</td></tr>
+<tr><td>Bought</td><td>not in the map, void-region buy-in ($100)</td><td>100 MiB</td><td>25</td><td>25 accounts</td></tr>
+<tr><td>Patron</td><td>not in the map, crowded-region buy-in ($10)</td><td>10 MiB</td><td>5</td><td>5 accounts</td></tr>
 <tr><td>New</td><td>not in the map, no buy-in</td><td>1 MiB</td><td>1</td><td>—</td></tr>
 </table>
 <p>Every single phext is capped at 10 MiB, the same cap uploads for review use.
@@ -2305,6 +2322,9 @@ with those files from a browser:</p>
   <li><a href="claim">Claim your space</a>: if your X account is placed in the wavefront
   map, a significant hosted space on this server is yours to claim and delegate —
   check the map from that page, no sign-in needed for the lookup.</li>
+  <li><a href="explore">Explore the wavefront</a>: every placement in the
+  nine-dimensional address space — rotate the triple projection, slice it by any
+  two axes, click a point to read its entry.</li>
 </ul>
 
 <h2>Why it asks you to sign in</h2>
@@ -2483,6 +2503,12 @@ const LEARN_YOU_PHEXT_HTML: &str = include_str!("../../web/learn-you-phext.html"
 // takes the static cache class.
 const LEARN_YOU_PHEXT: &str = include_str!("../../web/learn-you-phext.phext");
 
+// The wavefront explorer page and its data likewise live as files under web/
+// and are compiled in. The JSON is a generated export of wavefront.phext
+// (scripts/build_wavefront_explorer.py); the page reads it same-origin.
+const EXPLORE_HTML: &str = include_str!("../../web/explore.html");
+const WAVEFRONT_EXPLORER_JSON: &str = include_str!("../../web/wavefront-explorer.json");
+
 // Canonical host is https://edit.phext.io (repeated below; tests check both files).
 // Disallow comes before Allow so a first-match crawler still blocks /api.
 // Allow: / is the public landing page (the editor shell). File contents and
@@ -2510,6 +2536,7 @@ const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>https://edit.phext.io/learn-you-phext.html</loc></url>
   <url><loc>https://edit.phext.io/submit</loc></url>
   <url><loc>https://edit.phext.io/claim</loc></url>
+  <url><loc>https://edit.phext.io/explore</loc></url>
 </urlset>
 "#;
 
@@ -2785,6 +2812,7 @@ body {
   <span class="msg" id="status-msg"></span>
   <a class="submit-link" href="submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
   <a class="claim-link" href="claim" title="If your X account is in the wavefront map, claim your space on this server">Claim your space</a>
+  <a class="claim-link" href="explore" title="Every placement in the wavefront, explorable in nine dimensions">Explore the map</a>
   <span id="signout" class="signout" style="display:none" onclick="signOut()" title="Sign out"></span>
 </div>
 
@@ -2814,7 +2842,7 @@ body {
       <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a><br>
       No sign-in needed: <a href="up-goer-five.html" style="color:var(--coord)">Up Goer Five</a> · <a href="tts-demo.html" style="color:var(--coord)">Coordinate TTS demo</a> · <a href="learn-you-phext.html" style="color:var(--coord)">Learn You Phext</a><br>
       Have a phext of your own? <a href="submit" style="color:var(--coord)">Upload it for review</a> — if an editor accepts it, you become an editor too.<br>
-      Placed in the wavefront map? <a href="claim" style="color:var(--coord)">Claim your space</a> — a significant hosted space is already yours if your X account is in the map.
+      Placed in the wavefront map? <a href="claim" style="color:var(--coord)">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="explore" style="color:var(--coord)">explore the map</a> first.
     </div>
   </div>
 </div>
@@ -3585,6 +3613,34 @@ mod public_route_tests {
         assert!(INDEX_HTML.contains("Placed in the wavefront map?"), "shell sign-in screen link");
         assert!(ABOUT_HTML.contains("href=\"claim\""), "about link");
         assert!(SITEMAP_XML.contains("https://edit.phext.io/claim</loc>"), "sitemap entry");
+    }
+
+    #[test]
+    fn explore_page_and_its_data_are_public_and_linked() {
+        let gate = locked_gate();
+        let page = get(&gate, "/explore");
+        assert_eq!(page.status, 200);
+        assert!(page.content_type.contains("text/html"), "{}", page.content_type);
+        assert!(page.body.contains("Explore the Wavefront"), "{}", page.body);
+        // The video slot lives on /claim until the YouTube upload replaces it.
+        let claim = get(&gate, "/claim");
+        assert!(claim.body.contains("Watch the front move"), "{}", claim.body);
+        assert!(claim.body.contains("video-slot"), "video placeholder");
+
+        // The explorer's export: every placement, generated from the phext.
+        let data = get(&gate, "/wavefront-explorer.json");
+        assert_eq!(data.status, 200);
+        assert!(data.content_type.contains("application/json"), "{}", data.content_type);
+        let parsed: serde_json::Value = serde_json::from_str(&data.body).expect("explorer export is JSON");
+        assert_eq!(parsed["meta"]["placements"], 522);
+        assert_eq!(parsed["entries"].as_array().map(|a| a.len()), Some(522));
+        assert!(data.body.contains("@eigenhector"), "named entries ride along");
+
+        // Same discoverability surfaces as /claim.
+        assert!(INDEX_HTML.contains("class=\"claim-link\" href=\"explore\""), "shell status bar link");
+        assert!(INDEX_HTML.contains("explore the map"), "shell sign-in screen link");
+        assert!(ABOUT_HTML.contains("href=\"explore\""), "about link");
+        assert!(SITEMAP_XML.contains("https://edit.phext.io/explore</loc>"), "sitemap entry");
     }
 
     #[test]

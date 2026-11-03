@@ -10,9 +10,13 @@
 /// - `found` — the account is placed in wavefront.phext. The significant
 ///   grant: organic discovery is the scarce thing, and the map is the
 ///   receipt.
-/// - `bought` — not in the map, paid the $100 buy-in: the same storage
+/// - `bought` — not in the map, paid the top buy-in band: the same storage
 ///   numbers as `found`, honestly labeled bought rather than found.
-/// - `patron` — not in the map, paid the $10 buy-in: a middle grant.
+/// - `patron` — not in the map, paid the base buy-in band: a middle grant.
+///
+/// Buy-in price is novelty-priced (DESIGN.md §3): it is a function of the
+/// occupancy of the region the entrant stakes — crowded is cheap, a void
+/// costs the most. The bands land on these two tiers when payments open.
 /// - `new` — not in the map, no buy-in: the limited grant. Anyone may
 ///   hold a small space; buying in funds the exocortex, it does not buy
 ///   a placement.
