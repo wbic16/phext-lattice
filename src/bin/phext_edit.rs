@@ -2213,11 +2213,15 @@ body {
 #status-bar .help { color: var(--dim); flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 #status-bar .msg { color: var(--active); }
 #status-bar .signout {
-  margin-left: auto; padding: 8px 16px; border: 1px solid var(--coord); border-radius: 6px;
+  padding: 8px 16px; border: 1px solid var(--coord); border-radius: 6px;
   background: #2a2312; color: var(--coord); cursor: pointer; white-space: nowrap;
   transition: background var(--trans-fast), color var(--trans-fast);
 }
 #status-bar .signout:hover { background: var(--coord); color: #000; }
+#status-bar .submit-link {
+  margin-left: auto; color: var(--dim); text-decoration: none; white-space: nowrap;
+}
+#status-bar .submit-link:hover { color: var(--coord); text-decoration: underline; }
 
 /* ── Overlays ── */
 .overlay {
@@ -2283,6 +2287,7 @@ body {
   <span id="active-file" style="color:var(--dim);cursor:pointer" onclick="openPhextPicker()" title="Click to switch phext"></span>
   <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  u:UG5  t:tree  /:search  g:goto  Home:BASE</span>
   <span class="msg" id="status-msg"></span>
+  <a class="submit-link" href="submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
   <span id="signout" class="signout" style="display:none" onclick="signOut()" title="Sign out"></span>
 </div>
 
@@ -2310,7 +2315,8 @@ body {
       A web editor for phext: plain text arranged in 11 dimensions.<br>
       Sign-in only checks who you are; nothing is shared or sold.<br>
       <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a><br>
-      No sign-in needed: <a href="up-goer-five.html" style="color:var(--coord)">Up Goer Five</a> · <a href="tts-demo.html" style="color:var(--coord)">Coordinate TTS demo</a> · <a href="learn-you-phext.html" style="color:var(--coord)">Learn You Phext</a>
+      No sign-in needed: <a href="up-goer-five.html" style="color:var(--coord)">Up Goer Five</a> · <a href="tts-demo.html" style="color:var(--coord)">Coordinate TTS demo</a> · <a href="learn-you-phext.html" style="color:var(--coord)">Learn You Phext</a><br>
+      Have a phext of your own? <a href="submit" style="color:var(--coord)">Upload it for review</a> — if an editor accepts it, you become an editor too.
     </div>
   </div>
 </div>
