@@ -1,4 +1,10 @@
-/// GitHub and Google sign-in for the web editors.
+/// GitHub, Google, and X sign-in for the web editors.
+///
+/// X exists for the claim flow: an X sign-in proves control of an X
+/// (Twitter) account, and the returned `username` is the handle the
+/// wavefront map is keyed by — `Identity.handle` for provider `x` is the
+/// X username verbatim (underscores kept; `clean_handle` would eat them,
+/// so `x_identity` uses `clean_twitter_handle`).
 ///
 /// Ported from phext-lanes. The session is an HttpOnly cookie signed with
 /// `PHEXT_SESSION_SECRET`. The authorization-code flow uses PKCE and a
@@ -86,6 +92,7 @@ impl IdentitySource for HttpSource {
         match provider {
             "github" => github_identity(&agent, code, verifier, redirect, client_id, client_secret),
             "google" => google_identity(&agent, code, verifier, redirect, client_id, client_secret),
+            "x" => x_identity(&agent, code, verifier, redirect, client_id, client_secret),
             _ => Err("the provider did not complete sign-in.".into()),
         }
     }
@@ -119,6 +126,15 @@ impl IdentitySource for ScriptedSource {
                 name: "Ada Example".into(),
                 email: "ada@example.com".into(),
             }),
+            // The scripted X user's handle is placed in the wavefront
+            // snapshot on purpose: claim tests exercise the found tier
+            // end to end without a live X app.
+            "x" => Ok(Identity {
+                who: "x:1001".into(),
+                handle: "jaivinwylde".into(),
+                name: "Scripted X User".into(),
+                email: String::new(),
+            }),
             _ => Err("the provider did not complete sign-in.".into()),
         }
     }
@@ -140,6 +156,7 @@ pub struct Oauth {
     cookie_secure: bool,
     github: Option<ProviderKeys>,
     google: Option<ProviderKeys>,
+    x: Option<ProviderKeys>,
     source: Arc<dyn IdentitySource>,
 }
 
@@ -196,6 +213,8 @@ impl Oauth {
             &std::env::var("GITHUB_CLIENT_SECRET").unwrap_or_default(),
             &std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default(),
             &std::env::var("GOOGLE_CLIENT_SECRET").unwrap_or_default(),
+            &std::env::var("X_CLIENT_ID").unwrap_or_default(),
+            &std::env::var("X_CLIENT_SECRET").unwrap_or_default(),
             Arc::new(HttpSource),
         )
     }
@@ -209,12 +228,14 @@ impl Oauth {
             "github-client-secret",
             "google-client-id",
             "google-client-secret",
+            "x-client-id",
+            "x-client-secret",
             Arc::new(ScriptedSource),
         )
     }
 
     pub fn closed() -> Self {
-        Self::from_parts("", "", false, "", "", "", "", Arc::new(ScriptedSource))
+        Self::from_parts("", "", false, "", "", "", "", "", "", Arc::new(ScriptedSource))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -226,6 +247,8 @@ impl Oauth {
         github_secret: &str,
         google_id: &str,
         google_secret: &str,
+        x_id: &str,
+        x_secret: &str,
         source: Arc<dyn IdentitySource>,
     ) -> Self {
         let base = base.trim().trim_end_matches('/').to_string();
@@ -236,6 +259,7 @@ impl Oauth {
             cookie_secure,
             github: provider(github_id, github_secret),
             google: provider(google_id, google_secret),
+            x: provider(x_id, x_secret),
             source,
         }
     }
@@ -243,7 +267,7 @@ impl Oauth {
     pub fn ready(&self) -> bool {
         real_session_secret(&self.session_secret)
             && !self.base.is_empty()
-            && (self.github.is_some() || self.google.is_some())
+            && (self.github.is_some() || self.google.is_some() || self.x.is_some())
     }
 
     pub fn providers(&self) -> Vec<&'static str> {
@@ -256,6 +280,9 @@ impl Oauth {
         }
         if self.google.is_some() {
             names.push("google");
+        }
+        if self.x.is_some() {
+            names.push("x");
         }
         names
     }
@@ -290,6 +317,14 @@ impl Oauth {
                 form_encode(&keys.id),
                 form_encode(&redirect),
                 form_encode("openid email profile"),
+                form_encode(&state),
+                form_encode(&challenge),
+            ),
+            "x" => format!(
+                "https://twitter.com/i/oauth2/authorize?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
+                form_encode(&keys.id),
+                form_encode(&redirect),
+                form_encode("tweet.read users.read"),
                 form_encode(&state),
                 form_encode(&challenge),
             ),
@@ -356,7 +391,14 @@ impl Oauth {
         if body.exp < now() || body.csrf.is_empty() || !valid_who(&body.who) {
             return None;
         }
-        let handle = clean_handle(&body.handle);
+        // X handles keep their underscores (see clean_twitter_handle);
+        // every other provider goes through the generic cleaner.
+        let handle = if body.who.starts_with("x:") {
+            let kept = clean_twitter_handle(&body.handle);
+            if kept.is_empty() { clean_handle(&body.handle) } else { kept }
+        } else {
+            clean_handle(&body.handle)
+        };
         Some(Session {
             who: body.who,
             handle: handle.clone(),
@@ -387,6 +429,7 @@ impl Oauth {
         match provider_name {
             "github" => self.github.as_ref(),
             "google" => self.google.as_ref(),
+            "x" => self.x.as_ref(),
             _ => None,
         }
     }
@@ -770,16 +813,29 @@ pub struct Gate {
     limits: Limiter,
     /// CLI `--local` only. `enable_local` is the sole writer.
     local: AtomicBool,
+    /// Claim mode (`/api/claim` writes). Off unless the operator turns
+    /// it on: `PHEXT_CLAIM_ENABLED=1` via `from_env`, or `enable_claims`.
+    claims: AtomicBool,
 }
 
 impl Gate {
     pub fn new(token: Option<String>, oauth: Oauth, editors: Editors) -> Self {
         let token = token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-        Self { token, oauth, editors, limits: Limiter::standard(), local: AtomicBool::new(false) }
+        Self {
+            token,
+            oauth,
+            editors,
+            limits: Limiter::standard(),
+            local: AtomicBool::new(false),
+            claims: AtomicBool::new(false),
+        }
     }
 
     pub fn from_env(token: Option<String>) -> Self {
         let gate = Self::new(token, Oauth::from_env(), Editors::from_env());
+        if std::env::var("PHEXT_CLAIM_ENABLED").map(|v| v.trim() == "1").unwrap_or(false) {
+            gate.enable_claims();
+        }
         // Runtime admissions persist here when the operator names the file.
         // Without it, phext-edit wires in a default next to its phexts.
         if let Ok(path) = std::env::var("PHEXT_EDITORS_FILE") {
@@ -802,6 +858,17 @@ impl Gate {
 
     pub fn is_local(&self) -> bool {
         self.local.load(Ordering::SeqCst)
+    }
+
+    /// Open claim mode: `/api/claim` accepts claims (the lookup stays
+    /// public either way). The operator turns this on once the X app
+    /// credentials are in place; tests call it directly.
+    pub fn enable_claims(&self) {
+        self.claims.store(true, Ordering::SeqCst);
+    }
+
+    pub fn claims_open(&self) -> bool {
+        self.claims.load(Ordering::SeqCst)
     }
 
     /// True when some credential is required for the API.
@@ -876,6 +943,9 @@ impl Gate {
         }
         if !self.locked() {
             lines.push("auth: open (no token, sign-in not configured)".to_string());
+        }
+        if self.claims_open() {
+            lines.push("claims: open (/api/claim accepts claims)".to_string());
         }
         lines
     }
@@ -1206,6 +1276,8 @@ pub fn valid_who(who: &str) -> bool {
         && match kind {
             "github" => id.chars().all(|ch| ch.is_ascii_digit()),
             "google" => true,
+            // X user ids are numeric strings, like GitHub's.
+            "x" => id.chars().all(|ch| ch.is_ascii_digit()),
             _ => false,
         }
 }
@@ -1253,6 +1325,21 @@ pub fn clean_handle(raw: &str) -> String {
         .take(39)
         .collect();
     if out.is_empty() { "reader".into() } else { out }
+}
+
+/// An X username verbatim: `[A-Za-z0-9_]{1,15}`, case preserved. Unlike
+/// `clean_handle` this keeps underscores — they are load-bearing in X
+/// handles (@Grady_Booch, @4ster_light) and the wavefront lookup keys on
+/// them. Anything outside the charset makes the handle unusable ("").
+pub fn clean_twitter_handle(raw: &str) -> String {
+    let handle = raw.trim().strip_prefix('@').unwrap_or(raw.trim());
+    if handle.is_empty()
+        || handle.len() > 15
+        || !handle.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return String::new();
+    }
+    handle.to_string()
 }
 
 /// Constant-time comparison; an empty expected value never matches.
@@ -1367,6 +1454,62 @@ fn google_identity(
     })
 }
 
+/// X (Twitter) OAuth 2.0: a confidential client, so the token exchange
+/// carries HTTP Basic (client id + secret) alongside the PKCE form body.
+/// `GET /2/users/me` returns the account's numeric id and its `username`
+/// — the username is the identity the wavefront map is keyed by, so it is
+/// kept verbatim (case and underscores) via `clean_twitter_handle`.
+/// X returns no email under `tweet.read users.read`; email stays empty,
+/// which simply means X accounts match allowlists by `x:<id>` only.
+fn x_identity(
+    agent: &ureq::Agent,
+    code: &str,
+    verifier: &str,
+    redirect: &str,
+    client_id: &str,
+    client_secret: &str,
+) -> Result<Identity, String> {
+    let form = format!(
+        "code={}&grant_type=authorization_code&client_id={}&redirect_uri={}&code_verifier={}",
+        form_encode(code),
+        form_encode(client_id),
+        form_encode(redirect),
+        form_encode(verifier),
+    );
+    let basic = base64_std(format!("{}:{}", client_id, client_secret).as_bytes());
+    let token = agent
+        .post("https://api.twitter.com/2/oauth2/token")
+        .set("Accept", "application/json")
+        .set("User-Agent", "phext-lattice")
+        .set("Content-Type", "application/x-www-form-urlencoded")
+        .set("Authorization", &format!("Basic {basic}"))
+        .send_string(&form)
+        .map_err(|_| "the provider did not complete sign-in.")?
+        .into_string()
+        .map_err(|_| "the provider did not complete sign-in.")?;
+    let access = access_token(&token)?;
+    let user = get_json(agent, "https://api.twitter.com/2/users/me", "application/json", &access)?;
+    let data = user.get("data").unwrap_or(&user);
+    let id = data
+        .get("id")
+        .and_then(|v| v.as_str().map(str::to_string).or_else(|| v.as_u64().map(|n| n.to_string())))
+        .unwrap_or_default();
+    if !valid_who(&format!("x:{id}")) {
+        return Err("the provider did not complete sign-in.".into());
+    }
+    let handle = clean_twitter_handle(data.get("username").and_then(|v| v.as_str()).unwrap_or(""));
+    if handle.is_empty() {
+        return Err("the provider did not complete sign-in.".into());
+    }
+    let profile = data.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    Ok(Identity {
+        who: format!("x:{id}"),
+        handle: handle.clone(),
+        name: display_name(profile, &handle),
+        email: String::new(),
+    })
+}
+
 fn access_token(raw: &str) -> Result<String, String> {
     let parsed: serde_json::Value =
         serde_json::from_str(raw).map_err(|_| "the provider did not complete sign-in.")?;
@@ -1415,6 +1558,24 @@ fn form_encode(value: &str) -> String {
 }
 
 const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/// Standard base64 (with `+`, `/`, and `=` padding) — HTTP Basic wants
+/// this alphabet, not the URL-safe one used for cookies and PKCE.
+fn base64_std(bytes: &[u8]) -> String {
+    const STD: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |acc, (i, b)| acc | (*b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(STD[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
 
 fn base64url(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -1582,6 +1743,46 @@ mod tests {
         assert!(!oauth.ready());
         assert!(oauth.providers().is_empty());
         assert!(oauth.authorize_url("github", "/").is_err());
+    }
+
+    #[test]
+    fn x_is_a_provider_with_a_twitter_authorize_url() {
+        let oauth = Oauth::test_ready();
+        assert_eq!(oauth.providers(), vec!["github", "google", "x"]);
+        let (url, _pending) = oauth.authorize_url("x", "/claim").unwrap();
+        assert!(url.starts_with("https://twitter.com/i/oauth2/authorize?"), "{url}");
+        assert!(url.contains("response_type=code"), "{url}");
+        assert!(url.contains("client_id=x-client-id"), "{url}");
+        assert!(url.contains("scope=tweet.read%20users.read"), "{url}");
+        assert!(url.contains("code_challenge_method=S256"), "{url}");
+        assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Fapi%2Fauth%2Fx%2Fcallback"), "{url}");
+    }
+
+    #[test]
+    fn base64_std_matches_the_rfc_vectors() {
+        assert_eq!(base64_std(b""), "");
+        assert_eq!(base64_std(b"f"), "Zg==");
+        assert_eq!(base64_std(b"fo"), "Zm8=");
+        assert_eq!(base64_std(b"foo"), "Zm9v");
+        assert_eq!(base64_std(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_std(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_std(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn x_account_ids_and_handles_validate() {
+        assert!(valid_who("x:1001"));
+        assert!(!valid_who("x:1001a"));
+        assert!(!valid_who("x:"));
+        // Underscores survive; case survives; junk does not.
+        assert_eq!(clean_twitter_handle("Grady_Booch"), "Grady_Booch");
+        assert_eq!(clean_twitter_handle("@4ster_light"), "4ster_light");
+        assert_eq!(clean_twitter_handle("__apf__"), "__apf__");
+        assert_eq!(clean_twitter_handle("has space"), "");
+        assert_eq!(clean_twitter_handle("dash-not-allowed"), "");
+        assert_eq!(clean_twitter_handle("sixteen_chars_16"), "");
+        // The generic cleaner would have eaten those underscores.
+        assert_eq!(clean_handle("Grady_Booch"), "GradyBooch");
     }
 
     #[test]
