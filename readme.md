@@ -97,6 +97,53 @@ The flag is refused unless the process binds to a loopback address (`127.0.0.1`,
 
 Phext files for that run come from `--dir` when you pass it, otherwise from `PHEXT_DATA_DIR`, otherwise from `./.phext-local` (created on first run, with a `welcome.phext` if the directory is empty). That default is separate from the production library, so a local session does not edit deployed phexts. `PHEXT_HOME` is ignored under `--local` unless you pass `--home`.
 
+### Submissions: upload for review
+
+phext-edit's editor is gated by an editors list, which used to make the
+operator the only door in. Submissions open a second door at
+[`/submit`](https://edit.phext.io/submit):
+
+1. Any **signed-in** user (Google or GitHub — editor or not) uploads a
+   `.phext` (10 MiB cap). The name is reduced to a bare `*.phext` name,
+   the text is parsed to count its scrolls, and the upload waits as a
+   *pending* submission outside the library.
+2. Any **approved editor** sees the review queue on the same page and can
+   download, accept, or decline each submission.
+3. **Accepting** curates the phext into the server's phext library (on a
+   name collision it is suffixed with part of the submission id) and
+   **admits the originator as an editor** — their account id *and* their
+   email are added to the editor list, effective immediately, with no
+   operator action. Declining records the decision and admits nobody.
+
+Endpoints (all JSON, session cookie auth; writes need the session's
+`x-csrf-token`, as elsewhere):
+
+| Route | Who | Effect |
+|-------|-----|--------|
+| `GET /submit` | anyone | the upload / review page |
+| `POST /api/submissions` | signed-in | upload; phext bytes as the body, file name in `x-filename` |
+| `GET /api/submissions` | signed-in | editors see all; others see only their own |
+| `GET /api/submissions/{id}/download` | originator or editor | the uploaded phext |
+| `POST /api/submissions/{id}/accept` | editors | curate + admit the originator |
+| `POST /api/submissions/{id}/decline` | editors | mark declined |
+
+Pending uploads live in a `submissions/` subdirectory of the phext
+directory (`--dir`); the library listing scans only the directory
+itself, so a pending upload is never listed as a library file. With no
+`--dir`, submissions fall back to a `submissions/` directory under the
+local data dir (`PHEXT_DATA_DIR`, else `./.phext-local`).
+
+Admission persists in an **editors file**, one entry per line:
+
+- `PHEXT_EDITORS_FILE` names the file when set.
+- Otherwise phext-edit defaults to `admitted-editors.txt` inside the
+  phext directory (`--dir`), or next to the initial phext file.
+
+`PHEXT_EDITORS` remains the bootstrap list: the file's entries are
+loaded in addition to it, and new admissions are appended to the file.
+An accepted originator is an editor from their next request onward, and
+still is after a restart.
+
 ### phext-tts Usage
 
 ```bash

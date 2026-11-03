@@ -22,6 +22,8 @@ pub mod modes;
 pub mod navigator;
 #[cfg(feature = "web")]
 pub mod oauth;
+#[cfg(feature = "web")]
+pub mod submissions;
 pub mod search;
 pub mod sentron;
 pub mod stats;

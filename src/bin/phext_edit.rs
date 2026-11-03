@@ -17,7 +17,8 @@ use phext_lattice::{
     MappedLattice, Navigator, Sentron,
     DimensionDensity,
 };
-use phext_lattice::oauth::{forwarded_https, security_header_block, status_text, Gate};
+use phext_lattice::oauth::{forwarded_https, security_header_block, status_text, Gate, Session};
+use phext_lattice::submissions::{self, Submission, SubmissionStatus};
 use sha2::Digest;
 
 // ── API Types ──────────────────────────────────────────────────────────
@@ -604,7 +605,7 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
         }
         return;
     }
-    if !is_editor_shell(&path) && !is_api_path(&path) {
+    if !is_editor_shell(&path) && !is_api_path(&path) && path_route(&path) != "/submit" {
         match method.as_str() {
             "HEAD" => send_response(stream, 404, HTML, NOT_FOUND_HTML.as_bytes(), CacheClass::NoStore, &headers, true),
             _ => send_response(stream, 404, HTML, NOT_FOUND_HTML.as_bytes(), CacheClass::NoStore, &headers, false),
@@ -615,6 +616,11 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
     // Sign-in endpoints, then auth check (token or session) — GET / stays open
     if let Some(reply) = gate.route(&method, &path, &headers) {
         reply.write_to(stream);
+        return;
+    }
+    // Submissions sit between sign-in and the editor gate: uploading a
+    // phext for review needs a signed-in account, not an editor's place.
+    if handle_submissions(stream, &mut reader, &method, &path, &headers, state, gate) {
         return;
     }
     if let Err(reply) = gate.admit(&method, &path, &headers) {
@@ -763,6 +769,231 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
     }
 }
 
+// ── Submissions ────────────────────────────────────────────────────────
+
+/// Largest phext a visitor may upload for review (10 MiB).
+const MAX_SUBMISSION_BYTES: usize = 10 * 1024 * 1024;
+
+fn json_status(stream: &mut std::net::TcpStream, headers: &HashMap<String, String>, status: u16, value: serde_json::Value) {
+    send_response(stream, status, "application/json", value.to_string().as_bytes(), CacheClass::NoStore, headers, false);
+}
+
+fn json_error(stream: &mut std::net::TcpStream, headers: &HashMap<String, String>, status: u16, message: &str) {
+    json_status(stream, headers, status, serde_json::json!({ "ok": false, "error": message }));
+}
+
+/// Where uploads wait for review: a `submissions` subdirectory of the
+/// phext library. `list_phexts` scans only the library directory itself
+/// (non-recursively), so a pending upload never shows up as a library
+/// file. Without a library directory, fall back to the data dir,
+/// mirroring how `--local` finds its phexts.
+fn submissions_dir(state: &Arc<Mutex<AppState>>) -> std::path::PathBuf {
+    let state = state.lock().unwrap();
+    match &state.phext_dir {
+        Some(dir) => std::path::Path::new(dir).join("submissions"),
+        None => std::path::Path::new(&resolve_data_dir(std::env::var("PHEXT_DATA_DIR").ok().as_deref()))
+            .join("submissions"),
+    }
+}
+
+fn owns(session: &Session, sub: &Submission) -> bool {
+    sub.who == session.who || (!session.email.is_empty() && sub.email == session.email)
+}
+
+/// Routes for `/submit` and `/api/submissions*`. Returns true when the
+/// request was answered here. Unknown shapes return false, so they fall
+/// through to the gate and the usual JSON 404, exactly as before.
+fn handle_submissions(
+    stream: &mut std::net::TcpStream,
+    reader: &mut BufReader<std::net::TcpStream>,
+    method: &str,
+    path: &str,
+    headers: &HashMap<String, String>,
+    state: &Arc<Mutex<AppState>>,
+    gate: &Gate,
+) -> bool {
+    let route = path_route(path);
+    if route == "/submit" {
+        match method {
+            "GET" => send_response(stream, 200, HTML, SUBMIT_HTML.as_bytes(), CacheClass::Shell, headers, false),
+            "HEAD" => send_response(stream, 200, HTML, SUBMIT_HTML.as_bytes(), CacheClass::Shell, headers, true),
+            _ => send_response(stream, 405, "text/plain", b"method not allowed", CacheClass::NoStore, headers, false),
+        }
+        return true;
+    }
+    if route != "/api/submissions" && !route.starts_with("/api/submissions/") {
+        return false;
+    }
+
+    // Everything below needs a signed-in account — editor or not. Local
+    // mode supplies the synthetic local developer, as the gate does.
+    let Some(session) = gate.session(headers) else {
+        json_error(stream, headers, 401, "sign in to use submissions");
+        return true;
+    };
+    // Writes carry the session's CSRF token, exactly as `Gate::admit`
+    // requires of session writes. Local mode has no cookie to protect.
+    if method != "GET" && method != "HEAD" && !gate.is_local() {
+        let csrf = headers.get("x-csrf-token").map(String::as_str).unwrap_or("");
+        if !gate.oauth().csrf_matches(&session, csrf) {
+            json_error(stream, headers, 403, "that request did not match this sign-in");
+            return true;
+        }
+    }
+    let editor = gate.is_editor(&session);
+    let dir = submissions_dir(state);
+
+    match (method, route) {
+        ("POST", "/api/submissions") => {
+            if let Some(len) = headers.get("content-length").and_then(|v| v.trim().parse::<usize>().ok()) {
+                if len > MAX_SUBMISSION_BYTES {
+                    json_error(stream, headers, 413, "that phext is larger than 10 MiB");
+                    return true;
+                }
+            }
+            let Some(filename) = headers.get("x-filename").cloned() else {
+                json_error(stream, headers, 400, "missing x-filename header");
+                return true;
+            };
+            let body = read_body(reader, headers);
+            if body.is_empty() {
+                json_error(stream, headers, 400, "the phext is empty");
+                return true;
+            }
+            if body.len() > MAX_SUBMISSION_BYTES {
+                json_error(stream, headers, 413, "that phext is larger than 10 MiB");
+                return true;
+            }
+            match submissions::create(&dir, &filename, &session.who, &session.email, &session.name, &body) {
+                Ok(sub) => json_status(stream, headers, 200, serde_json::to_value(&sub).unwrap_or_default()),
+                Err(e) => json_error(stream, headers, 400, &e),
+            }
+            true
+        }
+        ("GET", "/api/submissions") => {
+            let mut subs = submissions::list(&dir);
+            if !editor {
+                subs.retain(|sub| owns(&session, sub));
+            }
+            json_status(stream, headers, 200, serde_json::to_value(&subs).unwrap_or_default());
+            true
+        }
+        _ => {
+            // /api/submissions/{id}/download | accept | decline
+            let rest = &route["/api/submissions/".len()..];
+            let Some((id, action)) = rest.split_once('/') else { return false };
+            match (method, action) {
+                ("GET", "download") => {
+                    let Some(sub) = submissions::get(&dir, id) else {
+                        json_error(stream, headers, 404, "submission not found");
+                        return true;
+                    };
+                    if !editor && !owns(&session, &sub) {
+                        json_error(stream, headers, 403, "that submission is not yours");
+                        return true;
+                    }
+                    match submissions::content(&dir, id) {
+                        Some(bytes) => {
+                            send_response(stream, 200, "text/plain; charset=utf-8", &bytes, CacheClass::NoStore, headers, false)
+                        }
+                        None => json_error(stream, headers, 404, "submission file not found"),
+                    }
+                    true
+                }
+                ("POST", "accept") => {
+                    if !editor {
+                        json_error(stream, headers, 403, "only editors can accept a submission");
+                        return true;
+                    }
+                    accept_submission(stream, headers, state, gate, &session, &dir, id);
+                    true
+                }
+                ("POST", "decline") => {
+                    if !editor {
+                        json_error(stream, headers, 403, "only editors can decline a submission");
+                        return true;
+                    }
+                    let Some(sub) = submissions::get(&dir, id) else {
+                        json_error(stream, headers, 404, "submission not found");
+                        return true;
+                    };
+                    if sub.status != SubmissionStatus::Pending {
+                        json_error(stream, headers, 409, "that submission was already decided");
+                        return true;
+                    }
+                    match submissions::set_decision(&dir, id, SubmissionStatus::Declined, &session.who, "") {
+                        Ok(sub) => json_status(stream, headers, 200, serde_json::to_value(&sub).unwrap_or_default()),
+                        Err(e) => json_error(stream, headers, 500, &e),
+                    }
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
+}
+
+/// Accept one pending submission: curate its phext into the library,
+/// record the decision, then admit the originator as an editor — in that
+/// order, so a failure leaves the submission pending and nobody admitted.
+fn accept_submission(
+    stream: &mut std::net::TcpStream,
+    headers: &HashMap<String, String>,
+    state: &Arc<Mutex<AppState>>,
+    gate: &Gate,
+    session: &Session,
+    dir: &std::path::Path,
+    id: &str,
+) {
+    let Some(sub) = submissions::get(dir, id) else {
+        json_error(stream, headers, 404, "submission not found");
+        return;
+    };
+    if sub.status != SubmissionStatus::Pending {
+        json_error(stream, headers, 409, "that submission was already decided");
+        return;
+    }
+    let library = state.lock().unwrap().phext_dir.clone();
+    let Some(library) = library else {
+        json_error(stream, headers, 500, "no library directory configured");
+        return;
+    };
+    let Some(mut curated) = submissions::sanitize_filename(&sub.filename) else {
+        json_error(stream, headers, 500, "the submission's file name is not usable");
+        return;
+    };
+    let library_path = std::path::Path::new(&library);
+    if library_path.join(&curated).exists() {
+        let stem = curated.strip_suffix(".phext").unwrap_or(&curated).to_string();
+        let short: String = sub.id.chars().take(6).collect();
+        curated = format!("{stem}-{short}.phext");
+        if library_path.join(&curated).exists() {
+            curated = format!("{stem}-{}.phext", sub.id);
+        }
+    }
+    let Some(bytes) = submissions::content(dir, id) else {
+        json_error(stream, headers, 500, "submission file not found");
+        return;
+    };
+    if let Err(e) = std::fs::write(library_path.join(&curated), &bytes) {
+        json_error(stream, headers, 500, &format!("could not curate the phext: {e}"));
+        return;
+    }
+    match submissions::set_decision(dir, id, SubmissionStatus::Accepted, &session.who, &curated) {
+        Ok(done) => {
+            // Local mode's synthetic account has no provider id to admit;
+            // it is already all-powerful on its own loopback server.
+            let admitted = gate.admit_account(&sub.who, &sub.email) || gate.is_local();
+            let mut value = serde_json::to_value(&done).unwrap_or_default();
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("admitted".into(), serde_json::Value::Bool(admitted));
+            }
+            json_status(stream, headers, 200, value);
+        }
+        Err(e) => json_error(stream, headers, 500, &e),
+    }
+}
+
 fn parse_coordinate(s: &str) -> Option<libphext::phext::Coordinate> {
     let parts: Vec<&str> = s.split('/').collect();
     if parts.len() != 3 { return None; }
@@ -862,7 +1093,7 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
 
-    use phext_lattice::oauth::{Editors, Oauth};
+    use phext_lattice::oauth::{Editors, Oauth, TEST_CSRF};
     use phext_lattice::MappedLattice;
 
     use super::*;
@@ -872,6 +1103,12 @@ mod tests {
     }
 
     fn serve(local: bool) -> (u16, tempfile::TempDir) {
+        let (port, dir, _gate) =
+            serve_gate(Gate::new(Some("test-token".into()), Oauth::closed(), Editors::default()), local);
+        (port, dir)
+    }
+
+    fn serve_gate(gate: Gate, local: bool) -> (u16, tempfile::TempDir, Arc<Gate>) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("note.phext");
         std::fs::write(&path, b"local note\n").unwrap();
@@ -879,30 +1116,34 @@ mod tests {
         let mut app = AppState::new(lattice, path.to_string_lossy().to_string());
         app.phext_dir = Some(dir.path().to_string_lossy().to_string());
         let state = Arc::new(Mutex::new(app));
-        let gate = Gate::new(Some("test-token".into()), Oauth::closed(), Editors::default());
         if local {
             gate.enable_local();
         }
         let gate = Arc::new(gate);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let server_gate = Arc::clone(&gate);
         std::thread::spawn(move || {
             for incoming in listener.incoming() {
                 let Ok(mut stream) = incoming else { break };
                 let state = Arc::clone(&state);
-                let gate = Arc::clone(&gate);
+                let gate = Arc::clone(&server_gate);
                 handle_request(&mut stream, &state, &gate);
             }
         });
-        (port, dir)
+        (port, dir, gate)
     }
 
     fn http(port: u16, method: &str, path: &str, extra: &str) -> (u16, String) {
+        http_body(port, method, path, extra, "")
+    }
+
+    fn http_body(port: u16, method: &str, path: &str, extra: &str, body: &str) -> (u16, String) {
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
         stream.set_write_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
         let req = format!(
-            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n{extra}\r\n"
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n{extra}\r\n{body}"
         );
         stream.write_all(req.as_bytes()).unwrap();
         let mut reader = BufReader::new(stream);
@@ -983,6 +1224,137 @@ mod tests {
         assert_eq!(phexts.len(), 1);
     }
 
+    fn submission_id(body: &str) -> String {
+        let start = body.find("\"id\":\"").expect("id field") + "\"id\":\"".len();
+        body[start..].split('"').next().unwrap().to_string()
+    }
+
+    fn upload(port: u16, headers: &str, filename: &str, payload: &str) -> (u16, String) {
+        http_body(
+            port,
+            "POST",
+            "/api/submissions",
+            &format!("{headers}X-Filename: {filename}\r\nContent-Length: {}\r\n", payload.len()),
+            payload,
+        )
+    }
+
+    #[test]
+    fn submissions_roundtrip_in_local_mode() {
+        let (port, dir) = serve(true);
+        let (code, body) = http(port, "GET", "/submit", "");
+        assert_eq!(code, 200);
+        assert!(body.contains("Upload a phext for review"), "{body}");
+
+        let (code, body) = upload(port, "", "demo.phext", "alpha scroll\n");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"status\":\"pending\""), "{body}");
+        let id = submission_id(&body);
+
+        // Pending uploads wait in submissions/, invisible to the library.
+        let (code, body) = http(port, "GET", "/api/phexts", "");
+        assert_eq!(code, 200);
+        assert!(!body.contains("demo.phext"), "{body}");
+        let (code, body) = http(port, "GET", "/api/submissions", "");
+        assert_eq!(code, 200);
+        assert!(body.contains("demo.phext"), "{body}");
+        assert!(dir.path().join("submissions").join(format!("{id}.phext")).is_file());
+
+        // Accept: the phext is curated into the library.
+        let (code, body) = http(port, "POST", &format!("/api/submissions/{id}/accept"), "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"curated_as\":\"demo.phext\""), "{body}");
+        assert!(body.contains("\"admitted\":true"), "{body}");
+        assert_eq!(std::fs::read_to_string(dir.path().join("demo.phext")).unwrap(), "alpha scroll\n");
+        let (code, body) = http(port, "GET", "/api/phexts", "");
+        assert_eq!(code, 200);
+        assert!(body.contains("demo.phext"), "{body}");
+
+        // A second upload can be declined, and a decided one stays decided.
+        let (code, body) = upload(port, "", "beta.phext", "beta scroll\n");
+        assert_eq!(code, 200, "{body}");
+        let id2 = submission_id(&body);
+        let (code, body) = http(port, "POST", &format!("/api/submissions/{id2}/decline"), "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"status\":\"declined\""), "{body}");
+        let (code, _) = http(port, "POST", &format!("/api/submissions/{id2}/accept"), "");
+        assert_eq!(code, 409);
+
+        // Bad uploads are refused before anything is stored.
+        let (code, _) = upload(port, "", "evil.txt", "nope\n");
+        assert_eq!(code, 400);
+        let (code, _) = upload(port, "", "empty.phext", "");
+        assert_eq!(code, 400);
+    }
+
+    /// A session cookie for the scripted Google identity (an editor in
+    /// these tests), minted by driving the gate's sign-in flow directly.
+    fn google_session_cookie(gate: &Gate) -> String {
+        let plain: HashMap<String, String> = HashMap::new();
+        let start = gate.route("GET", "/api/auth/google?next=/submit", &plain).unwrap();
+        let location = start.headers.iter().find(|(n, _)| *n == "Location").unwrap().1.clone();
+        let state = location.split("state=").nth(1).unwrap().split('&').next().unwrap();
+        let pending = start.headers.iter().find(|(n, _)| *n == "Set-Cookie").unwrap().1
+            .split(';').next().unwrap().to_string();
+        let mut cb: HashMap<String, String> = HashMap::new();
+        cb.insert("cookie".into(), pending);
+        let back = gate
+            .route("GET", &format!("/api/auth/google/callback?code=ok&state={state}"), &cb)
+            .unwrap();
+        back.headers.iter().find(|(n, _)| *n == "Set-Cookie").unwrap().1
+            .split(';').next().unwrap().to_string()
+    }
+
+    fn csrf_of(port: u16, cookie_header: &str) -> String {
+        let (code, body) = http(port, "GET", "/api/session", cookie_header);
+        assert_eq!(code, 200, "{body}");
+        let start = body.find("\"csrf\":\"").expect("csrf field") + "\"csrf\":\"".len();
+        body[start..].split('"').next().unwrap().to_string()
+    }
+
+    #[test]
+    fn submission_accept_admits_the_originator() {
+        // google:sub-1 is the editor; github:100 may upload but not edit.
+        let gate = Gate::new(None, Oauth::test_ready(), Editors::parse("google:sub-1"));
+        let (port, dir, gate) = serve_gate(gate, false);
+        let editors_file = dir.path().join("admitted-editors.txt");
+        gate.load_editors_file(&editors_file);
+
+        let github = format!("Cookie: phext_session={}\r\nX-CSRF-Token: {TEST_CSRF}\r\n", Oauth::test_session_cookie());
+        let (code, body) = upload(port, &github, "hand.phext", "jonas was here\n");
+        assert_eq!(code, 200, "{body}");
+        let id = submission_id(&body);
+
+        let github_cookie_only = format!("Cookie: phext_session={}\r\n", Oauth::test_session_cookie());
+        let (code, body) = http(port, "GET", "/api/session", &github_cookie_only);
+        assert_eq!(code, 200);
+        assert!(body.contains("\"editor\":false"), "{body}");
+        // The originator cannot decide their own submission.
+        let (code, _) = http(port, "POST", &format!("/api/submissions/{id}/accept"), &github);
+        assert_eq!(code, 403);
+        // …but can download it.
+        let (code, body) = http(port, "GET", &format!("/api/submissions/{id}/download"), &github_cookie_only);
+        assert_eq!(code, 200);
+        assert!(body.contains("jonas was here"), "{body}");
+
+        // An editor accepts: curated into the library, originator admitted.
+        let google_cookie = google_session_cookie(&gate);
+        let google = format!("Cookie: {google_cookie}\r\nX-CSRF-Token: {}\r\n", csrf_of(port, &format!("Cookie: {google_cookie}\r\n")));
+        let (code, body) = http(port, "POST", &format!("/api/submissions/{id}/accept"), &google);
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"admitted\":true"), "{body}");
+        assert_eq!(std::fs::read_to_string(dir.path().join("hand.phext")).unwrap(), "jonas was here\n");
+
+        // Admission is live for the originator's existing session…
+        let (code, body) = http(port, "GET", "/api/session", &github_cookie_only);
+        assert_eq!(code, 200);
+        assert!(body.contains("\"editor\":true"), "{body}");
+        // …and persisted to the editors file for the next restart.
+        let text = std::fs::read_to_string(&editors_file).unwrap();
+        assert!(text.contains("github:100"), "{text}");
+        assert!(text.contains("octo@example.com"), "{text}");
+    }
+
     #[test]
     fn positional_file_skips_local_and_valued_flags() {
         assert_eq!(positional_file(&argv(&["--local"])), None);
@@ -1011,7 +1383,7 @@ fn main() {
         eprintln!("  --help            Show this help");
         eprintln!();
         eprintln!("GitHub/Google sign-in (environment):");
-        eprintln!("  PHEXT_PUBLIC_URL, PHEXT_SESSION_SECRET, PHEXT_EDITORS, PHEXT_COOKIE_SECURE=1");
+        eprintln!("  PHEXT_PUBLIC_URL, PHEXT_SESSION_SECRET, PHEXT_EDITORS, PHEXT_EDITORS_FILE, PHEXT_COOKIE_SECURE=1");
         eprintln!("  GITHUB_CLIENT_ID/SECRET, GOOGLE_CLIENT_ID/SECRET");
         std::process::exit(1);
     }
@@ -1106,6 +1478,20 @@ fn main() {
 
     let state = Arc::new(Mutex::new(app_state));
     let gate = Arc::new(Gate::from_env(token));
+    // Admissions (an editor accepting a submission) persist to an editors
+    // file. PHEXT_EDITORS_FILE names it when set — Gate::from_env already
+    // loaded that one — otherwise it lives next to the phexts.
+    if std::env::var("PHEXT_EDITORS_FILE").map(|v| v.trim().is_empty()).unwrap_or(true) {
+        let editors_file = match &dir {
+            Some(d) => std::path::Path::new(d).join("admitted-editors.txt"),
+            None => std::path::Path::new(&file_path)
+                .parent()
+                .map(|p| p.join("admitted-editors.txt"))
+                .unwrap_or_else(|| std::path::PathBuf::from("admitted-editors.txt")),
+        };
+        gate.load_editors_file(&editors_file);
+        println!("   admitted editors: {}", editors_file.display());
+    }
     let listener = TcpListener::bind(format!("{}:{}", host, port)).unwrap_or_else(|e| {
         eprintln!("Failed to bind {}:{}: {}", host, port, e);
         std::process::exit(1);
@@ -1234,6 +1620,160 @@ nav { margin-bottom: 24px; font-size: 14px; }
 footer { margin-top: 40px; font-size: 13px; color: #9a9a9a; border-top: 1px solid #2e2e2e; padding-top: 16px; }
 </style>"# } }
 
+const SUBMIT_HTML: &str = concat!(r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Upload a phext for review. If an editor accepts it, your phext joins the library and your account becomes an editor.">
+<title>Phext Edit: upload a phext for review</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+"##, public_style!(), r##"
+<style>
+button { background: #2e2e2e; color: #dedede; border: 1px solid #4a4a4a; border-radius: 4px; padding: 2px 10px; cursor: pointer; font: inherit; }
+button:disabled { opacity: 0.5; cursor: default; }
+input[type="file"] { font: inherit; color: #dedede; }
+.sub { margin: 10px 0; }
+</style>
+</head>
+<body>
+<main>
+<nav><a href="./">Open the editor</a> · <a href="about">About Phext Edit</a> · <a href="privacy">Privacy Policy</a> · <a href="terms">Terms of Service</a></nav>
+<h1>💎 Upload a phext for review</h1>
+<p>Upload a phext for review. If an editor accepts it, your phext joins the library
+and your account becomes an editor — you will be able to open and edit the phexts on
+this server, including your own.</p>
+<p>Your phext waits outside the library until an editor decides. Uploads are capped
+at 10 MiB.</p>
+
+<p id="who" class="dim">Checking your sign-in…</p>
+
+<div id="upload-box" style="display:none">
+<h2>Upload</h2>
+<form id="upload-form">
+<p><input type="file" id="file" accept=".phext"></p>
+<p><button type="submit">Upload for review</button></p>
+<p id="msg" class="dim"></p>
+</form>
+</div>
+
+<div id="lists"></div>
+
+<footer>Phext Edit · <a href="about">About</a> · <a href="privacy">Privacy Policy</a> · <a href="terms">Terms of Service</a> ·
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let session = null;
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
+function fmtSize(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1048576) return (n / 1024).toFixed(1) + " KiB";
+  return (n / 1048576).toFixed(1) + " MiB";
+}
+function fmtTime(s) { return s ? new Date(s * 1000).toLocaleString() : ""; }
+async function loadSession() {
+  try {
+    const r = await fetch("/api/session");
+    session = await r.json();
+  } catch (e) {
+    $("who").textContent = "Could not check your sign-in.";
+    return;
+  }
+  const el = $("who");
+  if (!session.signed_in) {
+    const links = (session.providers || [])
+      .map((p) => '<a href="/api/auth/' + p + '?next=/submit">Sign in with ' + esc(p) + "</a>")
+      .join(" · ");
+    el.innerHTML = links
+      ? "You are not signed in. " + links + " to upload a phext for review."
+      : "You are not signed in, and sign-in is not set up on this server.";
+    $("upload-box").style.display = "none";
+  } else {
+    el.innerHTML =
+      "Signed in as <b>" + esc(session.name || session.handle || session.who) + "</b> (" +
+      esc(session.who) + ")" + (session.editor ? " — editor" : "") +
+      '. <a href="#" id="logout">Sign out</a>';
+    $("logout").onclick = async (e) => {
+      e.preventDefault();
+      await fetch("/api/auth/logout", { method: "POST", headers: { "x-csrf-token": session.csrf } });
+      location.reload();
+    };
+    $("upload-box").style.display = "";
+  }
+  loadList();
+}
+function subLine(s) {
+  return (
+    "<b>" + esc(s.filename) + "</b> — " + esc(s.status) + ", " + s.scrolls + " scrolls, " +
+    fmtSize(s.bytes) + ", " + fmtTime(s.submitted_at) +
+    (s.curated_as ? " — curated as <code>" + esc(s.curated_as) + "</code>" : "") +
+    ' <a href="/api/submissions/' + s.id + '/download">Download</a>'
+  );
+}
+async function loadList() {
+  const box = $("lists");
+  if (!session || !session.signed_in) { box.innerHTML = ""; return; }
+  const r = await fetch("/api/submissions");
+  if (!r.ok) { box.innerHTML = '<p class="dim">Could not load submissions.</p>'; return; }
+  const subs = await r.json();
+  const mine = subs.filter((s) => s.who === session.who || (session.email && s.email === session.email));
+  let html = "<h2>Your submissions</h2>";
+  html += mine.length
+    ? "<ul>" + mine.map((s) => "<li>" + subLine(s) + "</li>").join("") + "</ul>"
+    : '<p class="dim">None yet.</p>';
+  if (session.editor) {
+    const pending = subs.filter((s) => s.status === "pending");
+    html += "<h2>Review queue</h2>";
+    html += pending.length
+      ? pending.map((s) =>
+          '<div class="sub">' + subLine(s) + "<br>" +
+          "from " + esc(s.name || s.who) + " (" + esc(s.email || s.who) + ") " +
+          '<button data-act="accept" data-id="' + s.id + '">Accept</button> ' +
+          '<button data-act="decline" data-id="' + s.id + '">Decline</button></div>'
+        ).join("")
+      : '<p class="dim">Nothing waiting.</p>';
+  }
+  box.innerHTML = html;
+  box.querySelectorAll("button[data-act]").forEach((b) => {
+    b.onclick = async () => {
+      b.disabled = true;
+      const r = await fetch("/api/submissions/" + b.dataset.id + "/" + b.dataset.act, {
+        method: "POST",
+        headers: { "x-csrf-token": session.csrf },
+      });
+      const v = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(v.error || "That did not work."); b.disabled = false; return; }
+      loadList();
+      loadSession();
+    };
+  });
+}
+$("upload-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const file = $("file").files[0];
+  const msg = $("msg");
+  if (!file) { msg.textContent = "Choose a .phext file first."; return; }
+  msg.textContent = "Uploading…";
+  const r = await fetch("/api/submissions", {
+    method: "POST",
+    headers: { "x-csrf-token": session.csrf, "x-filename": file.name },
+    body: file,
+  });
+  const v = await r.json().catch(() => ({}));
+  if (!r.ok) { msg.textContent = v.error || "Upload failed."; return; }
+  msg.textContent = "Received — " + v.filename + " is waiting for review.";
+  e.target.reset();
+  loadList();
+});
+loadSession();
+</script>
+</body>
+</html>
+"##);
+
 const ABOUT_HTML: &str = concat!(r#"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1271,6 +1811,9 @@ with those files from a browser:</p>
   <li><a href="tts-demo.html">Coordinate TTS demo</a>: hear phext coordinates spoken aloud.</li>
   <li><a href="learn-you-phext.html">Learn You Phext</a>: an introduction to phext that is
   itself a phext, scroll by scroll.</li>
+  <li><a href="submit">Upload a phext for review</a> (sign-in needed): offer a phext to
+  this server's library. If an editor accepts it, the phext joins the library and the
+  uploader becomes an editor too.</li>
 </ul>
 
 <h2>Why it asks you to sign in</h2>
@@ -1474,6 +2017,7 @@ const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>https://edit.phext.io/up-goer-five.html</loc></url>
   <url><loc>https://edit.phext.io/tts-demo.html</loc></url>
   <url><loc>https://edit.phext.io/learn-you-phext.html</loc></url>
+  <url><loc>https://edit.phext.io/submit</loc></url>
 </urlset>
 "#;
 
@@ -2486,6 +3030,25 @@ mod public_route_tests {
         assert_eq!(post.status, 405);
         assert!(!post.body.contains("unauthorized"));
         assert!(!post.head.to_ascii_lowercase().contains("access-control-allow-origin"));
+    }
+
+    #[test]
+    fn submit_page_is_public_and_submissions_need_sign_in() {
+        let gate = locked_gate();
+        let page = get(&gate, "/submit");
+        assert_eq!(page.status, 200);
+        assert!(page.content_type.contains("text/html"), "{}", page.content_type);
+        assert!(page.body.contains("Upload a phext for review"), "{}", page.body);
+        assert!(page.body.contains("your account becomes an editor"), "{}", page.body);
+
+        let post = http(
+            &gate,
+            "POST /api/submissions HTTP/1.1\r\nHost: edit.phext.io\r\nX-Filename: x.phext\r\nContent-Length: 5\r\n\r\nhello",
+        );
+        assert_eq!(post.status, 401);
+        assert!(post.content_type.contains("application/json"), "{}", post.content_type);
+        assert_eq!(get(&gate, "/api/submissions").status, 401);
+        assert_eq!(get(&gate, "/api/submissions/1-0/download").status, 401);
     }
 
     #[test]

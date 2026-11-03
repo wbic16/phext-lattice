@@ -10,6 +10,12 @@
 /// accounts get in; when it is empty, any signed-in account does.
 /// The `--token` bearer token keeps working alongside sign-in for scripts.
 ///
+/// The editor list can also grow without the operator: accounts admitted
+/// at runtime (an editor accepting a submission in phext-edit) are added
+/// live and appended to the editors file — `PHEXT_EDITORS_FILE` when set,
+/// otherwise a default the server wires in — so they survive restarts.
+/// `PHEXT_EDITORS` remains the bootstrap list.
+///
 /// `Gate` is the piece the HTTP servers use: `route()` answers the
 /// `/api/session` and `/api/auth/*` endpoints, `admit()` decides whether
 /// any other request may proceed.
@@ -423,15 +429,62 @@ impl Oauth {
 
 // ── Editors allowlist ──────────────────────────────────────────────────
 
+#[derive(Clone)]
 enum Editor {
     Who(String),
     Email(String),
 }
 
+impl Editor {
+    /// The line form used in the admitted-editors file: the account id
+    /// (`github:100`) or the email, exactly as `Editors::parse` reads it.
+    fn as_entry(&self) -> &str {
+        match self {
+            Editor::Who(id) => id,
+            Editor::Email(email) => email,
+        }
+    }
+}
+
 /// Accounts allowed to use the editor once signed in.
-#[derive(Default)]
+///
+/// The list starts from `PHEXT_EDITORS` (the operator's bootstrap list) and
+/// can grow at runtime: when an editor accepts a submission, the
+/// originator's account is admitted — appended here and, when a backing
+/// file is configured (see `Gate::load_editors_file`), to that file, so
+/// the admission takes effect immediately and survives restarts.
+/// Entries sit behind a lock because admission happens through `&Gate`
+/// while other requests are reading the list.
 pub struct Editors {
-    entries: Vec<Editor>,
+    entries: std::sync::RwLock<Vec<Editor>>,
+    file: std::sync::RwLock<Option<std::path::PathBuf>>,
+}
+
+impl Default for Editors {
+    fn default() -> Self {
+        Self { entries: std::sync::RwLock::new(Vec::new()), file: std::sync::RwLock::new(None) }
+    }
+}
+
+/// One list entry from one raw token, or None when the token is unusable.
+/// Shared by the comma-separated env form and the one-per-line file form.
+fn parse_entry(part: &str) -> Option<Editor> {
+    let part = part.trim();
+    if part.is_empty() || part.len() > 120 {
+        return None;
+    }
+    if part.contains('@') {
+        let email = clean_email(part);
+        if email.is_empty() {
+            None
+        } else {
+            Some(Editor::Email(email))
+        }
+    } else if valid_who(part) {
+        Some(Editor::Who(part.to_string()))
+    } else {
+        None
+    }
 }
 
 impl Editors {
@@ -440,35 +493,23 @@ impl Editors {
     }
 
     pub fn parse(raw: &str) -> Self {
-        let mut entries = Vec::new();
-        for part in raw.split(',') {
-            let part = part.trim();
-            if part.is_empty() || part.len() > 120 {
-                continue;
-            }
-            if part.contains('@') {
-                let email = clean_email(part);
-                if !email.is_empty() {
-                    entries.push(Editor::Email(email));
-                }
-            } else if valid_who(part) {
-                entries.push(Editor::Who(part.to_string()));
-            }
-        }
-        Self { entries }
+        let editors = Self::default();
+        *editors.entries.write().unwrap() =
+            raw.split(',').filter_map(parse_entry).collect();
+        editors
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.read().unwrap().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.read().unwrap().is_empty()
     }
 
     pub fn matches(&self, who: &str, email: &str) -> bool {
         let email = email.trim().to_lowercase();
-        self.entries.iter().any(|entry| match entry {
+        self.entries.read().unwrap().iter().any(|entry| match entry {
             Editor::Who(id) => id == who,
             Editor::Email(expected) => !email.is_empty() && expected == &email,
         })
@@ -477,6 +518,65 @@ impl Editors {
     /// An empty list admits every signed-in account.
     pub fn allows(&self, who: &str, email: &str) -> bool {
         self.is_empty() || self.matches(who, email)
+    }
+
+    /// Point the list at its backing file and load any entries already in
+    /// it (one per line; blank lines and `#` comments are ignored, and a
+    /// line may still carry several comma-separated entries). Entries the
+    /// list already has are not duplicated. Returns how many were loaded.
+    pub fn load_file(&self, path: &std::path::Path) -> usize {
+        *self.file.write().unwrap() = Some(path.to_path_buf());
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return 0;
+        };
+        let mut loaded = 0;
+        let mut entries = self.entries.write().unwrap();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            for part in line.split(',') {
+                if let Some(entry) = parse_entry(part) {
+                    if !entries.iter().any(|e| e.as_entry() == entry.as_entry()) {
+                        entries.push(entry);
+                        loaded += 1;
+                    }
+                }
+            }
+        }
+        loaded
+    }
+
+    /// Admit an account: add its account id (when valid) and its email
+    /// (when usable), unless each is already covered, and append the new
+    /// entries to the backing file when one is configured. Takes effect
+    /// immediately. Returns true when the account is an editor afterwards.
+    pub fn admit(&self, who: &str, email: &str) -> bool {
+        let mut fresh: Vec<Editor> = Vec::new();
+        if valid_who(who) && !self.matches(who, "") {
+            fresh.push(Editor::Who(who.to_string()));
+        }
+        let email = clean_email(email);
+        if !email.is_empty() && !self.matches("", &email) {
+            fresh.push(Editor::Email(email.clone()));
+        }
+        if !fresh.is_empty() {
+            self.entries.write().unwrap().extend(fresh.iter().cloned());
+            let path = self.file.read().unwrap().clone();
+            if let Some(path) = path {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Ok(mut out) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                    use std::io::Write;
+                    for entry in &fresh {
+                        let _ = writeln!(out, "{}", entry.as_entry());
+                    }
+                }
+            }
+        }
+        self.allows(who, &email)
     }
 }
 
@@ -679,7 +779,16 @@ impl Gate {
     }
 
     pub fn from_env(token: Option<String>) -> Self {
-        Self::new(token, Oauth::from_env(), Editors::from_env())
+        let gate = Self::new(token, Oauth::from_env(), Editors::from_env());
+        // Runtime admissions persist here when the operator names the file.
+        // Without it, phext-edit wires in a default next to its phexts.
+        if let Ok(path) = std::env::var("PHEXT_EDITORS_FILE") {
+            let path = path.trim();
+            if !path.is_empty() {
+                gate.load_editors_file(std::path::Path::new(path));
+            }
+        }
+        gate
     }
 
     /// Admit every direct request as a local developer.
@@ -706,6 +815,45 @@ impl Gate {
 
     pub fn editors(&self) -> &Editors {
         &self.editors
+    }
+
+    /// The signed-in session for a request, if any. In `--local` mode this
+    /// is the synthetic local developer (never for a forwarded request),
+    /// mirroring `session_view`; otherwise it is the cookie session.
+    pub fn session(&self, headers: &HashMap<String, String>) -> Option<Session> {
+        if self.is_local() {
+            if request_forwarded(headers) {
+                return None;
+            }
+            return Some(Session {
+                who: "local:developer".into(),
+                handle: "local".into(),
+                name: "Local developer".into(),
+                email: String::new(),
+                csrf: "local-dev".into(),
+            });
+        }
+        self.oauth.read_session(&cookies(headers))
+    }
+
+    /// Whether a session belongs to an approved editor.
+    pub fn is_editor(&self, session: &Session) -> bool {
+        self.editors.allows(&session.who, &session.email)
+    }
+
+    /// Admit an account as an editor, effective immediately and persisted
+    /// to the editors file when one is configured. Used when an editor
+    /// accepts a submission: the originator joins the editors.
+    pub fn admit_account(&self, who: &str, email: &str) -> bool {
+        self.editors.admit(who, email)
+    }
+
+    /// Load additional editor entries from a file (one per line) and make
+    /// it the backing file for future admissions. The phext-edit server
+    /// calls this with its default admitted-editors file when
+    /// `PHEXT_EDITORS_FILE` is not set.
+    pub fn load_editors_file(&self, path: &std::path::Path) {
+        self.editors.load_file(path);
     }
 
     /// Startup lines describing how the API is protected.
@@ -1443,6 +1591,37 @@ mod tests {
         assert!(editors.matches("github:100", ""));
         assert!(editors.matches("google:sub-1", "ada@example.com"));
         assert!(!editors.matches("github:101", ""));
+    }
+
+    #[test]
+    fn admit_account_is_live_and_persists_to_the_editors_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("nested").join("admitted-editors.txt");
+        let gate = gate(None, "github:1");
+        gate.load_editors_file(&file);
+        let cookie = format!("phext_session={}", Oauth::test_session_cookie());
+        // github:100 starts outside the list: the gate turns it away.
+        assert_eq!(gate.admit("GET", "/api/nav", &headers(&[("cookie", &cookie)])).unwrap_err().status, 403);
+
+        assert!(gate.admit_account("github:100", "Octo@Example.com"));
+        // Live immediately: the same session now passes the gate.
+        assert!(gate.admit("GET", "/api/nav", &headers(&[("cookie", &cookie)])).is_ok());
+        assert!(gate.editors().matches("", "octo@example.com"));
+        let view = gate.route("GET", "/api/session", &headers(&[("cookie", &cookie)])).unwrap();
+        assert!(String::from_utf8_lossy(&view.body).contains("\"editor\":true"));
+
+        // Persisted: one entry per line, and a fresh list loaded from the
+        // same file (the restart case) sees both entries.
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(text.lines().collect::<Vec<_>>(), ["github:100", "octo@example.com"]);
+        let reloaded = Editors::parse("github:1");
+        assert_eq!(reloaded.load_file(&file), 2);
+        assert!(reloaded.allows("github:100", ""));
+        assert!(reloaded.allows("google:sub-9", "octo@example.com"));
+
+        // Admitting again adds nothing and writes nothing new.
+        assert!(gate.admit_account("github:100", "octo@example.com"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
     }
 
     #[test]
