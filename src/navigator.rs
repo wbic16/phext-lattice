@@ -154,7 +154,7 @@ impl Navigator {
     pub fn dimension_neighbors(&self) -> (Option<usize>, usize, Option<usize>) {
         let current = self.position.dimension_value(self.active_dimension);
         let prev = if current > 1 { Some(current - 1) } else { None };
-        let next = if current < libphext::phext::COORDINATE_MAXIMUM { Some(current + 1) } else { None };
+        let next = Some(current + 1); // libphext 0.4.0: no coordinate maximum
         (prev, current, next)
     }
 

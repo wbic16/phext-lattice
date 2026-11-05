@@ -10,7 +10,10 @@
 /// migrate upstream to libphext-rs are marked with [UPSTREAM].
 
 use libphext::phext::{Coordinate, YCoordinate, XCoordinate};
-use libphext::phext::{COORDINATE_MINIMUM, COORDINATE_MAXIMUM};
+use libphext::phext::COORDINATE_MINIMUM;
+// libphext 0.4.0 removed COORDINATE_MAXIMUM: coordinates are uncapped
+// (no saturation). Forward navigation therefore always succeeds and
+// dimension values are only clamped at COORDINATE_MINIMUM.
 
 // Hash + Eq + Ord derived upstream in libphext-rs v0.3.x.
 
@@ -92,7 +95,7 @@ impl Dimension {
 /// --------------------------------------------------------------------------------------------------------
 pub trait CoordinateNav {
     /// Move forward in the given dimension, resetting lower dimensions.
-    /// Returns false if already at COORDINATE_MAXIMUM.
+    /// Always succeeds: libphext 0.4.0 coordinates have no maximum.
     fn navigate_forward(&mut self, dim: Dimension) -> bool;
 
     /// Move backward in the given dimension, resetting lower dimensions to 1.
@@ -113,10 +116,6 @@ pub trait CoordinateNav {
 
 impl CoordinateNav for Coordinate {
     fn navigate_forward(&mut self, dim: Dimension) -> bool {
-        let current = self.dimension_value(dim);
-        if current >= COORDINATE_MAXIMUM {
-            return false;
-        }
         // Use the built-in break methods which handle the reset semantics
         match dim {
             Dimension::Scroll     => self.scroll_break(),
@@ -195,7 +194,7 @@ impl CoordinateNav for Coordinate {
     }
 
     fn set_dimension(&mut self, dim: Dimension, value: usize) {
-        let clamped = value.clamp(COORDINATE_MINIMUM, COORDINATE_MAXIMUM);
+        let clamped = value.max(COORDINATE_MINIMUM);
         match dim {
             Dimension::Scroll     => self.x.scroll = clamped,
             Dimension::Section    => self.x.section = clamped,
