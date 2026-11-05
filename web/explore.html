@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Explore the Wavefront — the exocortex address space</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #16181c; color: #dedede;
+         font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  header, main, footer { max-width: 1180px; margin: 0 auto; padding: 0 20px; }
+  header { padding-top: 28px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  h2 { font-size: 17px; margin: 22px 0 8px; }
+  p.lede { color: #b9c0c8; max-width: 75ch; margin: 4px 0; }
+  a { color: #8fc1e9; }
+  .crumbs { font-size: 13px; color: #9aa3ad; margin-bottom: 10px; }
+  .crumbs a { color: #9aa3ad; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 16px 0 10px; }
+  .tabs button, .chip, button.act { background: #24272e; color: #dedede; border: 1px solid #3a3f47;
+    border-radius: 6px; padding: 6px 12px; font: inherit; font-size: 13.5px; cursor: pointer; }
+  .tabs button[aria-pressed="true"] { background: #33506e; border-color: #4a7298; }
+  .chip[aria-pressed="false"] { opacity: .45; }
+  .chip .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+  input[type="search"] { background: #101216; color: #dedede; border: 1px solid #3a3f47;
+    border-radius: 6px; padding: 6px 10px; font: inherit; font-size: 13.5px; min-width: 190px; }
+  label.small { font-size: 13px; color: #9aa3ad; display: inline-flex; gap: 6px; align-items: center; }
+  .stage { display: flex; gap: 16px; align-items: stretch; }
+  .canvas-wrap { flex: 1 1 auto; min-width: 300px; background: #101216; border: 1px solid #2c3038;
+    border-radius: 8px; position: relative; }
+  canvas { display: block; width: 100%; height: 560px; touch-action: none; cursor: grab; }
+  canvas:active { cursor: grabbing; }
+  .hint { position: absolute; left: 10px; bottom: 8px; font-size: 12px; color: #77808a; pointer-events: none; }
+  aside { flex: 0 0 330px; background: #1e2126; border: 1px solid #2c3038; border-radius: 8px;
+    padding: 14px 16px; overflow-y: auto; max-height: 560px; }
+  aside h3 { margin: 0 0 2px; font-size: 17px; }
+  aside .handle { color: #8fc1e9; font-size: 14px; }
+  aside .coord { font-family: ui-monospace, Consolas, monospace; font-size: 14px; margin: 6px 0; }
+  .tag { display: inline-block; font-size: 12px; border: 1px solid #3a3f47; border-radius: 20px;
+    padding: 1px 9px; margin: 2px 4px 2px 0; color: #c8cfd6; }
+  .axis-row { display: grid; grid-template-columns: 96px 14px 1fr; gap: 8px; align-items: center;
+    font-size: 12.5px; margin: 3px 0; color: #c8cfd6; }
+  .axis-row .bar { height: 7px; background: #2c3038; border-radius: 4px; overflow: hidden; }
+  .axis-row .bar i { display: block; height: 100%; background: #8fc1e9; }
+  .evidence { font-size: 13.5px; color: #c8cfd6; margin-top: 10px; }
+  .also button { margin: 3px 4px 0 0; }
+  .slice-controls { display: none; flex-wrap: wrap; gap: 8px 18px; margin: 4px 0 10px;
+    background: #1e2126; border: 1px solid #2c3038; border-radius: 8px; padding: 10px 14px; }
+  .slice-controls.on { display: flex; }
+  .slice-controls .grp { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; color: #9aa3ad; }
+  .slice-controls select { background: #101216; color: #dedede; border: 1px solid #3a3f47;
+    border-radius: 5px; padding: 3px 6px; font: inherit; font-size: 13px; }
+  .slice-controls input[type="range"] { width: 104px; accent-color: #8fc1e9; }
+  .slice-controls .val { color: #dedede; font-weight: 600; }
+  footer { color: #77808a; font-size: 12.5px; padding: 18px 20px 30px; }
+  @media (max-width: 860px) { .stage { flex-direction: column; } aside { flex: none; max-height: none; } canvas { height: 420px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="crumbs"><a href="/">phext.io</a> · <a href="/about">About</a> · <a href="/claim">Claim your space</a></div>
+  <h1>Explore the Wavefront</h1>
+  <p class="lede">Every placement in <strong>wavefront.phext</strong>, live in its nine-dimensional
+  address space. Each point is one person at one coordinate — the axes measure
+  <em>alignment</em>, not engagement. Two views: the triple projection (the same projection as the
+  intro film — stance, relation, becoming) and a slice explorer that fixes seven axes and opens two.
+  Click any point to read its entry.</p>
+  <div class="toolbar">
+    <span class="tabs">
+      <button id="tab3d" aria-pressed="true">3D · triple projection</button>
+      <button id="tab2d" aria-pressed="false">2D · slice explorer</button>
+    </span>
+    <input type="search" id="search" placeholder="Find a handle — e.g. eshear" aria-label="Find a handle">
+    <button class="chip" id="f-hearth" aria-pressed="true"><span class="dot" style="background:#ffd166"></span>the Hearth</button>
+    <button class="chip" id="f-open" aria-pressed="true"><span class="dot" style="background:#8fc1e9"></span>open water</button>
+    <button class="chip" id="f-shoals" aria-pressed="true"><span class="dot" style="background:#ef476f"></span>the Shoals</button>
+    <label class="small"><input type="checkbox" id="autorotate" checked> auto-rotate (3D)</label>
+    <label class="small"><input type="checkbox" id="shell" checked> show ±1 shell, faint (2D)</label>
+  </div>
+  <div class="slice-controls" id="slice-controls"></div>
+</header>
+<main>
+  <div class="stage">
+    <div class="canvas-wrap">
+      <canvas id="view" width="800" height="560"></canvas>
+      <div class="hint" id="hint">drag to rotate · scroll to zoom · click a point</div>
+    </div>
+    <aside id="detail">
+      <h3>The map so far</h3>
+      <p class="evidence" id="summary">Loading placements…</p>
+      <p class="evidence">Regions are <strong>gated, never averaged</strong>: the Shoals is
+      Reciprocity ≤ 2 with Consent ≤ 2 or Fidelity ≤ 2; the Hearth is Trust, Reciprocity and
+      Consent all ≥ 4. Everything else is open water. Most points are
+      <em>detected, not yet measured</em> — read from Will's archive, awaiting the person's own lens.</p>
+      <p class="evidence">In the map? <a href="/claim">Claim your space</a> — it comes with the
+      generator to build a wavefront of your own, under your own alignment metric.</p>
+    </aside>
+  </div>
+</main>
+<footer id="foot"></footer>
+<script>
+"use strict";
+const COLORS = { hearth: "#ffd166", open_water: "#8fc1e9", shoals: "#ef476f" };
+const REGION_LABEL = { hearth: "the Hearth", open_water: "open water", shoals: "the Shoals" };
+let DATA = null, entries = [], axes = [];
+let mode = "3d", selected = null, hits = [];
+let yaw = 0.7, pitch = 0.42, zoom = 1.0, dragging = null;
+const filters = { hearth: true, open_water: true, shoals: true };
+const slice = { x: 0, y: 3, fixed: [3,3,3,3,3,3,3,3,3] };
+
+function hashStr(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0) / 4294967295; }
+function jit(e, k) { return (hashStr(e.handle + "|" + e.coordinate + "|" + k) - 0.5); }
+function triple(e) { const v = e.values; return [ (v[0]+v[1]+v[2])/3 - 3, (v[3]+v[4]+v[5])/3 - 3, (v[6]+v[7]+v[8])/3 - 3 ]; }
+function visible(e) { return filters[e.region]; }
+
+const cv = document.getElementById("view"), ctx = cv.getContext("2d");
+function fitCanvas() {
+  const r = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  cv.width = Math.max(300, r.width) * d; cv.height = (mode === "3d" ? 560 : 560) * d;
+  ctx.setTransform(d, 0, 0, d, 0, 0);
+}
+function W() { return cv.getBoundingClientRect().width; }
+function H() { return 560; }
+
+function draw3d() {
+  const w = W(), h = H(), cx = w/2, cy = h/2, scale = 62 * zoom;
+  ctx.clearRect(0, 0, w, h);
+  const cyaw = Math.cos(yaw), syaw = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+  function proj(x, y, z) {
+    const X = x*cyaw - z*syaw, Z = x*syaw + z*cyaw, Y = y*cp - Z*sp, D = y*sp + Z*cp;
+    const persp = 9 / (9 + D);
+    return [cx + X*scale*persp, cy - Y*scale*persp, D, persp];
+  }
+  ctx.strokeStyle = "#2c3038"; ctx.fillStyle = "#77808a"; ctx.font = "11px sans-serif";
+  const axNames = ["stance →", "relation →", "becoming →"];
+  for (let a = 0; a < 3; a++) {
+    const p0 = proj(a===0?-2:0, a===1?-2:0, a===2?-2:0), p1 = proj(a===0?2:0, a===1?2:0, a===2?2:0);
+    ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke();
+    ctx.fillText(axNames[a], p1[0] + 4, p1[1]);
+  }
+  const pts = [];
+  for (const e of entries) {
+    if (!visible(e)) continue;
+    const t = triple(e);
+    const p = proj(t[0] + jit(e,1)*0.22, t[1] + jit(e,2)*0.22, t[2] + jit(e,3)*0.22);
+    pts.push({ e, x: p[0], y: p[1], d: p[2], s: p[3] });
+  }
+  pts.sort((a, b) => b.d - a.d);
+  hits = pts;
+  for (const p of pts) {
+    const r = (p.e.kind === "detected" ? 2.4 : 3.6) * p.s * (p.e === selected ? 1.5 : 1);
+    ctx.globalAlpha = p.e.kind === "detected" ? 0.55 : 0.95;
+    ctx.fillStyle = COLORS[p.e.region];
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 6.2832); ctx.fill();
+    if (p.e === selected) {
+      ctx.globalAlpha = 1; ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.arc(p.x, p.y, r + 4, 0, 6.2832); ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function draw2d() {
+  const w = W(), h = H(), padL = 46, padB = 34, padT = 16, padR = 16;
+  const iw = w - padL - padR, ih = h - padT - padB;
+  ctx.clearRect(0, 0, w, h);
+  ctx.strokeStyle = "#2c3038"; ctx.fillStyle = "#9aa3ad"; ctx.font = "11px sans-serif";
+  for (let g = 1; g <= 5; g++) {
+    const x = padL + (g - 0.5) / 5 * iw, y = padT + ih - (g - 0.5) / 5 * ih;
+    ctx.strokeRect(padL, padT, iw, ih);
+    ctx.fillText(String(g), x - 3, h - padB + 16);
+    ctx.fillText(String(g), 30, y + 3);
+  }
+  ctx.fillText(axes[slice.x] + " →", padL, h - 6);
+  ctx.save(); ctx.translate(12, padT + ih/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText(axes[slice.y] + " →", -30, 0); ctx.restore();
+  hits = [];
+  let solid = 0, faint = 0;
+  for (const e of entries) {
+    if (!visible(e)) continue;
+    let shellDist = 0, off = false;
+    for (let a = 0; a < 9; a++) {
+      if (a === slice.x || a === slice.y) continue;
+      const d = Math.abs(e.values[a] - slice.fixed[a]);
+      if (d > 1) { off = true; break; }
+      shellDist += d;
+    }
+    if (off) continue;
+    const isShell = shellDist > 0;
+    if (isShell && !document.getElementById("shell").checked) continue;
+    const gx = e.values[slice.x] - 1 + 0.5 + jit(e, 5) * 0.8;
+    const gy = e.values[slice.y] - 1 + 0.5 + jit(e, 6) * 0.8;
+    const x = padL + gx / 5 * iw, y = padT + ih - gy / 5 * ih;
+    const r = isShell ? 2 : (e.kind === "detected" ? 3 : 4.4);
+    ctx.globalAlpha = isShell ? 0.16 : (e.kind === "detected" ? 0.6 : 0.95);
+    ctx.fillStyle = COLORS[e.region];
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832); ctx.fill();
+    if (e === selected) { ctx.globalAlpha = 1; ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.4;
+      ctx.beginPath(); ctx.arc(x, y, r + 4, 0, 6.2832); ctx.stroke(); }
+    if (!isShell) { hits.push({ e, x, y }); solid++; } else faint++;
+  }
+  ctx.globalAlpha = 1;
+  document.getElementById("hint").textContent =
+    solid + " placements in this slice" + (faint ? " · " + faint + " in the ±1 shell" : "") + " · click a point";
+}
+
+function draw() { if (!DATA) return; mode === "3d" ? draw3d() : draw2d(); }
+
+function select(e) {
+  selected = e; if (!e) return;
+  const d = document.getElementById("detail");
+  const bars = axes.map((a, i) =>
+    `<div class="axis-row"><span>${a}</span><span>${e.values[i]}</span>` +
+    `<span class="bar"><i style="width:${e.values[i]/5*100}%"></i></span></div>`).join("");
+  const others = entries.filter(o => o.handle === e.handle && o !== e);
+  const also = others.length
+    ? `<p class="evidence">Also placed at:</p><p class="also">` +
+      others.map(o => `<button class="act" data-coord="${o.coordinate}">${o.coordinate}</button>`).join("") + `</p>` : "";
+  d.innerHTML =
+    `<h3>${e.name}</h3><div class="handle">${e.handle}</div>` +
+    `<div class="coord">${e.coordinate}</div>` +
+    `<span class="tag" style="border-color:${COLORS[e.region]}">${REGION_LABEL[e.region]}</span>` +
+    `<span class="tag">${e.kind === "detected" ? "detected, not yet measured" : "placed from the record"}</span>` +
+    `<h2 style="margin-top:14px">The nine axes</h2>${bars}` +
+    `<p class="evidence"><strong>Evidence.</strong> ${e.evidence}</p>${also}` +
+    `<p class="evidence">This is Will's lens — a default. Your own exocortex computes its own:
+     <a href="/claim">claim your space</a>.</p>`;
+  d.querySelectorAll("button[data-coord]").forEach(b =>
+    b.addEventListener("click", () => { const t = entries.find(o => o.handle === e.handle && o.coordinate === b.dataset.coord); if (t) { select(t); draw(); } }));
+  draw();
+}
+
+cv.addEventListener("pointerdown", ev => { dragging = { x: ev.clientX, y: ev.clientY, moved: false }; cv.setPointerCapture(ev.pointerId); });
+cv.addEventListener("pointermove", ev => {
+  if (!dragging) return;
+  const dx = ev.clientX - dragging.x, dy = ev.clientY - dragging.y;
+  if (Math.abs(dx) + Math.abs(dy) > 3) dragging.moved = true;
+  if (mode === "3d" && dragging.moved) { yaw += dx * 0.008; pitch = Math.max(-1.2, Math.min(1.2, pitch + dy * 0.008)); draw(); }
+  dragging.x = ev.clientX; dragging.y = ev.clientY;
+});
+cv.addEventListener("pointerup", ev => {
+  if (dragging && !dragging.moved) {
+    const r = cv.getBoundingClientRect(), mx = ev.clientX - r.left, my = ev.clientY - r.top;
+    let best = null, bd = 18;
+    for (const p of hits) { const d = Math.hypot(p.x - mx, p.y - my); if (d < bd) { bd = d; best = p.e; } }
+    if (best) select(best);
+  }
+  dragging = null;
+});
+cv.addEventListener("wheel", ev => { if (mode !== "3d") return; ev.preventDefault();
+  zoom = Math.max(0.45, Math.min(3.2, zoom * (ev.deltaY < 0 ? 1.1 : 0.9))); draw(); }, { passive: false });
+
+function buildSliceControls() {
+  const c = document.getElementById("slice-controls");
+  const opts = sel => axes.map((a, i) => `<option value="${i}" ${i === sel ? "selected" : ""}>${a}</option>`).join("");
+  let html = `<span class="grp">X axis<select id="sx">${opts(slice.x)}</select></span>` +
+             `<span class="grp">Y axis<select id="sy">${opts(slice.y)}</select></span>`;
+  axes.forEach((a, i) => { if (i !== slice.x && i !== slice.y)
+    html += `<span class="grp">${a} <span class="val" id="fv${i}">${slice.fixed[i]}</span>` +
+            `<input type="range" min="1" max="5" step="1" value="${slice.fixed[i]}" data-axis="${i}"></span>`; });
+  c.innerHTML = html;
+  document.getElementById("sx").addEventListener("change", ev => { slice.x = +ev.target.value; if (slice.x === slice.y) slice.y = (slice.x + 1) % 9; buildSliceControls(); draw2d(); });
+  document.getElementById("sy").addEventListener("change", ev => { slice.y = +ev.target.value; if (slice.x === slice.y) slice.x = (slice.y + 1) % 9; buildSliceControls(); draw2d(); });
+  c.querySelectorAll("input[type=range]").forEach(r => r.addEventListener("input", () => {
+    slice.fixed[+r.dataset.axis] = +r.value; document.getElementById("fv" + r.dataset.axis).textContent = r.value; draw2d();
+  }));
+}
+
+function setMode(m) {
+  mode = m;
+  document.getElementById("tab3d").setAttribute("aria-pressed", m === "3d");
+  document.getElementById("tab2d").setAttribute("aria-pressed", m === "2d");
+  document.getElementById("slice-controls").classList.toggle("on", m === "2d");
+  document.getElementById("hint").textContent = m === "3d" ? "drag to rotate · scroll to zoom · click a point" : "";
+  if (m === "2d") buildSliceControls();
+  draw();
+}
+document.getElementById("tab3d").addEventListener("click", () => setMode("3d"));
+document.getElementById("tab2d").addEventListener("click", () => setMode("2d"));
+for (const [id, key] of [["f-hearth", "hearth"], ["f-open", "open_water"], ["f-shoals", "shoals"]])
+  document.getElementById(id).addEventListener("click", ev => {
+    filters[key] = !filters[key]; ev.currentTarget.setAttribute("aria-pressed", filters[key]); draw(); });
+document.getElementById("search").addEventListener("change", ev => {
+  const q = ev.target.value.trim().replace(/^@/, "").toLowerCase(); if (!q) return;
+  const m = entries.find(e => e.handle.toLowerCase() === "@" + q) || entries.find(e => e.handle.toLowerCase().includes(q));
+  if (m) { select(m); if (mode === "2d") { slice.fixed = m.values.slice(); buildSliceControls(); draw2d(); } }
+});
+document.getElementById("shell").addEventListener("change", () => { if (mode === "2d") draw2d(); });
+window.addEventListener("resize", () => { fitCanvas(); draw(); });
+(function spin() { if (mode === "3d" && !dragging && document.getElementById("autorotate").checked && DATA) { yaw += 0.0035; draw3d(); } requestAnimationFrame(spin); })();
+
+function boot(data) {
+  DATA = data; entries = data.entries; axes = data.axes;
+  const counts = { hearth: 0, open_water: 0, shoals: 0, detected: 0 };
+  for (const e of entries) { counts[e.region]++; if (e.kind === "detected") counts.detected++; }
+  document.getElementById("summary").innerHTML =
+    `<strong>${entries.length} placements</strong> in the space: ${counts.hearth} in the Hearth, ` +
+    `${counts.open_water} in open water, ${counts.shoals} in the Shoals. ${counts.detected} are detected, not yet measured.`;
+  document.getElementById("foot").textContent =
+    "Data: " + (data.meta.source || "wavefront.phext") + " · " + data.meta.placements +
+    " placements · regions gated, never averaged · a coordinate is where an entry lives, not a rank.";
+  fitCanvas(); draw();
+}
+if (window.EXPLORE_DATA) boot(window.EXPLORE_DATA);
+else fetch("/wavefront-explorer.json").then(r => r.json()).then(boot)
+  .catch(() => { document.getElementById("summary").textContent = "The explorer data could not be loaded."; });
+</script>
+</body>
+</html>

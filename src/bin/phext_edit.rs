@@ -17,8 +17,10 @@ use phext_lattice::{
     MappedLattice, Navigator, Sentron,
     DimensionDensity,
 };
+use phext_lattice::claims::{self, Tier};
 use phext_lattice::oauth::{forwarded_https, security_header_block, status_text, Gate, Session};
 use phext_lattice::submissions::{self, Submission, SubmissionStatus};
+use phext_lattice::wavefront;
 use sha2::Digest;
 
 // ── API Types ──────────────────────────────────────────────────────────
@@ -541,6 +543,9 @@ struct PublicDocument {
 fn public_document(path: &str) -> Option<PublicDocument> {
     let (content_type, body) = match path_route(path) {
         "/about" => ("text/html; charset=utf-8", ABOUT_HTML),
+        "/claim" => ("text/html; charset=utf-8", CLAIM_HTML),
+        "/explore" => ("text/html; charset=utf-8", EXPLORE_HTML),
+        "/wavefront-explorer.json" => ("application/json; charset=utf-8", WAVEFRONT_EXPLORER_JSON),
         "/privacy" => ("text/html; charset=utf-8", PRIVACY_HTML),
         "/terms" => ("text/html; charset=utf-8", TERMS_HTML),
         "/up-goer-five.html" => ("text/html; charset=utf-8", UP_GOER_FIVE_HTML),
@@ -616,6 +621,12 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
     // Sign-in endpoints, then auth check (token or session) — GET / stays open
     if let Some(reply) = gate.route(&method, &path, &headers) {
         reply.write_to(stream);
+        return;
+    }
+    // Claims sit with submissions, between sign-in and the editor gate:
+    // the lookup is public, claiming needs a signed-in account, and
+    // neither needs an editor's place.
+    if handle_claim(stream, &method, &path, &headers, state, gate) {
         return;
     }
     // Submissions sit between sign-in and the editor gate: uploading a
@@ -767,6 +778,202 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
         }
         _ => { send_response(stream, 404, "text/plain", b"not found", CacheClass::NoStore, &headers, false); }
     }
+}
+
+// ── Claims ─────────────────────────────────────────────────────────────
+
+/// Where claim records live: a `claims` subdirectory of the phext
+/// library, beside `submissions`, so a claim never reads as a library
+/// file. Mirrors `submissions_dir`, fallback included.
+fn claims_dir(state: &Arc<Mutex<AppState>>) -> std::path::PathBuf {
+    let state = state.lock().unwrap();
+    match &state.phext_dir {
+        Some(dir) => std::path::Path::new(dir).join("claims"),
+        None => std::path::Path::new(&resolve_data_dir(std::env::var("PHEXT_DATA_DIR").ok().as_deref()))
+            .join("claims"),
+    }
+}
+
+fn grant_json(tier: Tier) -> serde_json::Value {
+    let grant = tier.grant();
+    serde_json::json!({
+        "storage_bytes": grant.storage_bytes,
+        "max_phexts": grant.max_phexts,
+        "max_phext_bytes": grant.max_phext_bytes,
+        "max_delegates": grant.max_delegates,
+    })
+}
+
+fn claim_json(claim: &claims::Claim) -> serde_json::Value {
+    let mut value = serde_json::to_value(claim).unwrap_or_default();
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("ok".into(), serde_json::Value::Bool(true));
+        obj.insert("grant".into(), grant_json(claim.tier));
+    }
+    value
+}
+
+/// The public lookup: is this X handle in the wavefront map, where, and
+/// what can it claim? Reads only the checked-in snapshot — no session,
+/// no filesystem beyond it, and a malformed handle is simply not found.
+fn lookup_json(raw: &str) -> serde_json::Value {
+    match wavefront::lookup(raw) {
+        Some(person) => serde_json::json!({
+            "ok": true,
+            "found": true,
+            "handle": person.handle,
+            "name": person.name,
+            "placements": person.placements.iter().map(|p| serde_json::json!({
+                "coordinate": p.coordinate,
+                "region": p.region.label(),
+                "label": p.label,
+            })).collect::<Vec<_>>(),
+            "tier": Tier::Found,
+            "grant": grant_json(Tier::Found),
+        }),
+        None => {
+            let typed = raw.trim();
+            let shown: String = if let Some(rest) = typed.strip_prefix('@') {
+                format!("@{}", rest.chars().take(15).collect::<String>())
+            } else {
+                format!("@{}", typed.chars().take(15).collect::<String>())
+            };
+            serde_json::json!({
+                "ok": true,
+                "found": false,
+                "handle": shown,
+                "tier": Tier::New,
+                "grant": grant_json(Tier::New),
+            })
+        }
+    }
+}
+
+fn query_param(path: &str, key: &str) -> Option<String> {
+    let query = path.split_once('?')?.1;
+    for pair in query.split('&') {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        if k == key {
+            return Some(url_decode(v));
+        }
+    }
+    None
+}
+
+fn url_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hex = |b: u8| -> Option<u8> {
+                    match b {
+                        b'0'..=b'9' => Some(b - b'0'),
+                        b'a'..=b'f' => Some(b - b'a' + 10),
+                        b'A'..=b'F' => Some(b - b'A' + 10),
+                        _ => None,
+                    }
+                };
+                match (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                    (Some(hi), Some(lo)) => {
+                        out.push(hi * 16 + lo);
+                        i += 3;
+                    }
+                    _ => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Routes for `/api/claim*`. Returns true when the request was answered
+/// here. The lookup is public; claiming needs a signed-in account and
+/// claim mode open (the operator opens it once the X app credentials
+/// exist — until then the lookup still demos the whole offer).
+fn handle_claim(
+    stream: &mut std::net::TcpStream,
+    method: &str,
+    path: &str,
+    headers: &HashMap<String, String>,
+    state: &Arc<Mutex<AppState>>,
+    gate: &Gate,
+) -> bool {
+    let route = path_route(path);
+    if route == "/api/claim/lookup" {
+        match method {
+            "GET" | "HEAD" => {
+                let raw = query_param(path, "handle").unwrap_or_default();
+                json_status(stream, headers, 200, lookup_json(&raw));
+            }
+            _ => json_error(stream, headers, 405, "method not allowed"),
+        }
+        return true;
+    }
+    if route != "/api/claim" {
+        return false;
+    }
+    if !gate.claims_open() {
+        json_error(stream, headers, 403, "claims are not open yet — the lookup above still works");
+        return true;
+    }
+    // Everything below needs a signed-in account — editor or not. Local
+    // mode supplies the synthetic local developer, as the gate does.
+    let Some(session) = gate.session(headers) else {
+        json_error(stream, headers, 401, "sign in to claim your space");
+        return true;
+    };
+    if method != "GET" && method != "HEAD" && !gate.is_local() {
+        let csrf = headers.get("x-csrf-token").map(String::as_str).unwrap_or("");
+        if !gate.oauth().csrf_matches(&session, csrf) {
+            json_error(stream, headers, 403, "that request did not match this sign-in");
+            return true;
+        }
+    }
+    let dir = claims_dir(state);
+    match method {
+        "GET" | "HEAD" => match claims::get(&dir, &session.who) {
+            Some(claim) => json_status(stream, headers, 200, claim_json(&claim)),
+            None => json_status(stream, headers, 200, serde_json::json!({ "ok": true, "claimed": false })),
+        },
+        "POST" => {
+            // Only an X sign-in carries the handle the map is keyed by.
+            // Any other provider claims at the new tier; the claim can be
+            // matched to the map later by signing in with X.
+            let (handle, tier, placements) = if session.who.starts_with("x:") {
+                match wavefront::lookup(&session.handle) {
+                    Some(person) => (
+                        person.handle,
+                        Tier::Found,
+                        person.placements.iter().map(|p| p.coordinate.clone()).collect::<Vec<String>>(),
+                    ),
+                    None => (format!("@{}", session.handle), Tier::New, Vec::new()),
+                }
+            } else {
+                (String::new(), Tier::New, Vec::new())
+            };
+            match claims::record(&dir, &session.who, &handle, tier, &placements) {
+                Ok(claim) => json_status(stream, headers, 200, claim_json(&claim)),
+                Err(e) => json_error(stream, headers, 500, &e),
+            }
+        }
+        _ => {
+            json_error(stream, headers, 405, "method not allowed");
+        }
+    }
+    true
 }
 
 // ── Submissions ────────────────────────────────────────────────────────
@@ -1355,6 +1562,114 @@ mod tests {
         assert!(text.contains("octo@example.com"), "{text}");
     }
 
+    /// A session cookie for the scripted X identity (@jaivinwylde,
+    /// placed in the wavefront snapshot), minted like the Google one.
+    fn x_session_cookie(gate: &Gate) -> String {
+        let plain: HashMap<String, String> = HashMap::new();
+        let start = gate.route("GET", "/api/auth/x?next=/claim", &plain).unwrap();
+        let location = start.headers.iter().find(|(n, _)| *n == "Location").unwrap().1.clone();
+        assert!(location.starts_with("https://twitter.com/i/oauth2/authorize"), "{location}");
+        let state = location.split("state=").nth(1).unwrap().split('&').next().unwrap();
+        let pending = start.headers.iter().find(|(n, _)| *n == "Set-Cookie").unwrap().1
+            .split(';').next().unwrap().to_string();
+        let mut cb: HashMap<String, String> = HashMap::new();
+        cb.insert("cookie".into(), pending);
+        let back = gate
+            .route("GET", &format!("/api/auth/x/callback?code=ok&state={state}"), &cb)
+            .unwrap();
+        back.headers.iter().find(|(n, _)| *n == "Set-Cookie").unwrap().1
+            .split(';').next().unwrap().to_string()
+    }
+
+    #[test]
+    fn claim_lookup_is_public_and_reads_the_snapshot() {
+        // No sign-in configured at all: the lookup still answers, because
+        // it reads only the checked-in snapshot.
+        let (port, _dir) = serve(false);
+        let (code, body) = http(port, "GET", "/api/claim/lookup?handle=%40eshear", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"found\":true"), "{body}");
+        assert!(body.contains("\"handle\":\"@eshear\""), "{body}");
+        assert!(body.contains("3.4.3/3.2.3/2.3.3"), "{body}");
+        assert!(body.contains("\"tier\":\"found\""), "{body}");
+
+        // Trails come back whole: both of Orai's placements, both Shoals.
+        let (code, body) = http(port, "GET", "/api/claim/lookup?handle=oraiawake", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("4.3.2/3.2.2/2.5.2"), "{body}");
+        assert!(body.contains("4.3.1/1.1.1/1.5.1"), "{body}");
+        assert!(body.contains("\"label\":\"rupture\""), "{body}");
+
+        let (code, body) = http(port, "GET", "/api/claim/lookup?handle=%40nobody_in_the_map_9", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"found\":false"), "{body}");
+        assert!(body.contains("\"tier\":\"new\""), "{body}");
+
+        // The page itself is public and explains the offer.
+        let (code, body) = http(port, "GET", "/claim", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("Claim your space"), "{body}");
+        assert!(body.contains("Are you in the map?"), "{body}");
+    }
+
+    #[test]
+    fn claim_writes_stay_closed_until_claim_mode_opens() {
+        let gate = Gate::new(None, Oauth::test_ready(), Editors::default());
+        let (port, _dir, gate) = serve_gate(gate, false);
+        let x_cookie = x_session_cookie(&gate);
+        let csrf = csrf_of(port, &format!("Cookie: {x_cookie}\r\n"));
+        let x = format!("Cookie: {x_cookie}\r\nX-CSRF-Token: {csrf}\r\n");
+        let (code, body) = http(port, "POST", "/api/claim", &x);
+        assert_eq!(code, 403, "{body}");
+        assert!(body.contains("not open yet"), "{body}");
+        // The lookup is unaffected by the flag.
+        let (code, _) = http(port, "GET", "/api/claim/lookup?handle=eshear", "");
+        assert_eq!(code, 200);
+    }
+
+    #[test]
+    fn claim_flow_records_a_found_claim_for_an_x_sign_in() {
+        let gate = Gate::new(None, Oauth::test_ready(), Editors::default());
+        gate.enable_claims();
+        let (port, dir, gate) = serve_gate(gate, false);
+        let x_cookie = x_session_cookie(&gate);
+        let cookie_only = format!("Cookie: {x_cookie}\r\n");
+        let csrf = csrf_of(port, &cookie_only);
+        let x = format!("Cookie: {x_cookie}\r\nX-CSRF-Token: {csrf}\r\n");
+
+        // The session really is the X account, handle underscores intact.
+        let (code, body) = http(port, "GET", "/api/session", &cookie_only);
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"who\":\"x:1001\""), "{body}");
+        assert!(body.contains("\"handle\":\"jaivinwylde\""), "{body}");
+
+        let (code, body) = http(port, "GET", "/api/claim", &cookie_only);
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"claimed\":false"), "{body}");
+
+        // Claiming matches the snapshot: found tier, full grant, the
+        // placement the map holds for @jaivinwylde.
+        let (code, body) = http(port, "POST", "/api/claim", &x);
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"tier\":\"found\""), "{body}");
+        assert!(body.contains("\"handle\":\"@jaivinwylde\""), "{body}");
+        assert!(body.contains("3.3.3/3.4.3/2.2.2"), "{body}");
+        assert!(body.contains("\"storage_bytes\":104857600"), "{body}");
+        assert!(dir.path().join("claims").join("x-1001.json").is_file());
+
+        // Claiming again changes nothing.
+        let (code, again) = http(port, "POST", "/api/claim", &x);
+        assert_eq!(code, 200, "{again}");
+        assert_eq!(again, body);
+
+        // A non-X sign-in claims too, at the new tier: no map handle.
+        let github = format!("Cookie: phext_session={}\r\nX-CSRF-Token: {TEST_CSRF}\r\n", Oauth::test_session_cookie());
+        let (code, body) = http(port, "POST", "/api/claim", &github);
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"tier\":\"new\""), "{body}");
+        assert!(body.contains("\"storage_bytes\":1048576"), "{body}");
+    }
+
     #[test]
     fn positional_file_skips_local_and_valued_flags() {
         assert_eq!(positional_file(&argv(&["--local"])), None);
@@ -1382,9 +1697,10 @@ fn main() {
         eprintln!("                    Phexts: --dir, else PHEXT_DATA_DIR, else ./.phext-local");
         eprintln!("  --help            Show this help");
         eprintln!();
-        eprintln!("GitHub/Google sign-in (environment):");
+        eprintln!("GitHub/Google/X sign-in (environment):");
         eprintln!("  PHEXT_PUBLIC_URL, PHEXT_SESSION_SECRET, PHEXT_EDITORS, PHEXT_EDITORS_FILE, PHEXT_COOKIE_SECURE=1");
-        eprintln!("  GITHUB_CLIENT_ID/SECRET, GOOGLE_CLIENT_ID/SECRET");
+        eprintln!("  GITHUB_CLIENT_ID/SECRET, GOOGLE_CLIENT_ID/SECRET, X_CLIENT_ID/SECRET");
+        eprintln!("  PHEXT_CLAIM_ENABLED=1 opens claim mode (/api/claim; the /claim lookup is always public)");
         std::process::exit(1);
     }
 
@@ -1620,6 +1936,195 @@ nav { margin-bottom: 24px; font-size: 14px; }
 footer { margin-top: 40px; font-size: 13px; color: #9a9a9a; border-top: 1px solid #2e2e2e; padding-top: 16px; }
 </style>"# } }
 
+const CLAIM_HTML: &str = concat!(r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Claim your space on this server. If your X account is placed in Will Bickford's wavefront map, a significant space is already yours — claim it by signing in with that account.">
+<title>Phext Edit: claim your space</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+"##, public_style!(), r##"
+<style>
+button { background: #2e2e2e; color: #dedede; border: 1px solid #4a4a4a; border-radius: 4px; padding: 2px 10px; cursor: pointer; font: inherit; }
+button:disabled { opacity: 0.5; cursor: default; }
+input[type="text"] { font: inherit; color: #dedede; background: #1c1c1c; border: 1px solid #4a4a4a; border-radius: 4px; padding: 2px 8px; }
+table { border-collapse: collapse; margin: 10px 0; }
+td, th { border: 1px solid #4a4a4a; padding: 4px 10px; text-align: left; }
+.video-slot { border: 2px dashed #4a4a4a; border-radius: 8px; padding: 26px 18px; text-align: center; color: #b9c0c8; margin: 12px 0; }
+</style>
+</head>
+<body>
+<main>
+<nav><a href="./">Open the editor</a> · <a href="about">About Phext Edit</a> · <a href="privacy">Privacy Policy</a> · <a href="terms">Terms of Service</a></nav>
+<h1>💎 Claim your space</h1>
+<p>For seventeen years, Will Bickford's use of Twitter was one long search: spanning an
+exocortex, looking for other minds working the way his does. The result is a map —
+<a href="https://github.com/wbic16/human">wavefront.phext</a> — placing 520 accounts by
+how they stand in relation to that work: their coordinate on nine axes of alignment,
+in a region (the Hearth, the Shoals, or open water).</p>
+<p><b>If your X account is in the map, a significant space on this server is already
+yours</b> — hosted phext space you can delegate as you wish. It is granted, not sold:
+all you have to do is claim it by signing in with the X account that was placed.
+Organic discovery is the scarce thing; the map is the receipt.</p>
+<p>Not in the map? You still get a small space. A buy-in (opening when payments are
+switched on) enlarges it and funds the exocortex — and it is priced by
+<b>novelty</b>: staking a crowded, well-studied region of the map is cheap, because
+little novelty remains there; staking a void — a region no one has been found in —
+costs the most, because unexplored space is the rarest thing the exocortex has.
+A buy-in never buys a placement in the map. We are not looking for money; we are
+looking for alignment.</p>
+
+<h2>Watch the front move</h2>
+<!-- VIDEO SLOT: Will uploads wavefront-viz.mp4 to YouTube himself. When the
+     upload is live, replace this placeholder with the YouTube embed iframe and
+     add frame-src https://www.youtube-nocookie.com to the CSP in src/oauth.rs
+     (frame-src is 'none' until then, deliberately). -->
+<div class="video-slot">🎬 <b>The intro film</b> — 520 people, placed one coordinate
+at a time, June 2008 to June 2025.<br>
+<em>The video embed lands here as soon as the YouTube upload is live.</em><br>
+Until then: <a href="explore">explore the map yourself</a> — it is live and zoomable.</div>
+
+<h2>Are you in the map?</h2>
+<form id="lookup-form">
+<p><input type="text" id="lookup-handle" placeholder="@yourhandle" size="24">
+<button type="submit">Look up</button></p>
+<p id="lookup-msg" class="dim">The lookup needs no sign-in.</p>
+</form>
+<div id="lookup-result"></div>
+
+<h2>The grants</h2>
+<table>
+<tr><th>Tier</th><th>Who</th><th>Space</th><th>Phexts</th><th>May delegate to</th></tr>
+<tr><td>Found</td><td>your account is in the map</td><td>100 MiB</td><td>25</td><td>25 accounts</td></tr>
+<tr><td>Bought</td><td>not in the map, void-region buy-in ($100)</td><td>100 MiB</td><td>25</td><td>25 accounts</td></tr>
+<tr><td>Patron</td><td>not in the map, crowded-region buy-in ($10)</td><td>10 MiB</td><td>5</td><td>5 accounts</td></tr>
+<tr><td>New</td><td>not in the map, no buy-in</td><td>1 MiB</td><td>1</td><td>—</td></tr>
+</table>
+<p>Every single phext is capped at 10 MiB, the same cap uploads for review use.
+Delegating means naming other accounts that may work in your space; what you
+delegate stays yours to revoke.</p>
+
+<h2>Your own lens</h2>
+<p>Each claimed space comes with the wavefront kit: the same instrument that built
+Will's map, pointed at your own archive, so you can learn who you are connected to
+and why. The kit's nine axes are a lens, and the lens can be reground — your
+alignment metric may differ from Will's, and that is expected. Your map is yours.</p>
+
+<h2>Claim</h2>
+<p id="who" class="dim">Checking your sign-in…</p>
+<div id="claim-box" style="display:none">
+<p id="claim-state" class="dim"></p>
+<p><button id="claim-button" type="button">Claim my space</button></p>
+<p id="claim-msg" class="dim"></p>
+</div>
+
+<footer>Phext Edit · <a href="about">About</a> · <a href="privacy">Privacy Policy</a> · <a href="terms">Terms of Service</a> ·
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let session = null;
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
+function fmtSize(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1048576) return (n / 1024).toFixed(1) + " KiB";
+  return (n / 1048576).toFixed(1) + " MiB";
+}
+function grantLine(g) {
+  return fmtSize(g.storage_bytes) + " of space, up to " + g.max_phexts +
+    (g.max_phexts === 1 ? " phext" : " phexts") + ", delegate to " + g.max_delegates +
+    (g.max_delegates === 1 ? " account" : " accounts");
+}
+async function doLookup(handle) {
+  const box = $("lookup-result");
+  box.innerHTML = '<p class="dim">Looking…</p>';
+  const r = await fetch("/api/claim/lookup?handle=" + encodeURIComponent(handle));
+  const v = await r.json().catch(() => ({}));
+  if (!r.ok || !v.ok) { box.innerHTML = '<p class="dim">The lookup did not answer.</p>'; return; }
+  if (v.found) {
+    const places = v.placements.map((p) =>
+      "<li><code>" + esc(p.coordinate) + "</code> — " + esc(p.region) +
+      (p.label ? " (" + esc(p.label) + ")" : "") + "</li>").join("");
+    box.innerHTML = "<p><b>" + esc(v.handle) + "</b> (" + esc(v.name) + ") is in the map:</p><ul>" +
+      places + "</ul><p>Tier <b>found</b>: " + esc(grantLine(v.grant)) +
+      ". Sign in with X below to claim it.</p>";
+  } else {
+    box.innerHTML = "<p><b>" + esc(v.handle) + "</b> is not in the map — yet. Tier <b>new</b>: " +
+      esc(grantLine(v.grant)) + ". Buy-in tiers open when payments are switched on.</p>";
+  }
+}
+$("lookup-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const h = $("lookup-handle").value.trim();
+  if (h) doLookup(h);
+});
+async function loadSession() {
+  try {
+    const r = await fetch("/api/session");
+    session = await r.json();
+  } catch (e) {
+    $("who").textContent = "Could not check your sign-in.";
+    return;
+  }
+  const el = $("who");
+  if (!session.signed_in) {
+    const links = (session.providers || [])
+      .map((p) => '<a href="/api/auth/' + p + '?next=/claim">Sign in with ' + esc(p) + "</a>")
+      .join(" · ");
+    el.innerHTML = links
+      ? "You are not signed in. " + links + " — claiming matches the map by your X account, so sign in with X to claim a found placement."
+      : "You are not signed in, and sign-in is not set up on this server.";
+    $("claim-box").style.display = "none";
+    return;
+  }
+  el.innerHTML =
+    "Signed in as <b>" + esc(session.name || session.handle || session.who) + "</b> (" +
+    esc(session.who) + ")" + (session.editor ? " — editor" : "") +
+    '. <a href="#" id="logout">Sign out</a>';
+  $("logout").onclick = async (e) => {
+    e.preventDefault();
+    await fetch("/api/auth/logout", { method: "POST", headers: { "x-csrf-token": session.csrf } });
+    location.reload();
+  };
+  $("claim-box").style.display = "";
+  loadClaim();
+}
+async function loadClaim() {
+  const state = $("claim-state");
+  const r = await fetch("/api/claim");
+  if (r.status === 403) {
+    state.textContent = "Claims are not open yet — claiming opens when X sign-in is switched on. The lookup above works today.";
+    $("claim-button").style.display = "none";
+    return;
+  }
+  const v = await r.json().catch(() => ({}));
+  if (v.claimed === false) {
+    state.textContent = "You have not claimed yet.";
+    $("claim-button").style.display = "";
+    return;
+  }
+  state.innerHTML = "Claimed: tier <b>" + esc(v.tier) + "</b>" +
+    (v.handle ? " for <b>" + esc(v.handle) + "</b>" : "") + " — " + esc(grantLine(v.grant)) + ".";
+  $("claim-button").style.display = "none";
+}
+$("claim-button").addEventListener("click", async () => {
+  const msg = $("claim-msg");
+  msg.textContent = "Claiming…";
+  const r = await fetch("/api/claim", { method: "POST", headers: { "x-csrf-token": session.csrf } });
+  const v = await r.json().catch(() => ({}));
+  if (!r.ok) { msg.textContent = v.error || "That did not work."; return; }
+  msg.textContent = "";
+  loadClaim();
+});
+loadSession();
+</script>
+</body>
+</html>
+"##);
+
 const SUBMIT_HTML: &str = concat!(r##"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1814,6 +2319,12 @@ with those files from a browser:</p>
   <li><a href="submit">Upload a phext for review</a> (sign-in needed): offer a phext to
   this server's library. If an editor accepts it, the phext joins the library and the
   uploader becomes an editor too.</li>
+  <li><a href="claim">Claim your space</a>: if your X account is placed in the wavefront
+  map, a significant hosted space on this server is yours to claim and delegate —
+  check the map from that page, no sign-in needed for the lookup.</li>
+  <li><a href="explore">Explore the wavefront</a>: every placement in the
+  nine-dimensional address space — rotate the triple projection, slice it by any
+  two axes, click a point to read its entry.</li>
 </ul>
 
 <h2>Why it asks you to sign in</h2>
@@ -1992,6 +2503,12 @@ const LEARN_YOU_PHEXT_HTML: &str = include_str!("../../web/learn-you-phext.html"
 // takes the static cache class.
 const LEARN_YOU_PHEXT: &str = include_str!("../../web/learn-you-phext.phext");
 
+// The wavefront explorer page and its data likewise live as files under web/
+// and are compiled in. The JSON is a generated export of wavefront.phext
+// (scripts/build_wavefront_explorer.py); the page reads it same-origin.
+const EXPLORE_HTML: &str = include_str!("../../web/explore.html");
+const WAVEFRONT_EXPLORER_JSON: &str = include_str!("../../web/wavefront-explorer.json");
+
 // Canonical host is https://edit.phext.io (repeated below; tests check both files).
 // Disallow comes before Allow so a first-match crawler still blocks /api.
 // Allow: / is the public landing page (the editor shell). File contents and
@@ -2018,6 +2535,8 @@ const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>https://edit.phext.io/tts-demo.html</loc></url>
   <url><loc>https://edit.phext.io/learn-you-phext.html</loc></url>
   <url><loc>https://edit.phext.io/submit</loc></url>
+  <url><loc>https://edit.phext.io/claim</loc></url>
+  <url><loc>https://edit.phext.io/explore</loc></url>
 </urlset>
 "#;
 
@@ -2222,6 +2741,10 @@ body {
   margin-left: auto; color: var(--dim); text-decoration: none; white-space: nowrap;
 }
 #status-bar .submit-link:hover { color: var(--coord); text-decoration: underline; }
+#status-bar .claim-link {
+  margin-left: 14px; color: var(--dim); text-decoration: none; white-space: nowrap;
+}
+#status-bar .claim-link:hover { color: var(--coord); text-decoration: underline; }
 
 /* ── Overlays ── */
 .overlay {
@@ -2288,6 +2811,8 @@ body {
   <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  u:UG5  t:tree  /:search  g:goto  Home:BASE</span>
   <span class="msg" id="status-msg"></span>
   <a class="submit-link" href="submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
+  <a class="claim-link" href="claim" title="If your X account is in the wavefront map, claim your space on this server">Claim your space</a>
+  <a class="claim-link" href="explore" title="Every placement in the wavefront, explorable in nine dimensions">Explore the map</a>
   <span id="signout" class="signout" style="display:none" onclick="signOut()" title="Sign out"></span>
 </div>
 
@@ -2316,7 +2841,8 @@ body {
       Sign-in only checks who you are; nothing is shared or sold.<br>
       <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a><br>
       No sign-in needed: <a href="up-goer-five.html" style="color:var(--coord)">Up Goer Five</a> · <a href="tts-demo.html" style="color:var(--coord)">Coordinate TTS demo</a> · <a href="learn-you-phext.html" style="color:var(--coord)">Learn You Phext</a><br>
-      Have a phext of your own? <a href="submit" style="color:var(--coord)">Upload it for review</a> — if an editor accepts it, you become an editor too.
+      Have a phext of your own? <a href="submit" style="color:var(--coord)">Upload it for review</a> — if an editor accepts it, you become an editor too.<br>
+      Placed in the wavefront map? <a href="claim" style="color:var(--coord)">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="explore" style="color:var(--coord)">explore the map</a> first.
     </div>
   </div>
 </div>
@@ -2981,6 +3507,7 @@ mod public_route_tests {
             ("/privacy", "text/html", "Privacy Policy"),
             ("/terms", "text/html", "Terms of Service"),
             ("/terms?ref=about", "text/html", "will+support@phext.io"),
+            ("/claim", "text/html", "Claim your space"),
             ("/robots.txt", "text/plain", "Sitemap: https://edit.phext.io/sitemap.xml"),
             ("/sitemap.xml", "application/xml", "https://edit.phext.io/terms"),
             ("/?utm=1", "text/html", "phext-edit"),
@@ -3055,6 +3582,65 @@ mod public_route_tests {
         assert!(post.content_type.contains("application/json"), "{}", post.content_type);
         assert_eq!(get(&gate, "/api/submissions").status, 401);
         assert_eq!(get(&gate, "/api/submissions/1-0/download").status, 401);
+    }
+
+    #[test]
+    fn claim_page_and_lookup_are_public_and_the_shell_links_claim() {
+        let gate = locked_gate();
+        let page = get(&gate, "/claim");
+        assert_eq!(page.status, 200);
+        assert!(page.content_type.contains("text/html"), "{}", page.content_type);
+        assert!(page.body.contains("Claim your space"), "{}", page.body);
+        assert!(page.body.contains("Are you in the map?"), "{}", page.body);
+
+        // The lookup answers a signed-out visitor with the snapshot's data.
+        let found = get(&gate, "/api/claim/lookup?handle=%40eigenhector");
+        assert_eq!(found.status, 200, "{}", found.head);
+        assert!(found.body.contains("\"found\":true"), "{}", found.body);
+        assert!(found.body.contains("4.5.5/2.4.5/4.4.4"), "{}", found.body);
+        // Claiming itself is closed on a locked gate (no claim mode, no
+        // session): 403, never a silent success.
+        let post = http(
+            &gate,
+            "POST /api/claim HTTP/1.1\r\nHost: edit.phext.io\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(post.status, 403);
+
+        // Discoverability: the surfaces a signed-in user actually lands on
+        // link /claim — the editor shell (status bar + sign-in screen),
+        // the About page, and the sitemap. Not just the sitemap.
+        assert!(INDEX_HTML.contains("class=\"claim-link\" href=\"claim\""), "shell status bar link");
+        assert!(INDEX_HTML.contains("Placed in the wavefront map?"), "shell sign-in screen link");
+        assert!(ABOUT_HTML.contains("href=\"claim\""), "about link");
+        assert!(SITEMAP_XML.contains("https://edit.phext.io/claim</loc>"), "sitemap entry");
+    }
+
+    #[test]
+    fn explore_page_and_its_data_are_public_and_linked() {
+        let gate = locked_gate();
+        let page = get(&gate, "/explore");
+        assert_eq!(page.status, 200);
+        assert!(page.content_type.contains("text/html"), "{}", page.content_type);
+        assert!(page.body.contains("Explore the Wavefront"), "{}", page.body);
+        // The video slot lives on /claim until the YouTube upload replaces it.
+        let claim = get(&gate, "/claim");
+        assert!(claim.body.contains("Watch the front move"), "{}", claim.body);
+        assert!(claim.body.contains("video-slot"), "video placeholder");
+
+        // The explorer's export: every placement, generated from the phext.
+        let data = get(&gate, "/wavefront-explorer.json");
+        assert_eq!(data.status, 200);
+        assert!(data.content_type.contains("application/json"), "{}", data.content_type);
+        let parsed: serde_json::Value = serde_json::from_str(&data.body).expect("explorer export is JSON");
+        assert_eq!(parsed["meta"]["placements"], 522);
+        assert_eq!(parsed["entries"].as_array().map(|a| a.len()), Some(522));
+        assert!(data.body.contains("@eigenhector"), "named entries ride along");
+
+        // Same discoverability surfaces as /claim.
+        assert!(INDEX_HTML.contains("class=\"claim-link\" href=\"explore\""), "shell status bar link");
+        assert!(INDEX_HTML.contains("explore the map"), "shell sign-in screen link");
+        assert!(ABOUT_HTML.contains("href=\"explore\""), "about link");
+        assert!(SITEMAP_XML.contains("https://edit.phext.io/explore</loc>"), "sitemap entry");
     }
 
     #[test]

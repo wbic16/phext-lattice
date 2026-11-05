@@ -21,9 +21,13 @@ pub mod mmap;
 pub mod modes;
 pub mod navigator;
 #[cfg(feature = "web")]
+pub mod claims;
+#[cfg(feature = "web")]
 pub mod oauth;
 #[cfg(feature = "web")]
 pub mod submissions;
+#[cfg(feature = "web")]
+pub mod wavefront;
 pub mod search;
 pub mod sentron;
 pub mod stats;

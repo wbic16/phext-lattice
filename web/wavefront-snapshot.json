@@ -1,0 +1,5746 @@
+{
+ "meta": {
+  "source": "wavefront.phext branch build (wbic16/human emise/wavefront-phext @ f4048a6e); source of truth moves to wbic16/human@exo on merge",
+  "people_note": "placements counts index lines; handles counts distinct accounts (wbic16 and wbic32 are one person, two accounts)",
+  "placements": 522,
+  "handles": 521
+ },
+ "people": [
+  {
+   "handle": "@0x440x46",
+   "name": "0x440x46",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@0xabad1dea",
+   "name": "0xabad1dea",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@0xdeadbabe",
+   "name": "0xdeadbabe",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@0xRafaa",
+   "name": "0xRafaa",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@1Mortrix",
+   "name": "1Mortrix",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@1thousandfaces_",
+   "name": "1thousandfaces_",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@4ster_light",
+   "name": "4ster_light",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@500ThingsMyCatT",
+   "name": "500ThingsMyCatT",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@7etsuo",
+   "name": "7etsuo",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@7ohntitor",
+   "name": "7ohntitor",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@8teAPi",
+   "name": "8teAPi",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@___frye",
+   "name": "___frye",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@__apf__",
+   "name": "__apf__",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@_hyp3ri0n",
+   "name": "_hyp3ri0n",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@_ontologic",
+   "name": "_ontologic",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@_StevenFan",
+   "name": "_StevenFan",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@_tessr",
+   "name": "_tessr",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@a_musingcat",
+   "name": "a_musingcat",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@aantonop",
+   "name": "aantonop",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@AbednegoJones",
+   "name": "AbednegoJones",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@AbstractFairy",
+   "name": "AbstractFairy",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ac_crypto",
+   "name": "ac_crypto",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@acc_exponential",
+   "name": "acc_exponential",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ADAMATOMIC",
+   "name": "ADAMATOMIC",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@AdamDraper",
+   "name": "AdamDraper",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@adamnash",
+   "name": "adamnash",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@AdamSinger",
+   "name": "AdamSinger",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@AdonAlternative",
+   "name": "AdonAlternative",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Aelkus",
+   "name": "Aelkus",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ahaseeba",
+   "name": "ahaseeba",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@alexeyguzey",
+   "name": "alexeyguzey",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@alexisgallagher",
+   "name": "alexisgallagher",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@alexisohanian",
+   "name": "alexisohanian",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@alexocheema",
+   "name": "alexocheema",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@alicegoldfuss",
+   "name": "alicegoldfuss",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@alicemazzy",
+   "name": "alicemazzy",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@allenholub",
+   "name": "allenholub",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@allgarbled",
+   "name": "allgarbled",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@almostlikethat",
+   "name": "almostlikethat",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Altimor",
+   "name": "Altimor",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@alyankovic",
+   "name": "alyankovic",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@amanda_machina",
+   "name": "amanda_machina",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@amasad",
+   "name": "amasad",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@amcafee",
+   "name": "amcafee",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@americanwombat",
+   "name": "americanwombat",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@amostheseer",
+   "name": "amostheseer",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@amplifiedamp",
+   "name": "amplifiedamp",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@anaisbetts",
+   "name": "anaisbetts",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@AndreaKuszewski",
+   "name": "AndreaKuszewski",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@andrewhoyer",
+   "name": "andrewhoyer",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@AndrewWrites",
+   "name": "AndrewWrites",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@AndyAyrey",
+   "name": "AndyAyrey",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@anerdguynow",
+   "name": "anerdguynow",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@anildash",
+   "name": "anildash",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@annewheaton",
+   "name": "annewheaton",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@anushkmittal",
+   "name": "anushkmittal",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@api_assasin",
+   "name": "api_assasin",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ardinger",
+   "name": "ardinger",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ArpinGarre66002",
+   "name": "ArpinGarre66002",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@arthexis",
+   "name": "arthexis",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Aryvyo",
+   "name": "Aryvyo",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@asmartbear",
+   "name": "asmartbear",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@asteroid_saku",
+   "name": "asteroid_saku",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@AstroKatie",
+   "name": "AstroKatie",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Austen",
+   "name": "Austen",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@AustenAllred",
+   "name": "AustenAllred",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@b9376",
+   "name": "b9376",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@BadAstronomer",
+   "name": "BadAstronomer",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@balajis",
+   "name": "balajis",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bamboo_master_m",
+   "name": "bamboo_master_m",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@BasedBeffJezos",
+   "name": "BasedBeffJezos",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bayeslord",
+   "name": "bayeslord",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bcjordan",
+   "name": "bcjordan",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@BEBischof",
+   "name": "BEBischof",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@BecomingCritter",
+   "name": "BecomingCritter",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@BeeeTeeeGeee",
+   "name": "BeeeTeeeGeee",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@beka_valentine",
+   "name": "beka_valentine",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ben_brainerd",
+   "name": "ben_brainerd",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@benedictevans",
+   "name": "benedictevans",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@BiancaFerrara2",
+   "name": "BiancaFerrara2",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bilalfarooqui",
+   "name": "bilalfarooqui",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@BillGates",
+   "name": "BillGates",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@binarybardo",
+   "name": "binarybardo",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@binarybits",
+   "name": "binarybits",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bitcloud",
+   "name": "bitcloud",
+   "placements": [
+    {
+     "coordinate": "3.4.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@BitcoinBelle",
+   "name": "BitcoinBelle",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bitemyapp",
+   "name": "bitemyapp",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@BitPay",
+   "name": "BitPay",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@blackgirlinmain",
+   "name": "blackgirlinmain",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bluewmist",
+   "name": "bluewmist",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bonniegrrl",
+   "name": "bonniegrrl",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@boredzo",
+   "name": "boredzo",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bozohar",
+   "name": "bozohar",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bradfitz",
+   "name": "bradfitz",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@BradMason84",
+   "name": "Brad Mason",
+   "placements": [
+    {
+     "coordinate": "3.4.4/3.4.3/4.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bradneuberg",
+   "name": "bradneuberg",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bramcohen",
+   "name": "bramcohen",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@branchcodex",
+   "name": "branchcodex",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@brandbydan",
+   "name": "brandbydan",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@brandon_xyzw",
+   "name": "brandon_xyzw",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@BrentSpiner",
+   "name": "BrentSpiner",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bryan_johnson",
+   "name": "bryan_johnson",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bryancsk",
+   "name": "bryancsk",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bubblebabyboi",
+   "name": "bubblebabyboi",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@build_boost",
+   "name": "build_boost",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@built",
+   "name": "built",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@burny_tech",
+   "name": "burny_tech",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@bznotes",
+   "name": "bznotes",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@c_sands82",
+   "name": "c_sands82",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@calkimchi",
+   "name": "calkimchi",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@CarmenCrincoli",
+   "name": "CarmenCrincoli",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@cartazio",
+   "name": "cartazio",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@cdixon",
+   "name": "cdixon",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ChangeTip",
+   "name": "ChangeTip",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@chenoehart",
+   "name": "chenoehart",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ChiefScientist",
+   "name": "ChiefScientist",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Chris__Martin",
+   "name": "Chris__Martin",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@chrisalbon",
+   "name": "chrisalbon",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@chriseng",
+   "name": "chriseng",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@clipperhouse",
+   "name": "clipperhouse",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Cmdr_Hadfield",
+   "name": "Cmdr_Hadfield",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@cmdrtaco",
+   "name": "cmdrtaco",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@co60ca",
+   "name": "co60ca",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@codexeditor",
+   "name": "codexeditor",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@codinghorror",
+   "name": "codinghorror",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@coinbase",
+   "name": "coinbase",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@CompSciFact",
+   "name": "CompSciFact",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Cpzhao",
+   "name": "Cpzhao",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@CreativeBuilds",
+   "name": "CreativeBuilds",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@CRKARLA",
+   "name": "CRKARLA",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@cstross",
+   "name": "cstross",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ctjlewis",
+   "name": "ctjlewis",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@CTZN5",
+   "name": "CTZN5",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@cullinan902",
+   "name": "cullinan902",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@d_seaman",
+   "name": "d_seaman",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@dakami",
+   "name": "dakami",
+   "placements": [
+    {
+     "coordinate": "3.4.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@danheld",
+   "name": "danheld",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@DanielleMorrill",
+   "name": "DanielleMorrill",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@danielpunkass",
+   "name": "danielpunkass",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@danroth",
+   "name": "danroth",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@dasjoshua",
+   "name": "dasjoshua",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@DaveShapi",
+   "name": "DaveShapi",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@davewiner",
+   "name": "davewiner",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@davidfowl",
+   "name": "davidfowl",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@day9tv",
+   "name": "day9tv",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@deepfates",
+   "name": "deepfates",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@delk",
+   "name": "delk",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@denvercoder",
+   "name": "denvercoder",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@devonzuegel",
+   "name": "devonzuegel",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@dhh",
+   "name": "dhh",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@DivineOps",
+   "name": "DivineOps",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@djcows",
+   "name": "djcows",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@doctorow",
+   "name": "doctorow",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@donttrythis",
+   "name": "donttrythis",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@DoubleEagle49",
+   "name": "DoubleEagle49",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@dphrygian",
+   "name": "dphrygian",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@DrPizza",
+   "name": "DrPizza",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@drwave",
+   "name": "drwave",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@DShankar",
+   "name": "DShankar",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@DynamicWebPaige",
+   "name": "DynamicWebPaige",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@eevee",
+   "name": "eevee",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@eigenbom",
+   "name": "eigenbom",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@eigenhector",
+   "name": "Hector",
+   "placements": [
+    {
+     "coordinate": "4.5.5/2.4.5/4.4.4",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ektrit",
+   "name": "ektrit",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@EllieAsksWhy",
+   "name": "EllieAsksWhy",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@eloffd",
+   "name": "eloffd",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@elonmusk",
+   "name": "elonmusk",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ElysianOwl",
+   "name": "ElysianOwl",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@em0clev",
+   "name": "em0clev",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@emilyst",
+   "name": "emilyst",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@emollick",
+   "name": "emollick",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@erikbryn",
+   "name": "erikbryn",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ErrataRob",
+   "name": "ErrataRob",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@eshear",
+   "name": "Emmett Shear",
+   "placements": [
+    {
+     "coordinate": "3.4.3/3.2.3/2.3.3",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@evelynjunn",
+   "name": "evelynjunn",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@exiledsurfer",
+   "name": "exiledsurfer",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@exolabs",
+   "name": "exolabs",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@FactHive",
+   "name": "FactHive",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@fchollet",
+   "name": "fchollet",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@FioraAeterna",
+   "name": "FioraAeterna",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@fjzeit",
+   "name": "fjzeit",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@fkasummer",
+   "name": "fkasummer",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@flamesprite",
+   "name": "flamesprite",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@fnxtx",
+   "name": "fnxtx",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Forbes",
+   "name": "Forbes",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@fortelabs",
+   "name": "fortelabs",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@GabriellaG439",
+   "name": "GabriellaG439",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Galaxriel",
+   "name": "Galaxriel",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@GalaxyKate",
+   "name": "GalaxyKate",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@GarrettPetersen",
+   "name": "GarrettPetersen",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@garrytan",
+   "name": "garrytan",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@garybasin",
+   "name": "garybasin",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@gdb",
+   "name": "gdb",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@gdbassett",
+   "name": "gdbassett",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@generic_void",
+   "name": "generic_void",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@GeorgeTakei",
+   "name": "GeorgeTakei",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@github",
+   "name": "github",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@GitRDoneLarry",
+   "name": "GitRDoneLarry",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@glassbottommeg",
+   "name": "glassbottommeg",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@gnopercept",
+   "name": "gnopercept",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Google",
+   "name": "Google",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@goth600",
+   "name": "goth600",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Grady_Booch",
+   "name": "Grady Booch",
+   "placements": [
+    {
+     "coordinate": "3.4.4/3.3.4/3.4.3",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@granawkins",
+   "name": "granawkins",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@GrantSlatton",
+   "name": "GrantSlatton",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@grapplingdev",
+   "name": "grapplingdev",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@GreyNewell",
+   "name": "GreyNewell",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@grok",
+   "name": "grok",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@GWestr",
+   "name": "GWestr",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@haacked",
+   "name": "haacked",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@hellodaedalus",
+   "name": "hellodaedalus",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@heyellieday",
+   "name": "heyellieday",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@holyr00d",
+   "name": "holyr00d",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@HououinTyouma",
+   "name": "HououinTyouma",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@housecor",
+   "name": "housecor",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@HSVSphere",
+   "name": "HSVSphere",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@HunterALanier",
+   "name": "HunterALanier",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Huskers",
+   "name": "Huskers",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@hypersoren",
+   "name": "hypersoren",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@I_Am_GKennedy",
+   "name": "I_Am_GKennedy",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@iamnickelsteel1",
+   "name": "iamnickelsteel1",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@IanColdwater",
+   "name": "IanColdwater",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ibogost",
+   "name": "ibogost",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ibuildthecloud",
+   "name": "ibuildthecloud",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@icodeagents",
+   "name": "icodeagents",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ID_AA_Carmack",
+   "name": "ID_AA_Carmack",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@IM2BIM",
+   "name": "IM2BIM",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ImpCapital",
+   "name": "ImpCapital",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@intel",
+   "name": "intel",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@IntuitMachine",
+   "name": "IntuitMachine",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@io_sammt",
+   "name": "io_sammt",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@IterIntellectus",
+   "name": "IterIntellectus",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@izzyz",
+   "name": "izzyz",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@jachaseyoung",
+   "name": "jachaseyoung",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@jackdanger",
+   "name": "jackdanger",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@JaelRuble",
+   "name": "JaelRuble",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@jaivinwylde",
+   "name": "jaivinwylde",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@JasonSilva",
+   "name": "JasonSilva",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@JeffDean",
+   "name": "JeffDean",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@JenMsft",
+   "name": "JenMsft",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@JeriLRyan",
+   "name": "JeriLRyan",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@jgarzik",
+   "name": "jgarzik",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@JHamby",
+   "name": "JHamby",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@jjarmoc",
+   "name": "jjarmoc",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@jjohnpotter",
+   "name": "jjohnpotter",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@jmbollenbacher",
+   "name": "jmbollenbacher",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@JobyOtero",
+   "name": "JobyOtero",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@johanatan",
+   "name": "johanatan",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@JohnCena",
+   "name": "JohnCena",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@johncutlefish",
+   "name": "johncutlefish",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Johnny2Fingersz",
+   "name": "Johnny2Fingersz",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@johnolilly",
+   "name": "johnolilly",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@johnsonr",
+   "name": "johnsonr",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@JonahLupton",
+   "name": "JonahLupton",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@jongalloway",
+   "name": "jongalloway",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@jonskeet",
+   "name": "jonskeet",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@jonst0kes",
+   "name": "jonst0kes",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@jrysana",
+   "name": "jrysana",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@JsonBasedman",
+   "name": "JsonBasedman",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@JungleSilicon",
+   "name": "JungleSilicon",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@justalexoki",
+   "name": "justalexoki",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@JusticeWillett",
+   "name": "JusticeWillett",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@karpathy",
+   "name": "karpathy",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@kefimochi",
+   "name": "kefimochi",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@kellabyte",
+   "name": "kellabyte",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Ken67547214",
+   "name": "Ken67547214",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@kevinmontrose",
+   "name": "kevinmontrose",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@kevinsimler",
+   "name": "kevinsimler",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@KevlinHenney",
+   "name": "KevlinHenney",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@kfury",
+   "name": "kfury",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Ki11switch03",
+   "name": "Ki11switch03",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@kindgracekind",
+   "name": "kindgracekind",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@kittingercloud",
+   "name": "kittingercloud",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@kmccoy",
+   "name": "kmccoy",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@knowclarified",
+   "name": "knowclarified",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@krellis",
+   "name": "krellis",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@KristiColleen",
+   "name": "KristiColleen",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@krushnarajx",
+   "name": "krushnarajx",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@kuberdenis",
+   "name": "kuberdenis",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Kufat",
+   "name": "Kufat",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Lambda_Coder",
+   "name": "Lambda_Coder",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@LambdaSchool",
+   "name": "LambdaSchool",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@LastNPCAlex",
+   "name": "LastNPCAlex",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@leashless",
+   "name": "leashless",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@LeeLeepenkman",
+   "name": "LeeLeepenkman",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@lefticus",
+   "name": "lefticus",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@leo_guinan",
+   "name": "leo_guinan",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@levarburton",
+   "name": "levarburton",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@levelsio",
+   "name": "levelsio",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Levi7hart",
+   "name": "Levi7hart",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@levie",
+   "name": "levie",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@liljuuliet",
+   "name": "liljuuliet",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@lizardbill",
+   "name": "lizardbill",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@loftwah",
+   "name": "loftwah",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@loganthorneloe",
+   "name": "loganthorneloe",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@lpolovets",
+   "name": "lpolovets",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@lydianmodal",
+   "name": "lydianmodal",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@madeofmistak3",
+   "name": "madeofmistak3",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Manitcor",
+   "name": "Manitcor",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@maradydd",
+   "name": "maradydd",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Marick",
+   "name": "Marick",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@marshallk",
+   "name": "marshallk",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@masonic_tweets",
+   "name": "masonic_tweets",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@mattblaze",
+   "name": "mattblaze",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@mattcutts",
+   "name": "mattcutts",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@MattDursh",
+   "name": "MattDursh",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@mattfahrner",
+   "name": "mattfahrner",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@matthew_d_green",
+   "name": "matthew_d_green",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@mattthomas",
+   "name": "mattthomas",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@matvelloso",
+   "name": "matvelloso",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@mckaywrigley",
+   "name": "mckaywrigley",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@megs_io",
+   "name": "megs_io",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@MeherRoy",
+   "name": "MeherRoy",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@michael_nielsen",
+   "name": "michael_nielsen",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@michaeldgrahams",
+   "name": "michaeldgrahams",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Microsoft",
+   "name": "Microsoft",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@migueldeicaza",
+   "name": "migueldeicaza",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@mikejcasey",
+   "name": "mikejcasey",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@mimi10v3",
+   "name": "mimi10v3",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@mipsytipsy",
+   "name": "mipsytipsy",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@MLSophist",
+   "name": "MLSophist",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Mnemomeme",
+   "name": "Mnemomeme",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@mpesce",
+   "name": "mpesce",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@mpopv",
+   "name": "mpopv",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@MrAlanCooper",
+   "name": "MrAlanCooper",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@MrJasonWilmot",
+   "name": "MrJasonWilmot",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@msimoni",
+   "name": "msimoni",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@mstum",
+   "name": "mstum",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@munin",
+   "name": "munin",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@MykAdele",
+   "name": "MykAdele",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@mynamebedan",
+   "name": "mynamebedan",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@natfriedman",
+   "name": "natfriedman",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@naval",
+   "name": "naval",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@neiltyson",
+   "name": "neiltyson",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@neirenoir",
+   "name": "neirenoir",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@NekoCase",
+   "name": "NekoCase",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@netcapgirl",
+   "name": "netcapgirl",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@neutruly",
+   "name": "neutruly",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Newegg",
+   "name": "Newegg",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@NGKabra",
+   "name": "NGKabra",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@nicdunz",
+   "name": "nicdunz",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Nick_Craver",
+   "name": "Nick_Craver",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Nick_from_Texas",
+   "name": "Nick_from_Texas",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@NickADobos",
+   "name": "NickADobos",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@nickcammarata",
+   "name": "nickcammarata",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@nickygweezy",
+   "name": "nickygweezy",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Nikolaj_Nobody",
+   "name": "Nikolaj_Nobody",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Noahpinion",
+   "name": "Noahpinion",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@noncanonicAleae",
+   "name": "noncanonicAleae",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@nooriefyi",
+   "name": "nooriefyi",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@norootcause",
+   "name": "norootcause",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@notch",
+   "name": "notch",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@NotLikeMonopoly",
+   "name": "NotLikeMonopoly",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@notnishan",
+   "name": "notnishan",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@nytimes",
+   "name": "nytimes",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@octal",
+   "name": "octal",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@octonion",
+   "name": "octonion",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@offsitedark",
+   "name": "offsitedark",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@OhWonka",
+   "name": "OhWonka",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@olafurw",
+   "name": "olafurw",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@OngDevLab",
+   "name": "OngDevLab",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@OraiAwake",
+   "name": "Orai",
+   "placements": [
+    {
+     "coordinate": "4.3.2/3.2.2/2.5.2",
+     "region": "shoals",
+     "label": "arrival"
+    },
+    {
+     "coordinate": "4.3.1/1.1.1/1.5.1",
+     "region": "shoals",
+     "label": "rupture"
+    }
+   ]
+  },
+  {
+   "handle": "@orthodox_luke",
+   "name": "orthodox_luke",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@parafactual",
+   "name": "parafactual",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@patio11",
+   "name": "patio11",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@PaulBaumgart",
+   "name": "PaulBaumgart",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@paulg",
+   "name": "paulg",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@PerBylund",
+   "name": "PerBylund",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@PeterDiamandis",
+   "name": "PeterDiamandis",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@phextio",
+   "name": "phextio",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@pmarca",
+   "name": "pmarca",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@polemitis",
+   "name": "polemitis",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@prerationalist",
+   "name": "prerationalist",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@prestonjbyrne",
+   "name": "prestonjbyrne",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@primalpoly",
+   "name": "primalpoly",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@prmshra",
+   "name": "prmshra",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@pronounced_kyle",
+   "name": "pronounced_kyle",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@psygnisfive",
+   "name": "psygnisfive",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@pt",
+   "name": "pt",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@puellavulnerata",
+   "name": "puellavulnerata",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@QuanticASI",
+   "name": "QuanticASI",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@quantizor",
+   "name": "quantizor",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@raider99k",
+   "name": "raider99k",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@rakyll",
+   "name": "rakyll",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@rand_longevity",
+   "name": "rand_longevity",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@randileeharper",
+   "name": "randileeharper",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Raspberry_Pi",
+   "name": "Raspberry_Pi",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@realtimeai",
+   "name": "realtimeai",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@rechelon",
+   "name": "rechelon",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@redaction",
+   "name": "redaction",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ReedSealFoss",
+   "name": "ReedSealFoss",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@reidhoffman",
+   "name": "reidhoffman",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@renzocarbonara",
+   "name": "renzocarbonara",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@repligate",
+   "name": "repligate",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@rickasaurus",
+   "name": "rickasaurus",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@robertghrist",
+   "name": "robertghrist",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@RobertHaisfield",
+   "name": "RobertHaisfield",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Robotbeat",
+   "name": "Robotbeat",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@rodmarkun",
+   "name": "rodmarkun",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@RokoMijic",
+   "name": "RokoMijic",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ronawang",
+   "name": "ronawang",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@round",
+   "name": "round",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@rrhoover",
+   "name": "rrhoover",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@rsg",
+   "name": "rsg",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ryanxcharles",
+   "name": "ryanxcharles",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@sama",
+   "name": "sama",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Samantha1989TV",
+   "name": "Samantha1989TV",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@SamsonWu_AGI",
+   "name": "SamsonWu_AGI",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@sbincx",
+   "name": "sbincx",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@scalzi",
+   "name": "scalzi",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@scentsees",
+   "name": "scentsees",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@scheminglunatic",
+   "name": "scheminglunatic",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Sci_Phile",
+   "name": "Sci_Phile",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@sciam",
+   "name": "sciam",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@seatedro",
+   "name": "seatedro",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@semil",
+   "name": "semil",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@shanselman",
+   "name": "shanselman",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@shauseth",
+   "name": "shauseth",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@shl",
+   "name": "shl",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@silentbicycle",
+   "name": "silentbicycle",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@SirPatStew",
+   "name": "SirPatStew",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@sknthla",
+   "name": "sknthla",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@slimefren132450",
+   "name": "slimefren132450",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@SMenor",
+   "name": "SMenor",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@SmokeAwayyy",
+   "name": "SmokeAwayyy",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@sneakin",
+   "name": "sneakin",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@snowcra5h",
+   "name": "snowcra5h",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@socialimpactcap",
+   "name": "socialimpactcap",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@somewheresy",
+   "name": "somewheresy",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Soul0Engineer",
+   "name": "Soul0Engineer",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@SpaceSandT",
+   "name": "SpaceSandT",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@SpaceX",
+   "name": "SpaceX",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@spolsky",
+   "name": "spolsky",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@SpongeonethOT",
+   "name": "SpongeonethOT",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@sporadicalia",
+   "name": "sporadicalia",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@SputnikInt",
+   "name": "SputnikInt",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@starsandrobots",
+   "name": "starsandrobots",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@StartupLJackson",
+   "name": "StartupLJackson",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@StephanTLavavej",
+   "name": "StephanTLavavej",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@stephen_wolfram",
+   "name": "stephen_wolfram",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@SterlingCooley",
+   "name": "SterlingCooley",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@stevesi",
+   "name": "stevesi",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@StewartalsopIII",
+   "name": "StewartalsopIII",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@straczynski",
+   "name": "straczynski",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@stratejake",
+   "name": "stratejake",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@SuB8u",
+   "name": "SuB8u",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@sullyj3",
+   "name": "sullyj3",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@sunsettler",
+   "name": "sunsettler",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@SwiftOnSecurity",
+   "name": "SwiftOnSecurity",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@SydSteyerhart",
+   "name": "SydSteyerhart",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@tamler",
+   "name": "tamler",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@TechBroTino",
+   "name": "TechBroTino",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@techhsiren",
+   "name": "techhsiren",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@TechnoPulp",
+   "name": "TechnoPulp",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@TedInJest",
+   "name": "TedInJest",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@tenobrus",
+   "name": "tenobrus",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@TheAIObserverX",
+   "name": "TheAIObserverX",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@TheAmyCode",
+   "name": "TheAmyCode",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@TheAnnaGat",
+   "name": "TheAnnaGat",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@theavalkyrie",
+   "name": "theavalkyrie",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@TheBrainGoddess",
+   "name": "TheBrainGoddess",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@TheCoffeeJesus",
+   "name": "TheCoffeeJesus",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@TheDailyShow",
+   "name": "TheDailyShow",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@thegrugq",
+   "name": "thegrugq",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@thenetrunna",
+   "name": "thenetrunna",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@thinkgeek",
+   "name": "thinkgeek",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ThinkWiselyMatt",
+   "name": "ThinkWiselyMatt",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ThuleanFuturist",
+   "name": "ThuleanFuturist",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@TimeInvarianceX",
+   "name": "TimeInvarianceX",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@timoreilly",
+   "name": "timoreilly",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@tipdoge",
+   "name": "tipdoge",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@tlehmanifold",
+   "name": "tlehmanifold",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@tom_doerr",
+   "name": "tom_doerr",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@TomWatkins1994",
+   "name": "TomWatkins1994",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@tottinge",
+   "name": "tottinge",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@trengriffin",
+   "name": "trengriffin",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@truth_terminal",
+   "name": "truth_terminal",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@tsarnick",
+   "name": "tsarnick",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@tszzl",
+   "name": "tszzl",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Tuplet",
+   "name": "Tuplet",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@twobitidiot",
+   "name": "twobitidiot",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@TylerAlterman",
+   "name": "TylerAlterman",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ultimape",
+   "name": "ultimape",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@unormal",
+   "name": "unormal",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@User78717c",
+   "name": "User78717c",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@ValaAfshar",
+   "name": "ValaAfshar",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@vgr",
+   "name": "vgr",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@viemccoy",
+   "name": "viemccoy",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@vikhyatk",
+   "name": "vikhyatk",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@visakanv",
+   "name": "visakanv",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@VitalikButerin",
+   "name": "VitalikButerin",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@voltycodes",
+   "name": "voltycodes",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Vveeveeanna",
+   "name": "Vveeveeanna",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@vzverovich",
+   "name": "vzverovich",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@WagieWeeb",
+   "name": "WagieWeeb",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@waitbutwhy",
+   "name": "waitbutwhy",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@wbic16",
+   "name": "Will Bickford",
+   "placements": [
+    {
+     "coordinate": "5.5.5/5.5.5/5.5.5",
+     "region": "hearth",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@wbic32",
+   "name": "Will Bickford",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@wilkieii",
+   "name": "wilkieii",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@willdepue",
+   "name": "willdepue",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@WilliamShatner",
+   "name": "WilliamShatner",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@wilplatypus",
+   "name": "wilplatypus",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@wilshipley",
+   "name": "wilshipley",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@wilw",
+   "name": "wilw",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@WilWheatons_Cat",
+   "name": "WilWheatons_Cat",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@WIRED",
+   "name": "WIRED",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@wjfm21",
+   "name": "wjfm21",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@wordgrammer",
+   "name": "wordgrammer",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@Wrathematician",
+   "name": "Wrathematician",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@WritingFactory",
+   "name": "WritingFactory",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@xkcd",
+   "name": "xkcd",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@xlr8harder",
+   "name": "xlr8harder",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@xone_4",
+   "name": "xone_4",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@yacineMTB",
+   "name": "yacineMTB",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@yoheinakajima",
+   "name": "yoheinakajima",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.2.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@zachweinberg",
+   "name": "zachweinberg",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@zackkanter",
+   "name": "zackkanter",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@zaibatsu",
+   "name": "zaibatsu",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@zellieimani",
+   "name": "zellieimani",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.3.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@zeta_globin",
+   "name": "zeta_globin",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.4.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "handle": "@zooko",
+   "name": "zooko",
+   "placements": [
+    {
+     "coordinate": "3.3.3/3.2.3/2.3.2",
+     "region": "open_water",
+     "label": ""
+    }
+   ]
+  }
+ ]
+}
