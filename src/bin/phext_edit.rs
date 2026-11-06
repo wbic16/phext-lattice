@@ -2377,6 +2377,9 @@ your email address with whether Google has verified it.</p>
 <p>When you sign in with <b>GitHub</b>, Phext Edit asks for the <code>read:user</code> scope.
 GitHub sends your account ID, username, display name, and your public email address if you
 have one.</p>
+<p>When you sign in with <b>X</b>, Phext Edit asks for the <code>tweet.read</code> and
+<code>users.read</code> scopes. X sends your account ID and your username. Phext Edit never
+posts for you, and it does not read your timeline.</p>
 <p>Phext Edit asks for nothing else. It cannot see your Gmail, Drive, contacts, calendar or
 repositories.</p>
 
@@ -2395,7 +2398,7 @@ with anyone.</p>
   <li><b>Sign-in cookie.</b> After you sign in, your account ID, username, name and verified
     email go into a signed, HttpOnly cookie in your own browser. It expires after 14 days, or
     when you sign out. The server keeps no account database.</li>
-  <li><b>Provider tokens.</b> The access token Google or GitHub returns is used once to read
+  <li><b>Provider tokens.</b> The access token Google, GitHub or X returns is used once to read
     your profile, then thrown away. It is never saved, and Phext Edit never acts on your account.</li>
   <li><b>Your edits.</b> Text you save is written into the phext files on the server. Those
     files belong to the server's owner and are not tied to your account.</li>
@@ -2414,8 +2417,9 @@ User Data Policy</a>, including the Limited Use requirements.</p>
 <ul>
   <li>Sign out at any time from the status bar. This deletes the sign-in cookie.</li>
   <li>Remove Phext Edit's access from your
-    <a href="https://myaccount.google.com/connections">Google account</a> or your
-    <a href="https://github.com/settings/applications">GitHub settings</a>.</li>
+    <a href="https://myaccount.google.com/connections">Google account</a>, your
+    <a href="https://github.com/settings/applications">GitHub settings</a> or your
+    <a href="https://x.com/settings/connected_apps">X settings</a>.</li>
   <li>Email questions or requests about your data to
     <a href="mailto:will+support@phext.io">will+support@phext.io</a>.</li>
 </ul>
@@ -2435,7 +2439,7 @@ const TERMS_HTML: &str = concat!(r#"<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Terms for Phext Edit: sign in with Google or GitHub, edit the phext files on this server, no ads.">
+<meta name="description" content="Terms for Phext Edit: sign in with Google, GitHub or X, edit the phext files on this server, no ads.">
 <title>Phext Edit: terms of service</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 "#, public_style!(), r#"
@@ -2457,9 +2461,9 @@ the phext files this server hosts, from a browser. It is part of the open-source
 
 <h2>Signing in</h2>
 <p>The files can be changed, so the editor asks you to sign in before you open them.
-You sign in with a Google account or a GitHub account. Sign-in is used to check who
+You sign in with a Google account, a GitHub account or an X account. Sign-in is used to check who
 you are, so the server can tell whether your account may use the editor. Phext Edit
-does not read your mail, files, contacts, or repositories, and it does not post
+does not read your mail, files, contacts, repositories or timeline, and it does not post
 anything for you.</p>
 
 <h2>Files you edit</h2>
@@ -3477,6 +3481,9 @@ mod public_route_tests {
         assert!(TERMS_HTML.contains("will+support@phext.io"));
         assert!(TERMS_HTML.contains("Google"));
         assert!(TERMS_HTML.contains("GitHub"));
+        assert!(TERMS_HTML.contains("X account"));
+        assert!(PRIVACY_HTML.contains("sign in with <b>X</b>"));
+        assert!(PRIVACY_HTML.contains("does not read your timeline"));
         assert!(TERMS_HTML.contains("does not show advertisements"));
         assert!(!TERMS_HTML.to_ascii_lowercase().contains("legal review"));
         assert!(NOT_FOUND_HTML.contains("href=\"/\""));
