@@ -3395,8 +3395,8 @@ async function initApp() {
 mod public_route_tests {
     use super::{
         handle_request, is_api_path, is_editor_shell, public_document, AppState, ABOUT_HTML,
-        INDEX_HTML, NOT_FOUND_HTML, PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE, SITEMAP_XML,
-        STATIC_CACHE, TERMS_HTML,
+        INDEX_HTML, LEARN_YOU_PHEXT_HTML, NOT_FOUND_HTML, PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE,
+        SITEMAP_XML, STATIC_CACHE, TERMS_HTML, TTS_DEMO_HTML, UP_GOER_FIVE_HTML,
     };
     use phext_lattice::oauth::{Editors, Gate, Oauth};
     use phext_lattice::MappedLattice;
@@ -3700,6 +3700,11 @@ mod public_route_tests {
         assert!(INDEX_HTML.contains("href=\"singular.html\""), "shell sign-in link");
         assert!(SITEMAP_XML.contains("https://edit.phext.io/singular.html</loc>"), "sitemap entry");
         assert!(!SITEMAP_XML.contains("singular-words"), "no word-list entries in the sitemap");
+
+        // Cross-links: the sibling utility pages link back to Singular.
+        assert!(UP_GOER_FIVE_HTML.contains("href=\"singular.html\""), "up goer five cross-link");
+        assert!(TTS_DEMO_HTML.contains("href=\"singular.html\""), "tts demo cross-link");
+        assert!(LEARN_YOU_PHEXT_HTML.contains("href=\"singular.html\""), "learn you phext cross-link");
     }
 
     #[test]
