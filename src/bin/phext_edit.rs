@@ -2332,13 +2332,15 @@ with those files from a browser:</p>
 
 <h2>Why it asks you to sign in</h2>
 <p>The files on this server can be changed, so only approved editors may open them. You can
-sign in with your Google or GitHub account. Sign-in is used for one thing: to check who you
+sign in with your Google, GitHub or X account. Sign-in is used for one thing: to check who you
 are, so the server can tell whether your account is on its list of editors.</p>
 <ul>
   <li><b>Google</b> sign-in asks for your basic profile and email address
     (<code>openid</code>, <code>email</code>, <code>profile</code>).</li>
   <li><b>GitHub</b> sign-in asks for read-only access to your public profile
     (<code>read:user</code>).</li>
+  <li><b>X</b> sign-in asks for read-only access to your account ID and username
+    (<code>tweet.read</code>, <code>users.read</code>).</li>
 </ul>
 <p>Phext Edit does not read your Gmail, Drive, contacts, calendar or repositories. It does
 not post anything for you, and it does not share or sell your information. The
@@ -3484,6 +3486,8 @@ mod public_route_tests {
         assert!(TERMS_HTML.contains("X account"));
         assert!(PRIVACY_HTML.contains("sign in with <b>X</b>"));
         assert!(PRIVACY_HTML.contains("does not read your timeline"));
+        assert!(ABOUT_HTML.contains("Google, GitHub or X account"));
+        assert!(ABOUT_HTML.contains("<b>X</b> sign-in"));
         assert!(TERMS_HTML.contains("does not show advertisements"));
         assert!(!TERMS_HTML.to_ascii_lowercase().contains("legal review"));
         assert!(NOT_FOUND_HTML.contains("href=\"/\""));
