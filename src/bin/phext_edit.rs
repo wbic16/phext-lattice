@@ -18,7 +18,8 @@ use phext_lattice::{
     DimensionDensity,
 };
 use phext_lattice::claims::{self, Tier};
-use phext_lattice::oauth::{forwarded_https, security_header_block, status_text, Gate, Session};
+use phext_lattice::joins;
+use phext_lattice::oauth::{forwarded_https, security_header_block, status_text, Gate, Reply, Session};
 use phext_lattice::submissions::{self, Submission, SubmissionStatus};
 use phext_lattice::wavefront;
 use sha2::Digest;
@@ -611,7 +612,7 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
         }
         return;
     }
-    if !is_editor_shell(&path) && !is_api_path(&path) && path_route(&path) != "/submit" {
+    if !is_editor_shell(&path) && !is_api_path(&path) && path_route(&path) != "/submit" && path_route(&path) != "/claim/dashboard" {
         match method.as_str() {
             "HEAD" => send_response(stream, 404, HTML, NOT_FOUND_HTML.as_bytes(), CacheClass::NoStore, &headers, true),
             _ => send_response(stream, 404, HTML, NOT_FOUND_HTML.as_bytes(), CacheClass::NoStore, &headers, false),
@@ -621,6 +622,32 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
 
     // Sign-in endpoints, then auth check (token or session) — GET / stays open
     if let Some(reply) = gate.route(&method, &path, &headers) {
+        // Two things happen here, where a sign-in completes. An X
+        // sign-in grants editor (Will's ruling, 2026-11-05): an X
+        // account that is not already an editor is admitted on the
+        // spot, through the same mechanism as an accepted submission.
+        // And a completed X sign-in whose handle the wavefront
+        // snapshot does not hold is a wavefront join: the account has
+        // arrived in the new era, so it is recorded.
+        // Bookkeeping never fails a sign-in, so errors are dropped —
+        // the same posture as Editors::admit dropping an editors-file
+        // append error.
+        if method == "GET" && (300..400).contains(&reply.status) {
+            let route = path_route(&path);
+            if route.starts_with("/api/auth/") && route.ends_with("/callback") {
+                if let Some(session) = reply_session(gate, &reply) {
+                    if session.who.starts_with("x:") {
+                        if !gate.is_editor(&session) {
+                            let _ = gate.admit_account(&session.who, &session.email);
+                        }
+                        if wavefront::lookup(&session.handle).is_none() {
+                            let dir = joins_dir(state);
+                            let _ = joins::record(&dir, &session.who, &format!("@{}", session.handle), "sign-in");
+                        }
+                    }
+                }
+            }
+        }
         reply.write_to(stream);
         return;
     }
@@ -628,6 +655,11 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
     // the lookup is public, claiming needs a signed-in account, and
     // neither needs an editor's place.
     if handle_claim(stream, &method, &path, &headers, state, gate) {
+        return;
+    }
+    // The claim dashboard sits with claims: its own gate (the owner, or
+    // an editor) answers inside the handler.
+    if handle_dashboard(stream, &method, &path, &headers, state, gate) {
         return;
     }
     // Submissions sit between sign-in and the editor gate: uploading a
@@ -793,6 +825,34 @@ fn claims_dir(state: &Arc<Mutex<AppState>>) -> std::path::PathBuf {
         None => std::path::Path::new(&resolve_data_dir(std::env::var("PHEXT_DATA_DIR").ok().as_deref()))
             .join("claims"),
     }
+}
+
+/// Where join records live: a `joins` subdirectory of the phext
+/// library, beside `claims`. Mirrors `claims_dir`, fallback included.
+fn joins_dir(state: &Arc<Mutex<AppState>>) -> std::path::PathBuf {
+    let state = state.lock().unwrap();
+    match &state.phext_dir {
+        Some(dir) => std::path::Path::new(dir).join("joins"),
+        None => std::path::Path::new(&resolve_data_dir(std::env::var("PHEXT_DATA_DIR").ok().as_deref()))
+            .join("joins"),
+    }
+}
+
+/// The session a sign-in reply just sealed, read back from the reply's
+/// own Set-Cookie header — the only place the new session exists before
+/// the browser sends it back. Used to record a wavefront join at the
+/// moment an X sign-in completes.
+fn reply_session(gate: &Gate, reply: &Reply) -> Option<Session> {
+    let cookie = reply
+        .headers
+        .iter()
+        .filter(|(name, _)| *name == "Set-Cookie")
+        .filter_map(|(_, value)| value.strip_prefix("phext_session="))
+        .find_map(|value| value.split(';').next())
+        .filter(|value| !value.is_empty())?;
+    let mut headers = HashMap::new();
+    headers.insert("cookie".to_string(), format!("phext_session={cookie}"));
+    gate.session(&headers)
 }
 
 fn grant_json(tier: Tier) -> serde_json::Value {
@@ -966,7 +1026,19 @@ fn handle_claim(
                 (String::new(), Tier::New, Vec::new())
             };
             match claims::record(&dir, &session.who, &handle, tier, &placements) {
-                Ok(claim) => json_status(stream, headers, 200, claim_json(&claim)),
+                Ok(claim) => {
+                    // A claim at the new tier is also a wavefront join:
+                    // the map had not placed this account, and it has
+                    // arrived in the new era. A found claim is not a
+                    // join — the map already held the account. Join
+                    // bookkeeping never fails a claim (record is
+                    // get-or-create, so re-claiming changes nothing).
+                    if claim.tier == Tier::New {
+                        let join_dir = joins_dir(state);
+                        let _ = joins::record(&join_dir, &claim.who, &claim.handle, "claim");
+                    }
+                    json_status(stream, headers, 200, claim_json(&claim));
+                }
                 Err(e) => json_error(stream, headers, 500, &e),
             }
         }
@@ -1671,6 +1743,172 @@ mod tests {
         assert!(body.contains("\"storage_bytes\":1048576"), "{body}");
     }
 
+    /// A session cookie for a scripted X identity chosen by code
+    /// ("ok-new": an account the snapshot does not hold; "ok-owner":
+    /// @wbic16 himself), minted like `x_session_cookie`.
+    fn x_session_cookie_for(gate: &Gate, code: &str) -> String {
+        let plain: HashMap<String, String> = HashMap::new();
+        let start = gate.route("GET", "/api/auth/x?next=/claim", &plain).unwrap();
+        let location = start.headers.iter().find(|(n, _)| *n == "Location").unwrap().1.clone();
+        let state = location.split("state=").nth(1).unwrap().split('&').next().unwrap();
+        let pending = start.headers.iter().find(|(n, _)| *n == "Set-Cookie").unwrap().1
+            .split(';').next().unwrap().to_string();
+        let mut cb: HashMap<String, String> = HashMap::new();
+        cb.insert("cookie".into(), pending);
+        let back = gate
+            .route("GET", &format!("/api/auth/x/callback?code={code}&state={state}"), &cb)
+            .unwrap();
+        back.headers.iter().find(|(n, _)| *n == "Set-Cookie").unwrap().1
+            .split(';').next().unwrap().to_string()
+    }
+
+    #[test]
+    fn claim_dashboard_is_gated_to_the_owner_and_editors() {
+        // Only google:sub-1 is an editor on this gate.
+        let gate = Gate::new(None, Oauth::test_ready(), Editors::parse("google:sub-1"));
+        let (port, _dir, gate) = serve_gate(gate, false);
+
+        // Signed out: the app's usual 401.
+        let (code, _) = http(port, "GET", "/claim/dashboard", "");
+        assert_eq!(code, 401);
+        // Signed in but neither owner nor editor: the editor list's 403.
+        let github = format!("Cookie: phext_session={}\r\n", Oauth::test_session_cookie());
+        let (code, body) = http(port, "GET", "/claim/dashboard", &github);
+        assert_eq!(code, 403, "{body}");
+        assert!(body.contains("not on the editor list"), "{body}");
+        // An editor sees it, with the whole snapshot still unclaimed.
+        let google_cookie = google_session_cookie(&gate);
+        let google = format!("Cookie: {google_cookie}\r\n");
+        let (code, body) = http(port, "GET", "/claim/dashboard", &google);
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("Claim dashboard"), "{body}");
+        assert!(body.contains("of the 521 handles in the wavefront"), "{body}");
+        assert!(body.contains("521 have not yet claimed"), "{body}");
+        // The owner sees it on his X identity alone: @wbic16 is not on
+        // this gate's editors list, and the dashboard still opens.
+        let owner_cookie = x_session_cookie_for(&gate, "ok-owner");
+        let owner = format!("Cookie: {owner_cookie}\r\n");
+        let (code, body) = http(port, "GET", "/claim/dashboard", &owner);
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("Claim dashboard"), "{body}");
+    }
+
+    #[test]
+    fn claim_dashboard_lists_claims_and_joins() {
+        let gate = Gate::new(None, Oauth::test_ready(), Editors::parse("google:sub-1"));
+        gate.enable_claims();
+        let (port, dir, gate) = serve_gate(gate, false);
+
+        // A wavefront handle claims (found tier): a claim, not a join.
+        let x_cookie = x_session_cookie(&gate);
+        let x_csrf = csrf_of(port, &format!("Cookie: {x_cookie}\r\n"));
+        let x = format!("Cookie: {x_cookie}\r\nX-CSRF-Token: {x_csrf}\r\n");
+        let (code, body) = http(port, "POST", "/api/claim", &x);
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"tier\":\"found\""), "{body}");
+        assert!(!dir.path().join("joins").join("x-1001.json").exists());
+
+        // A non-X claim lands at the new tier: also a join, via claim.
+        let github = format!("Cookie: phext_session={}\r\nX-CSRF-Token: {TEST_CSRF}\r\n", Oauth::test_session_cookie());
+        let (code, body) = http(port, "POST", "/api/claim", &github);
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"tier\":\"new\""), "{body}");
+        assert!(dir.path().join("joins").join("github-100.json").is_file());
+
+        // An X sign-in the snapshot does not hold joins at sign-in. The
+        // flow is driven over HTTP so the completion hook in
+        // handle_request is what records the join.
+        let (code, start) = http(port, "GET", "/api/auth/x?next=/claim", "");
+        assert_eq!(code, 302, "{start}");
+        let state = start.split("state=").nth(1).unwrap().split('&').next().unwrap().to_string();
+        let pending = start.split("phext_oauth=").nth(1).unwrap().split(';').next().unwrap().to_string();
+        let callback = format!("Cookie: phext_oauth={pending}\r\n");
+        let (code, _) = http(port, "GET", &format!("/api/auth/x/callback?code=ok-new&state={state}"), &callback);
+        assert_eq!(code, 302);
+        assert!(dir.path().join("joins").join("x-2002.json").is_file());
+
+        // The dashboard shows all of it: the claim under Claimed, both
+        // joins under Joined, and the unclaimed count down by one.
+        let google_cookie = google_session_cookie(&gate);
+        let google = format!("Cookie: {google_cookie}\r\n");
+        let (code, body) = http(port, "GET", "/claim/dashboard", &google);
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("@jaivinwylde"), "{body}");
+        assert!(body.contains("520 have not yet claimed"), "{body}");
+        assert!(body.contains("@newarrival_x"), "{body}");
+        assert!(body.contains("github:100"), "{body}");
+        assert!(body.contains("new-era join"), "{body}");
+    }
+
+    /// Drive a full sign-in over HTTP — start, then callback — and
+    /// return the session cookie it seals. Unlike the gate.route
+    /// helpers above, this passes through handle_request, so the
+    /// sign-in completion hook (promotion, joins) is what runs.
+    fn http_sign_in_cookie(port: u16, provider: &str, code: &str) -> String {
+        let (status, start) = http(port, "GET", &format!("/api/auth/{provider}?next=/claim"), "");
+        assert_eq!(status, 302, "{start}");
+        let state = start.split("state=").nth(1).unwrap().split('&').next().unwrap().to_string();
+        let pending = start.split("phext_oauth=").nth(1).unwrap().split(';').next().unwrap().to_string();
+        let callback = format!("Cookie: phext_oauth={pending}\r\n");
+        let (status, back) = http(port, "GET", &format!("/api/auth/{provider}/callback?code={code}&state={state}"), &callback);
+        assert_eq!(status, 302, "{back}");
+        let session = back.split("phext_session=").nth(1).unwrap().split(';').next().unwrap().to_string();
+        format!("phext_session={session}")
+    }
+
+    #[test]
+    fn x_sign_in_grants_editor_and_persists_google_does_not() {
+        // x:1001 (@jaivinwylde) is the only editor on this gate.
+        let gate = Gate::new(None, Oauth::test_ready(), Editors::parse("x:1001"));
+        let (port, dir, gate) = serve_gate(gate, false);
+        let editors_file = dir.path().join("admitted-editors.txt");
+        gate.load_editors_file(&editors_file);
+
+        // A Google sign-in is not promoted (the ruling names X only):
+        // the account signs in, stays off the list, and the editors
+        // file gains nothing.
+        let google_cookie = http_sign_in_cookie(port, "google", "ok");
+        let (code, body) = http(port, "GET", "/api/session", &format!("Cookie: {google_cookie}\r\n"));
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"editor\":false"), "{body}");
+        assert!(!editors_file.exists());
+
+        // An X sign-in is promoted on completion: editor access is
+        // live for the session the callback just sealed…
+        let x_cookie = http_sign_in_cookie(port, "x", "ok-new");
+        let (code, body) = http(port, "GET", "/api/session", &format!("Cookie: {x_cookie}\r\n"));
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"editor\":true"), "{body}");
+        // …and the admission is persisted to the editors file.
+        let text = std::fs::read_to_string(&editors_file).unwrap();
+        assert!(text.contains("x:2002"), "{text}");
+    }
+
+    #[test]
+    fn x_sign_in_already_editor_is_not_duplicated() {
+        let gate = Gate::new(None, Oauth::test_ready(), Editors::parse("x:1001"));
+        let (port, dir, gate) = serve_gate(gate, false);
+        let editors_file = dir.path().join("admitted-editors.txt");
+        // x:2002 is already an editor, carried by the backing file.
+        std::fs::write(&editors_file, "x:2002\n").unwrap();
+        gate.load_editors_file(&editors_file);
+
+        let x_cookie = http_sign_in_cookie(port, "x", "ok-new");
+        let (code, body) = http(port, "GET", "/api/session", &format!("Cookie: {x_cookie}\r\n"));
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"editor\":true"), "{body}");
+        // No second entry is appended for the account.
+        let text = std::fs::read_to_string(&editors_file).unwrap();
+        assert_eq!(text.matches("x:2002").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn dashboard_time_format_is_utc() {
+        assert_eq!(fmt_unix_utc(0), "1970-01-01 00:00 UTC");
+        assert_eq!(fmt_unix_utc(1_735_689_600), "2025-01-01 00:00 UTC");
+        assert_eq!(fmt_unix_utc(1_750_000_000), "2025-06-15 15:06 UTC");
+    }
+
     #[test]
     fn positional_file_skips_local_and_valued_flags() {
         assert_eq!(positional_file(&argv(&["--local"])), None);
@@ -1937,6 +2175,167 @@ nav { margin-bottom: 24px; font-size: 14px; }
 footer { margin-top: 40px; font-size: 13px; color: #9a9a9a; border-top: 1px solid #2e2e2e; padding-top: 16px; }
 </style>"# } }
 
+// ── Claim dashboard (the owner's page) ─────────────────────────────────
+
+/// Who may see the claim dashboard: the owner — the X account @wbic16 —
+/// and any editor, following how the app already recognizes editors.
+/// The owner's X identity is named explicitly because owning the map
+/// does not depend on sitting on the editors list.
+fn dashboard_owner(gate: &Gate, session: &Session) -> bool {
+    gate.is_editor(session)
+        || (session.who.starts_with("x:") && session.handle.eq_ignore_ascii_case("wbic16"))
+}
+
+fn html_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// "2025-06-15 15:06 UTC" from unix seconds, without a date library
+/// (civil-from-days, after Howard Hinnant's algorithm).
+fn fmt_unix_utc(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (hh, mm) = (rem / 3600, (rem % 3600) / 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    if month <= 2 {
+        year += 1;
+    }
+    format!("{year:04}-{month:02}-{day:02} {hh:02}:{mm:02} UTC")
+}
+
+fn tier_name(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Found => "found",
+        Tier::Bought => "bought",
+        Tier::Patron => "patron",
+        Tier::New => "new",
+    }
+}
+
+fn dashboard_html(claimed: &[&claims::Claim], total: usize, unclaimed: usize, joins: &[joins::Join]) -> String {
+    let mut out = String::new();
+    out.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n");
+    out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
+    out.push_str("<meta name=\"description\" content=\"The owner's view of claim mode: which wavefront handles have claimed their space, and which accounts have joined the wavefront since the snapshot.\">\n");
+    out.push_str("<title>Phext Edit: claim dashboard</title>\n");
+    out.push_str("<link rel=\"icon\" type=\"image/svg+xml\" href=\"/favicon.svg\">\n");
+    out.push_str(public_style!());
+    out.push_str("\n<style>\ntable { border-collapse: collapse; margin: 10px 0; }\ntd, th { border: 1px solid #4a4a4a; padding: 4px 10px; text-align: left; }\n</style>\n</head>\n<body>\n<main>\n");
+    out.push_str("<nav><a href=\"/\">Open the editor</a> · <a href=\"/claim\">Claim your space</a> · <a href=\"/explore\">Explore the map</a></nav>\n");
+    out.push_str("<h1>💎 Claim dashboard</h1>\n");
+    out.push_str("<p class=\"dim\">The owner's view: who has claimed their space from the wavefront, and who has joined it since. Visible only to @wbic16 and the editors.</p>\n");
+    out.push_str("<h2>Claimed</h2>\n");
+    out.push_str(&format!(
+        "<p>{} of the {} handles in the wavefront have claimed their space; {} have not yet claimed.</p>\n",
+        claimed.len(),
+        total,
+        unclaimed
+    ));
+    if claimed.is_empty() {
+        out.push_str("<p class=\"dim\">No wavefront handle has claimed yet.</p>\n");
+    } else {
+        out.push_str("<table>\n<tr><th>Handle</th><th>Account</th><th>Tier</th><th>Claimed</th></tr>\n");
+        for claim in claimed {
+            out.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+                html_escape(&claim.handle),
+                html_escape(&claim.who),
+                tier_name(claim.tier),
+                fmt_unix_utc(claim.claimed_at),
+            ));
+        }
+        out.push_str("</table>\n");
+    }
+    out.push_str("<h2>Joined the wavefront</h2>\n");
+    out.push_str("<p>The wavefront snapshot ends with the archive (June 2025); every join recorded here is a new-era join — an account the map had not placed, arriving in the AGI era.</p>\n");
+    if joins.is_empty() {
+        out.push_str("<p class=\"dim\">No new-era joins recorded yet.</p>\n");
+    } else {
+        out.push_str("<table>\n<tr><th>Handle</th><th>Account</th><th>Joined via</th><th>Joined</th></tr>\n");
+        for join in joins {
+            out.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+                html_escape(if join.handle.is_empty() { "—" } else { &join.handle }),
+                html_escape(&join.who),
+                html_escape(&join.via),
+                fmt_unix_utc(join.joined_at),
+            ));
+        }
+        out.push_str("</table>\n");
+    }
+    out.push_str("<footer>Phext Edit · <a href=\"/about\">About</a> · <a href=\"/privacy\">Privacy Policy</a> · <a href=\"/terms\">Terms of Service</a></footer>\n");
+    out.push_str("</main>\n</body>\n</html>\n");
+    out
+}
+
+/// Route for `/claim/dashboard`. Returns true when the request was
+/// answered here. The gate is the owner's — the X account @wbic16, or
+/// any editor — and everyone else gets the same answers the app gives
+/// for its other gated pages: 401 signed out, and the editor list's
+/// own 403 wording signed in.
+fn handle_dashboard(
+    stream: &mut std::net::TcpStream,
+    method: &str,
+    path: &str,
+    headers: &HashMap<String, String>,
+    state: &Arc<Mutex<AppState>>,
+    gate: &Gate,
+) -> bool {
+    if path_route(path) != "/claim/dashboard" {
+        return false;
+    }
+    if method != "GET" && method != "HEAD" {
+        json_error(stream, headers, 405, "method not allowed");
+        return true;
+    }
+    let Some(session) = gate.session(headers) else {
+        json_error(stream, headers, 401, "sign in to view the claim dashboard");
+        return true;
+    };
+    if !dashboard_owner(gate, &session) {
+        json_error(stream, headers, 403, "This account is not on the editor list.");
+        return true;
+    }
+    let claims = claims::list(&claims_dir(state));
+    let joins = joins::list(&joins_dir(state));
+    let total = wavefront::snapshot_handles();
+    // Claimed: the claims matched to a handle the snapshot holds. An X
+    // sign-in from the map claims under its snapshot handle; a claim
+    // with no handle — or a handle the map does not hold — is not a
+    // wavefront claim, whatever tier it carries.
+    let claimed: Vec<&claims::Claim> = claims
+        .iter()
+        .filter(|claim| !claim.handle.is_empty() && wavefront::lookup(&claim.handle).is_some())
+        .collect();
+    let claimed_handles: std::collections::HashSet<String> = claimed
+        .iter()
+        .filter_map(|claim| wavefront::normalize_handle(&claim.handle))
+        .collect();
+    let unclaimed = total - claimed_handles.len().min(total);
+    let html = dashboard_html(&claimed, total, unclaimed, &joins);
+    send_response(stream, 200, HTML, html.as_bytes(), CacheClass::NoStore, headers, method == "HEAD");
+    true
+}
+
 const CLAIM_HTML: &str = concat!(r##"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2019,6 +2418,7 @@ alignment metric may differ from Will's, and that is expected. Your map is yours
 <p><button id="claim-button" type="button">Claim my space</button></p>
 <p id="claim-msg" class="dim"></p>
 </div>
+<p id="dashboard-link" style="display:none">Owner and editors: the <a href="/claim/dashboard">claim dashboard</a> lists who has claimed their space, and who has joined the wavefront since the snapshot.</p>
 
 <footer>Phext Edit · <a href="about">About</a> · <a href="privacy">Privacy Policy</a> · <a href="terms">Terms of Service</a> ·
 Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
@@ -2091,6 +2491,8 @@ async function loadSession() {
     location.reload();
   };
   $("claim-box").style.display = "";
+  $("dashboard-link").style.display =
+    (session.editor || (session.who.startsWith("x:") && (session.handle || "").toLowerCase() === "wbic16")) ? "" : "none";
   loadClaim();
 }
 async function loadClaim() {
@@ -2340,7 +2742,8 @@ are, so the server can tell whether your account is on its list of editors.</p>
   <li><b>GitHub</b> sign-in asks for read-only access to your public profile
     (<code>read:user</code>).</li>
   <li><b>X</b> sign-in asks for read-only access to your account ID and username
-    (<code>tweet.read</code>, <code>users.read</code>).</li>
+    (<code>tweet.read</code>, <code>users.read</code>). Signing in with X adds your
+    account to the list of editors.</li>
 </ul>
 <p>Phext Edit does not read your Gmail, Drive, contacts, calendar or repositories. It does
 not post anything for you, and it does not share or sell your information. The
@@ -2833,6 +3236,7 @@ body {
   <a class="submit-link" href="submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
   <a class="claim-link" href="claim" title="If your X account is in the wavefront map, claim your space on this server">Claim your space</a>
   <a class="claim-link" href="explore" title="Every placement in the wavefront, explorable in nine dimensions">Explore the map</a>
+  <a class="claim-link" id="dashboard-link" href="claim/dashboard" style="display:none" title="Who has claimed their wavefront space, and who has joined since the snapshot — the owner and editors">Claim dashboard</a>
   <span id="signout" class="signout" style="display:none" onclick="signOut()" title="Sign out"></span>
 </div>
 
@@ -2861,7 +3265,7 @@ body {
       Sign-in only checks who you are; nothing is shared or sold.<br>
       <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a><br>
       No sign-in needed: <a href="up-goer-five.html" style="color:var(--coord)">Up Goer Five</a> · <a href="tts-demo.html" style="color:var(--coord)">Coordinate TTS demo</a> · <a href="learn-you-phext.html" style="color:var(--coord)">Learn You Phext</a> · <a href="singular.html" style="color:var(--coord)">Singular</a><br>
-      Have a phext of your own? <a href="submit" style="color:var(--coord)">Upload it for review</a> — if an editor accepts it, you become an editor too.<br>
+      Have a phext of your own? <a href="submit" style="color:var(--coord)">Upload it for review</a> — if an editor accepts it, you become an editor too. Signing in with X makes you an editor at once.<br>
       Placed in the wavefront map? <a href="claim" style="color:var(--coord)">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="explore" style="color:var(--coord)">explore the map</a> first.
     </div>
   </div>
@@ -3270,6 +3674,9 @@ async function loadSession() {
   } else {
     so.style.display = 'none';
   }
+  const dl = $('dashboard-link');
+  if (dl) dl.style.display = (session && session.signed_in &&
+    (session.editor || ((session.who || '').startsWith('x:') && (session.handle || '').toLowerCase() === 'wbic16'))) ? '' : 'none';
 }
 async function showAuthScreen(message, sessionFresh) {
   if (!sessionFresh) await loadSession();
@@ -3282,7 +3689,7 @@ async function showAuthScreen(message, sessionFresh) {
     html += `<button class="auth-btn" onclick="signOut()">Sign out</button>`;
   } else {
     const next = encodeURIComponent('/' + location.hash);
-    const label = { github: 'Sign in with GitHub', google: 'Sign in with Google' };
+    const label = { github: 'Sign in with GitHub', google: 'Sign in with Google', x: 'Sign in with X' };
     for (const p of (s.providers || []))
       html += `<a class="auth-btn" href="api/auth/${p}?next=${next}">${label[p] || p}</a>`;
   }

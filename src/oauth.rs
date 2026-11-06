@@ -110,17 +110,17 @@ impl IdentitySource for ScriptedSource {
         _client_id: &str,
         _client_secret: &str,
     ) -> Result<Identity, String> {
-        if code != "ok" {
+        if code != "ok" && code != "ok-new" && code != "ok-owner" {
             return Err("the provider did not complete sign-in.".into());
         }
         match provider {
-            "github" => Ok(Identity {
+            "github" if code == "ok" => Ok(Identity {
                 who: "github:100".into(),
                 handle: "octocat".into(),
                 name: "The Octocat".into(),
                 email: "octo@example.com".into(),
             }),
-            "google" => Ok(Identity {
+            "google" if code == "ok" => Ok(Identity {
                 who: "google:sub-1".into(),
                 handle: "ada".into(),
                 name: "Ada Example".into(),
@@ -129,10 +129,27 @@ impl IdentitySource for ScriptedSource {
             // The scripted X user's handle is placed in the wavefront
             // snapshot on purpose: claim tests exercise the found tier
             // end to end without a live X app.
-            "x" => Ok(Identity {
+            "x" if code == "ok" => Ok(Identity {
                 who: "x:1001".into(),
                 handle: "jaivinwylde".into(),
                 name: "Scripted X User".into(),
+                email: String::new(),
+            }),
+            // An X account the snapshot does not hold: join/dashboard
+            // tests exercise the new-era arrival without a live X app.
+            "x" if code == "ok-new" => Ok(Identity {
+                who: "x:2002".into(),
+                handle: "newarrival_x".into(),
+                name: "New Arrival".into(),
+                email: String::new(),
+            }),
+            // The owner himself: @wbic16 is placed in the snapshot
+            // (the Hearth), and the claim dashboard gates on his X
+            // identity as well as on the editors list.
+            "x" if code == "ok-owner" => Ok(Identity {
+                who: "x:88622".into(),
+                handle: "wbic16".into(),
+                name: "Will Bickford".into(),
                 email: String::new(),
             }),
             _ => Err("the provider did not complete sign-in.".into()),

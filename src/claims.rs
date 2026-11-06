@@ -149,6 +149,25 @@ pub fn record(
     Ok(claim)
 }
 
+/// Every recorded claim, oldest first. Unreadable files are skipped.
+pub fn list(dir: &Path) -> Vec<Claim> {
+    let mut claims = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "json").unwrap_or(false) {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    if let Ok(claim) = serde_json::from_str::<Claim>(&text) {
+                        claims.push(claim);
+                    }
+                }
+            }
+        }
+    }
+    claims.sort_by(|a, b| (a.claimed_at, &a.who).cmp(&(b.claimed_at, &b.who)));
+    claims
+}
+
 /// Move an existing claim to a new tier (a buy-in landing, or a map
 /// republication finding the account). Returns the updated claim.
 pub fn set_tier(dir: &Path, who: &str, tier: Tier, placements: &[String]) -> Result<Claim, String> {
@@ -203,6 +222,22 @@ mod tests {
         assert_eq!(raised.tier, Tier::Patron);
         assert_eq!(get(store, "github:7").unwrap().tier, Tier::Patron);
         assert!(set_tier(store, "github:404", Tier::Patron, &[]).is_err());
+    }
+
+    #[test]
+    fn list_returns_every_claim_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path();
+        assert!(list(store).is_empty());
+        record(store, "x:1001", "@jaivinwylde", Tier::Found, &[]).unwrap();
+        record(store, "github:7", "", Tier::New, &[]).unwrap();
+        let all = list(store);
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().any(|c| c.who == "x:1001" && c.tier == Tier::Found));
+        assert!(all.iter().any(|c| c.who == "github:7" && c.tier == Tier::New));
+        // A file that is not a claim does not break the listing.
+        std::fs::write(store.join("stray.json"), "not json").unwrap();
+        assert_eq!(list(store).len(), 2);
     }
 
     #[test]
