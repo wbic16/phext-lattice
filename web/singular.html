@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Singular · phext-edit</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<style>
+  :root {
+    --bg: #171717; --panel: #131313; --bar: #1c1c1c; --border: #2e2e2e;
+    --text: #dedede; --dim: #808080; --coord: #d4a855;
+    --z-color: #4dc9c9; --y-color: #c964c9; --x-color: #6bc96b;
+    --active: #e8c547; --danger: #e05555;
+    --trans-fast: 120ms ease; --trans-med: 200ms ease;
+    --bad: var(--danger); --badbg: rgba(224, 85, 85, .16);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+         font-size: 13px; line-height: 1.5; }
+  a { color: var(--z-color); }
+
+  /* Top bar mirrors the editor's #coord-bar (36px, --bar, gold label). */
+  #topbar { height: 36px; background: var(--bar); border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; padding: 0 16px; gap: 14px;
+            color: var(--coord); font-weight: bold; flex-shrink: 0; }
+  #topbar .brand { color: var(--coord); text-decoration: none; }
+  #topbar .brand:hover { color: var(--active); }
+  #topbar .page-name { color: var(--text); font-weight: normal; }
+  #topbar .back { margin-left: auto; font-weight: normal; font-size: 12px;
+                  color: var(--coord); text-decoration: none; cursor: pointer;
+                  padding: 4px 12px; border: 1px solid var(--coord); border-radius: 6px;
+                  background: #2a2312; white-space: nowrap;
+                  transition: background var(--trans-fast), color var(--trans-fast); }
+  #topbar .back:hover { background: var(--coord); color: #000; }
+
+  header.intro { padding: 16px 22px 2px; }
+  h1 { color: var(--coord); font-size: 20px; margin: 0 0 6px; }
+  header.intro p { margin: 2px 0; color: var(--dim); max-width: 75ch; }
+  .coord { color: var(--coord); }
+  main { padding: 12px 22px 22px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+          padding: 12px 14px; }
+  .card h2 { margin: 0 0 8px; font-size: 12px; font-weight: normal; color: var(--dim); }
+  .btn { font-family: inherit; font-size: 12px; color: var(--coord); cursor: pointer;
+         padding: 4px 12px; border: 1px solid var(--coord); border-radius: 6px;
+         background: #2a2312; white-space: nowrap; text-decoration: none;
+         transition: background var(--trans-fast), color var(--trans-fast); }
+  .btn:hover { background: var(--coord); color: #000; }
+  .btn.on { background: var(--coord); color: #000; }
+  .bar-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .bar-row .lbl { color: var(--dim); font-size: 12px; margin-right: 2px; }
+  .status { font-size: 12px; color: var(--dim); }
+  .status.clean { color: var(--x-color); }
+  .status.bad { color: #f09696; }
+  #load-error { display: none; border: 1px solid var(--danger); color: #f09696;
+                border-radius: 6px; padding: 6px 10px; font-size: 12px; margin-bottom: 10px; }
+
+  .panes { display: grid; grid-template-columns: minmax(340px, 1.4fr) minmax(280px, 1fr);
+           gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .panes { grid-template-columns: 1fr; } }
+
+  /* Highlight-layer editor (same trick as Up Goer Five): a transparent
+     backdrop under the textarea carries the marks, the textarea the text. */
+  .editorwrap { position: relative; border: 1px solid var(--border); border-radius: 4px;
+                overflow: hidden; background: var(--bg); }
+  .editorwrap textarea, .backdrop {
+    font: 13px/1.5 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    padding: 16px 20px; margin: 0; border: 0; width: 100%; height: 340px;
+    white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; }
+  .backdrop { position: absolute; inset: 0; color: transparent; pointer-events: none; overflow: hidden; }
+  .backdrop .bad { background: var(--badbg); color: transparent;
+                   border-bottom: 2px solid var(--bad); border-radius: 2px; }
+  .editorwrap textarea { position: relative; background: transparent; resize: vertical;
+                         outline: none; color: var(--text); caret-color: var(--coord); }
+
+  .outlist { max-height: 380px; overflow: auto; margin-top: 8px; border-top: 1px solid var(--border); }
+  .orow { display: flex; justify-content: space-between; gap: 8px; padding: 4px 6px;
+          border-bottom: 1px solid var(--border); font-size: 12px; }
+  .orow .n { color: var(--dim); }
+  .hint { color: var(--dim); font-size: 12px; }
+  footer { margin: 0 22px 22px; padding-top: 16px; border-top: 1px solid var(--border);
+           color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="topbar">
+  <a class="brand" href="/">&#128142; phext-edit</a>
+  <span class="page-name">Singular</span>
+  <a class="back" href="/up-goer-five.html">Up Goer Five</a>
+  <a class="back" href="/tts-demo.html">Coordinate TTS demo</a>
+  <a class="back" href="/learn-you-phext.html">Learn You Phext</a>
+  <a class="back" href="/">&larr; back to phext-edit</a>
+</div>
+<header class="intro">
+  <h1>Singular</h1>
+  <p><a href="/up-goer-five.html">Up Goer Five</a> holds you to the ten hundred words everyone
+     uses most. Singular holds you to the words in one person's Twitter archive &mdash;
+     Will Bickford's, 2008&ndash;2025.</p>
+  <p>The modes just choose which words count. <span class="coord">Read</span> flags against the
+     words from what he read &mdash; retweets and favorites (36,675 words).
+     <span class="coord">Write</span> flags against the words from what he wrote &mdash; his own
+     tweets (19,094 words). <span class="coord">Read/Write</span> flags against both lists
+     together (41,302 words). Type or paste below; every word outside the chosen list is marked,
+     live. Matching is strict &mdash; a changed form he never used is marked too &mdash; and
+     case does not matter.</p>
+</header>
+<main>
+  <div id="load-error"></div>
+  <div class="bar-row" role="tablist" aria-label="Mode">
+    <span class="lbl">Mode:</span>
+    <button class="btn mode-btn" data-mode="read">Read</button>
+    <button class="btn mode-btn" data-mode="write">Write</button>
+    <button class="btn mode-btn on" data-mode="readwrite">Read/Write</button>
+    <span class="status" id="list-status">loading the word lists&hellip;</span>
+  </div>
+  <div class="panes">
+    <section class="card">
+      <h2>Text &mdash; type, paste, or load a file; edit in place</h2>
+      <div class="editorwrap">
+        <div class="backdrop" id="backdrop" aria-hidden="true"></div>
+        <textarea id="editor" placeholder="Write here, or paste text to check. Words outside the chosen list are marked as you type."></textarea>
+      </div>
+      <div class="bar-row" style="margin-top:8px">
+        <label class="btn" for="file-input">Load a file</label>
+        <input type="file" id="file-input" accept=".txt,.md,text/plain" style="display:none">
+        <span class="status" id="status"></span>
+      </div>
+    </section>
+    <section class="card">
+      <h2>Words outside the list</h2>
+      <div class="status" id="summary"></div>
+      <div class="outlist" id="out-list"></div>
+    </section>
+  </div>
+</main>
+<footer>
+  Singular &middot; part of <a href="/">phext-edit</a> &mdash; an Up Goer Five variant whose
+  list is one person's archive. The lists themselves:
+  <a href="/singular-words-read.txt">read list</a> &middot;
+  <a href="/singular-words-authored.txt">write list</a> &middot;
+  <a href="/singular-words.txt">read/write list</a> &mdash; take them, they are plain text.
+</footer>
+<script>
+"use strict";
+// Singular: check text against one person's words. The modes pick which
+// list flags words: Read = words from what he read (retweets + favorites),
+// Write = words from what he wrote (his own tweets), Read/Write = both.
+// Tokenizing mirrors the reference checker (check_singular.py): words are
+// letter runs with internal apostrophes kept ("don't"), matched
+// case-insensitively against the lowercase list, strict — a form never
+// used is outside. (\p{L}/\p{M} is the JS spelling of the checker's
+// [^\W\d_] letter class.)
+const WORD_RE = /[\p{L}\p{M}]+(?:'[\p{L}\p{M}]+)?/gu;
+
+const LISTS = {
+  read:      { url: "singular-words-read.txt",     words: null },
+  write:     { url: "singular-words-authored.txt", words: null },
+  readwrite: { url: "singular-words.txt",          words: null },
+};
+let activeMode = "readwrite";
+
+const $ = id => document.getElementById(id);
+const editor = $("editor"), backdrop = $("backdrop");
+
+function esc(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Split text into gaps and word tokens, checking each token against the
+// active list. Returns null when that list is not loaded.
+function analyze(text) {
+  const set = LISTS[activeMode].words;
+  if (!set) return null;
+  const parts = [];           // {text, bad}
+  const counts = new Map();   // lowercased outside word -> count
+  let total = 0, outside = 0, last = 0;
+  for (const m of text.matchAll(WORD_RE)) {
+    if (m.index > last) parts.push({ text: text.slice(last, m.index), bad: false });
+    const word = m[0], lower = word.toLowerCase();
+    const bad = !set.has(lower);
+    parts.push({ text: word, bad });
+    total++;
+    if (bad) { outside++; counts.set(lower, (counts.get(lower) || 0) + 1); }
+    last = m.index + word.length;
+  }
+  if (last < text.length) parts.push({ text: text.slice(last), bad: false });
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  return { parts, total, outside, distinct: counts.size, sorted };
+}
+
+function summaryText(a) {
+  if (!a || !a.total) return "";
+  if (!a.outside) return "Clean: " + a.total + " words, every one in the list.";
+  return a.total + " words · " + a.outside + " outside the list (" + a.distinct + " distinct)";
+}
+
+function renderOutList(a) {
+  const el = $("out-list");
+  el.innerHTML = "";
+  if (!a || !a.sorted.length) {
+    el.innerHTML = '<div class="hint">' + (a && a.total ? "Nothing outside the list." : "No text yet.") + "</div>";
+    return;
+  }
+  for (const [word, n] of a.sorted) {
+    const row = document.createElement("div");
+    row.className = "orow";
+    const w = document.createElement("span"); w.textContent = word;
+    const c = document.createElement("span"); c.className = "n"; c.textContent = "×" + n;
+    row.append(w, c);
+    el.appendChild(row);
+  }
+}
+
+function render() {
+  const a = analyze(editor.value);
+  if (!a) {
+    backdrop.innerHTML = "";
+    $("status").textContent = "the chosen list is not loaded — see the note above";
+    $("summary").textContent = "";
+    renderOutList(null);
+    return;
+  }
+  backdrop.innerHTML = a.parts.map(p =>
+    p.bad ? '<span class="bad">' + esc(p.text) + "</span>" : esc(p.text)).join("") + "\n";
+  backdrop.scrollTop = editor.scrollTop;
+  backdrop.scrollLeft = editor.scrollLeft;
+  const st = $("status");
+  st.textContent = summaryText(a);
+  st.className = "status " + (a.outside ? "bad" : a.total ? "clean" : "");
+  $("summary").textContent = summaryText(a);
+  renderOutList(a);
+}
+
+editor.addEventListener("input", render);
+editor.addEventListener("scroll", () => {
+  backdrop.scrollTop = editor.scrollTop;
+  backdrop.scrollLeft = editor.scrollLeft;
+});
+
+$("file-input").addEventListener("change", e => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => { editor.value = String(reader.result || ""); render(); };
+  reader.readAsText(file);
+  e.target.value = "";
+});
+
+// Switching modes only swaps the active list and re-marks the same text.
+document.querySelectorAll(".mode-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".mode-btn").forEach(b => b.classList.toggle("on", b === btn));
+    activeMode = btn.dataset.mode;
+    render();
+  });
+});
+
+// Load all three lists; the page still stands if one fails, and says so.
+async function loadList(key) {
+  const entry = LISTS[key];
+  const res = await fetch(entry.url);
+  if (!res.ok) throw new Error(entry.url + " answered " + res.status);
+  const text = await res.text();
+  entry.words = new Set(text.split("\n").map(w => w.trim().toLowerCase()).filter(Boolean));
+  return entry.words.size;
+}
+(async () => {
+  const status = $("list-status");
+  const names = { read: "read", write: "write", readwrite: "read/write" };
+  const loaded = [], failed = [];
+  await Promise.all(Object.keys(LISTS).map(async key => {
+    try { loaded.push(names[key] + " " + (await loadList(key)).toLocaleString("en-US")); }
+    catch (err) { failed.push(err.message); }
+  }));
+  if (loaded.length) status.textContent = "lists loaded: " + loaded.join(" · ") + " words";
+  if (failed.length) {
+    const box = $("load-error");
+    box.style.display = "block";
+    box.textContent = "A word list failed to load (" + failed.join("; ") + "). " +
+      "Modes that need it cannot check text — try reloading the page.";
+    if (!loaded.length) status.textContent = "word lists not loaded";
+  }
+  render();
+})();
+</script>
+</body>
+</html>

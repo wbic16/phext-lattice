@@ -552,6 +552,10 @@ fn public_document(path: &str) -> Option<PublicDocument> {
         "/tts-demo.html" => ("text/html; charset=utf-8", TTS_DEMO_HTML),
         "/learn-you-phext.html" => ("text/html; charset=utf-8", LEARN_YOU_PHEXT_HTML),
         "/learn-you-phext.phext" => ("text/plain; charset=utf-8", LEARN_YOU_PHEXT),
+        "/singular.html" => ("text/html; charset=utf-8", SINGULAR_HTML),
+        "/singular-words-read.txt" => ("text/plain; charset=utf-8", SINGULAR_WORDS_READ),
+        "/singular-words.txt" => ("text/plain; charset=utf-8", SINGULAR_WORDS),
+        "/singular-words-authored.txt" => ("text/plain; charset=utf-8", SINGULAR_WORDS_AUTHORED),
         "/phext-tts.js" => ("text/javascript; charset=utf-8", PHEXT_TTS_JS),
         "/robots.txt" => ("text/plain; charset=utf-8", ROBOTS_TXT),
         "/sitemap.xml" => ("application/xml; charset=utf-8", SITEMAP_XML),
@@ -2316,6 +2320,8 @@ with those files from a browser:</p>
   <li><a href="tts-demo.html">Coordinate TTS demo</a>: hear phext coordinates spoken aloud.</li>
   <li><a href="learn-you-phext.html">Learn You Phext</a>: an introduction to phext that is
   itself a phext, scroll by scroll.</li>
+  <li><a href="singular.html">Singular</a>: an Up Goer Five variant whose word list is one
+  person's Twitter archive — read, write, and read/write with only those words.</li>
   <li><a href="submit">Upload a phext for review</a> (sign-in needed): offer a phext to
   this server's library. If an editor accepts it, the phext joins the library and the
   uploader becomes an editor too.</li>
@@ -2503,6 +2509,20 @@ const LEARN_YOU_PHEXT_HTML: &str = include_str!("../../web/learn-you-phext.html"
 // takes the static cache class.
 const LEARN_YOU_PHEXT: &str = include_str!("../../web/learn-you-phext.phext");
 
+// The Singular page likewise lives as a file under web/ and is compiled in:
+// an Up Goer Five variant whose word list is one person's Twitter archive.
+// Its modes pick which list flags the text: Read (what he read), Write
+// (what he wrote), Read/Write (both together).
+const SINGULAR_HTML: &str = include_str!("../../web/singular.html");
+
+// Singular's three word lists likewise live as files under web/ and are
+// compiled in, served raw so the page can fetch them same-origin — and so
+// anyone can take the lists themselves. They are not HTML, so they take
+// the static cache class.
+const SINGULAR_WORDS_READ: &str = include_str!("../../web/singular-words-read.txt");
+const SINGULAR_WORDS: &str = include_str!("../../web/singular-words.txt");
+const SINGULAR_WORDS_AUTHORED: &str = include_str!("../../web/singular-words-authored.txt");
+
 // The wavefront explorer page and its data likewise live as files under web/
 // and are compiled in. The JSON is a generated export of wavefront.phext
 // (scripts/build_wavefront_explorer.py); the page reads it same-origin.
@@ -2534,6 +2554,7 @@ const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>https://edit.phext.io/up-goer-five.html</loc></url>
   <url><loc>https://edit.phext.io/tts-demo.html</loc></url>
   <url><loc>https://edit.phext.io/learn-you-phext.html</loc></url>
+  <url><loc>https://edit.phext.io/singular.html</loc></url>
   <url><loc>https://edit.phext.io/submit</loc></url>
   <url><loc>https://edit.phext.io/claim</loc></url>
   <url><loc>https://edit.phext.io/explore</loc></url>
@@ -2840,7 +2861,7 @@ body {
       A web editor for phext: plain text arranged in 11 dimensions.<br>
       Sign-in only checks who you are; nothing is shared or sold.<br>
       <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a><br>
-      No sign-in needed: <a href="up-goer-five.html" style="color:var(--coord)">Up Goer Five</a> · <a href="tts-demo.html" style="color:var(--coord)">Coordinate TTS demo</a> · <a href="learn-you-phext.html" style="color:var(--coord)">Learn You Phext</a><br>
+      No sign-in needed: <a href="up-goer-five.html" style="color:var(--coord)">Up Goer Five</a> · <a href="tts-demo.html" style="color:var(--coord)">Coordinate TTS demo</a> · <a href="learn-you-phext.html" style="color:var(--coord)">Learn You Phext</a> · <a href="singular.html" style="color:var(--coord)">Singular</a><br>
       Have a phext of your own? <a href="submit" style="color:var(--coord)">Upload it for review</a> — if an editor accepts it, you become an editor too.<br>
       Placed in the wavefront map? <a href="claim" style="color:var(--coord)">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="explore" style="color:var(--coord)">explore the map</a> first.
     </div>
@@ -3641,6 +3662,43 @@ mod public_route_tests {
         assert!(INDEX_HTML.contains("explore the map"), "shell sign-in screen link");
         assert!(ABOUT_HTML.contains("href=\"explore\""), "about link");
         assert!(SITEMAP_XML.contains("https://edit.phext.io/explore</loc>"), "sitemap entry");
+    }
+
+    #[test]
+    fn singular_page_and_its_word_lists_are_public_and_linked() {
+        let gate = locked_gate();
+        let page = get(&gate, "/singular.html");
+        assert_eq!(page.status, 200);
+        assert!(page.content_type.contains("text/html"), "{}", page.content_type);
+        assert!(page.body.contains("Singular"), "{}", page.body);
+        assert!(page.body.contains("Read/Write"), "the three modes are named");
+
+        // The lists the page fetches same-origin, one per mode: Read (what
+        // he read), Write (what he wrote), Read/Write (the union) — all
+        // plain text, all public, all whole. Read ∪ Write = Read/Write.
+        let read = get(&gate, "/singular-words-read.txt");
+        assert_eq!(read.status, 200);
+        assert!(read.content_type.contains("text/plain"), "{}", read.content_type);
+        assert!(read.body.contains("\nphext\n"), "the read list carries his reading");
+        assert_eq!(read.body.lines().count(), 36675);
+        let words = get(&gate, "/singular-words.txt");
+        assert_eq!(words.status, 200);
+        assert!(words.content_type.contains("text/plain"), "{}", words.content_type);
+        assert!(words.body.contains("\nphext\n"), "the archive list carries his words");
+        assert_eq!(words.body.lines().count(), 41302);
+        let authored = get(&gate, "/singular-words-authored.txt");
+        assert_eq!(authored.status, 200);
+        assert!(authored.content_type.contains("text/plain"), "{}", authored.content_type);
+        assert!(authored.body.contains("\nphext\n"), "the authored list carries his words");
+        assert_eq!(authored.body.lines().count(), 19094);
+
+        // Discoverability: the About page's utility list, the editor shell's
+        // sign-in screen, and the sitemap. The word lists are data assets,
+        // like the explorer's JSON: served, not sitemapped.
+        assert!(ABOUT_HTML.contains("href=\"singular.html\""), "about link");
+        assert!(INDEX_HTML.contains("href=\"singular.html\""), "shell sign-in link");
+        assert!(SITEMAP_XML.contains("https://edit.phext.io/singular.html</loc>"), "sitemap entry");
+        assert!(!SITEMAP_XML.contains("singular-words"), "data assets stay out of the sitemap");
     }
 
     #[test]
