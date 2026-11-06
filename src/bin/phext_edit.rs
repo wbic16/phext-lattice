@@ -622,19 +622,28 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
 
     // Sign-in endpoints, then auth check (token or session) — GET / stays open
     if let Some(reply) = gate.route(&method, &path, &headers) {
-        // A completed X sign-in whose handle the wavefront snapshot
-        // does not hold is a wavefront join: the account has arrived in
-        // the new era. Record it here, where the sign-in completes.
-        // Bookkeeping never fails a sign-in, so a store error is
-        // dropped — the same posture as Editors::admit dropping an
-        // editors-file append error.
+        // Two things happen here, where a sign-in completes. An X
+        // sign-in grants editor (Will's ruling, 2026-11-05): an X
+        // account that is not already an editor is admitted on the
+        // spot, through the same mechanism as an accepted submission.
+        // And a completed X sign-in whose handle the wavefront
+        // snapshot does not hold is a wavefront join: the account has
+        // arrived in the new era, so it is recorded.
+        // Bookkeeping never fails a sign-in, so errors are dropped —
+        // the same posture as Editors::admit dropping an editors-file
+        // append error.
         if method == "GET" && (300..400).contains(&reply.status) {
             let route = path_route(&path);
             if route.starts_with("/api/auth/") && route.ends_with("/callback") {
                 if let Some(session) = reply_session(gate, &reply) {
-                    if session.who.starts_with("x:") && wavefront::lookup(&session.handle).is_none() {
-                        let dir = joins_dir(state);
-                        let _ = joins::record(&dir, &session.who, &format!("@{}", session.handle), "sign-in");
+                    if session.who.starts_with("x:") {
+                        if !gate.is_editor(&session) {
+                            let _ = gate.admit_account(&session.who, &session.email);
+                        }
+                        if wavefront::lookup(&session.handle).is_none() {
+                            let dir = joins_dir(state);
+                            let _ = joins::record(&dir, &session.who, &format!("@{}", session.handle), "sign-in");
+                        }
                     }
                 }
             }
@@ -1831,6 +1840,68 @@ mod tests {
         assert!(body.contains("new-era join"), "{body}");
     }
 
+    /// Drive a full sign-in over HTTP — start, then callback — and
+    /// return the session cookie it seals. Unlike the gate.route
+    /// helpers above, this passes through handle_request, so the
+    /// sign-in completion hook (promotion, joins) is what runs.
+    fn http_sign_in_cookie(port: u16, provider: &str, code: &str) -> String {
+        let (status, start) = http(port, "GET", &format!("/api/auth/{provider}?next=/claim"), "");
+        assert_eq!(status, 302, "{start}");
+        let state = start.split("state=").nth(1).unwrap().split('&').next().unwrap().to_string();
+        let pending = start.split("phext_oauth=").nth(1).unwrap().split(';').next().unwrap().to_string();
+        let callback = format!("Cookie: phext_oauth={pending}\r\n");
+        let (status, back) = http(port, "GET", &format!("/api/auth/{provider}/callback?code={code}&state={state}"), &callback);
+        assert_eq!(status, 302, "{back}");
+        let session = back.split("phext_session=").nth(1).unwrap().split(';').next().unwrap().to_string();
+        format!("phext_session={session}")
+    }
+
+    #[test]
+    fn x_sign_in_grants_editor_and_persists_google_does_not() {
+        // x:1001 (@jaivinwylde) is the only editor on this gate.
+        let gate = Gate::new(None, Oauth::test_ready(), Editors::parse("x:1001"));
+        let (port, dir, gate) = serve_gate(gate, false);
+        let editors_file = dir.path().join("admitted-editors.txt");
+        gate.load_editors_file(&editors_file);
+
+        // A Google sign-in is not promoted (the ruling names X only):
+        // the account signs in, stays off the list, and the editors
+        // file gains nothing.
+        let google_cookie = http_sign_in_cookie(port, "google", "ok");
+        let (code, body) = http(port, "GET", "/api/session", &format!("Cookie: {google_cookie}\r\n"));
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"editor\":false"), "{body}");
+        assert!(!editors_file.exists());
+
+        // An X sign-in is promoted on completion: editor access is
+        // live for the session the callback just sealed…
+        let x_cookie = http_sign_in_cookie(port, "x", "ok-new");
+        let (code, body) = http(port, "GET", "/api/session", &format!("Cookie: {x_cookie}\r\n"));
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"editor\":true"), "{body}");
+        // …and the admission is persisted to the editors file.
+        let text = std::fs::read_to_string(&editors_file).unwrap();
+        assert!(text.contains("x:2002"), "{text}");
+    }
+
+    #[test]
+    fn x_sign_in_already_editor_is_not_duplicated() {
+        let gate = Gate::new(None, Oauth::test_ready(), Editors::parse("x:1001"));
+        let (port, dir, gate) = serve_gate(gate, false);
+        let editors_file = dir.path().join("admitted-editors.txt");
+        // x:2002 is already an editor, carried by the backing file.
+        std::fs::write(&editors_file, "x:2002\n").unwrap();
+        gate.load_editors_file(&editors_file);
+
+        let x_cookie = http_sign_in_cookie(port, "x", "ok-new");
+        let (code, body) = http(port, "GET", "/api/session", &format!("Cookie: {x_cookie}\r\n"));
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"editor\":true"), "{body}");
+        // No second entry is appended for the account.
+        let text = std::fs::read_to_string(&editors_file).unwrap();
+        assert_eq!(text.matches("x:2002").count(), 1, "{text}");
+    }
+
     #[test]
     fn dashboard_time_format_is_utc() {
         assert_eq!(fmt_unix_utc(0), "1970-01-01 00:00 UTC");
@@ -2671,7 +2742,8 @@ are, so the server can tell whether your account is on its list of editors.</p>
   <li><b>GitHub</b> sign-in asks for read-only access to your public profile
     (<code>read:user</code>).</li>
   <li><b>X</b> sign-in asks for read-only access to your account ID and username
-    (<code>tweet.read</code>, <code>users.read</code>).</li>
+    (<code>tweet.read</code>, <code>users.read</code>). Signing in with X adds your
+    account to the list of editors.</li>
 </ul>
 <p>Phext Edit does not read your Gmail, Drive, contacts, calendar or repositories. It does
 not post anything for you, and it does not share or sell your information. The
@@ -3193,7 +3265,7 @@ body {
       Sign-in only checks who you are; nothing is shared or sold.<br>
       <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a><br>
       No sign-in needed: <a href="up-goer-five.html" style="color:var(--coord)">Up Goer Five</a> · <a href="tts-demo.html" style="color:var(--coord)">Coordinate TTS demo</a> · <a href="learn-you-phext.html" style="color:var(--coord)">Learn You Phext</a> · <a href="singular.html" style="color:var(--coord)">Singular</a><br>
-      Have a phext of your own? <a href="submit" style="color:var(--coord)">Upload it for review</a> — if an editor accepts it, you become an editor too.<br>
+      Have a phext of your own? <a href="submit" style="color:var(--coord)">Upload it for review</a> — if an editor accepts it, you become an editor too. Signing in with X makes you an editor at once.<br>
       Placed in the wavefront map? <a href="claim" style="color:var(--coord)">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="explore" style="color:var(--coord)">explore the map</a> first.
     </div>
   </div>
