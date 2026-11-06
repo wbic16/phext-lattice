@@ -828,8 +828,10 @@ fn claims_dir(state: &Arc<Mutex<AppState>>) -> std::path::PathBuf {
     let state = state.lock().unwrap();
     match &state.phext_dir {
         Some(dir) => std::path::Path::new(dir).join("claims"),
-        None => std::path::Path::new(&resolve_data_dir(std::env::var("PHEXT_DATA_DIR").ok().as_deref()))
-            .join("claims"),
+        None => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            resolve_data_dir(std::env::var("PHEXT_DATA_DIR").ok().as_deref(), &cwd).join("claims")
+        }
     }
 }
 
@@ -839,8 +841,10 @@ fn joins_dir(state: &Arc<Mutex<AppState>>) -> std::path::PathBuf {
     let state = state.lock().unwrap();
     match &state.phext_dir {
         Some(dir) => std::path::Path::new(dir).join("joins"),
-        None => std::path::Path::new(&resolve_data_dir(std::env::var("PHEXT_DATA_DIR").ok().as_deref()))
-            .join("joins"),
+        None => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            resolve_data_dir(std::env::var("PHEXT_DATA_DIR").ok().as_deref(), &cwd).join("joins")
+        }
     }
 }
 
@@ -1077,8 +1081,10 @@ fn submissions_dir(state: &Arc<Mutex<AppState>>) -> std::path::PathBuf {
     let state = state.lock().unwrap();
     match &state.phext_dir {
         Some(dir) => std::path::Path::new(dir).join("submissions"),
-        None => std::path::Path::new(&resolve_data_dir(std::env::var("PHEXT_DATA_DIR").ok().as_deref()))
-            .join("submissions"),
+        None => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            resolve_data_dir(std::env::var("PHEXT_DATA_DIR").ok().as_deref(), &cwd).join("submissions")
+        }
     }
 }
 
