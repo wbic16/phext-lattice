@@ -23,6 +23,8 @@ pub mod navigator;
 #[cfg(feature = "web")]
 pub mod claims;
 #[cfg(feature = "web")]
+pub mod joins;
+#[cfg(feature = "web")]
 pub mod oauth;
 #[cfg(feature = "web")]
 pub mod submissions;
