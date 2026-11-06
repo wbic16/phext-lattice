@@ -25,6 +25,41 @@ the application home page and `https://edit.phext.io/privacy` as the privacy
 policy link. Both are served by phext-edit itself and open without signing in.
 Add `phext.io` under authorized domains. Terms are at `https://edit.phext.io/terms`.
 
+## Mutable OS single sign-on
+
+Mutable (mutable.phext.io) takes its sign-in from here. A signed-in account
+crosses via `GET /api/auth/sso/mutable` — linked as "Mutable OS" in the editor
+shell's status bar — which redirects to Mutable's callback with a sealed,
+120-second, single-use assertion. Signed-out visitors are sent to this site's
+sign-in with the endpoint as the `next`, and land in Mutable right after.
+Any signed-in account may cross; the assertion carries the account's editor
+flag for Mutable to see.
+
+Two lines in `/etc/phext-edit/oauth.env` turn it on:
+
+```bash
+PHEXT_SSO_SECRET=<generate once: openssl rand -base64 32>
+# Optional; this is the default. A set-but-invalid value disables the handoff.
+PHEXT_SSO_MUTABLE_URL=https://mutable.phext.io
+```
+
+`PHEXT_SSO_SECRET` is a dedicated key, never `PHEXT_SESSION_SECRET`: the same
+value is set as `MUTABLE_SSO_SECRET` in Mutable's service environment, so
+Mutable can verify assertions without ever holding a key that could mint
+edit sessions. Without the secret, the SSO endpoint answers 404 and nothing
+else changes.
+
+Deploy order matters in one direction: **this side first.** Ship the build
+and add the secret, then `sudo systemctl restart phext-edit`. Verify with
+`curl -sI https://edit.phext.io/api/auth/sso/mutable` — a 302 toward
+`/?next=…` when logged out, or toward Mutable with a session cookie. Only
+then enable the gate on Mutable; if Mutable redirects here before this
+endpoint exists, its users hit a 404. No OAuth provider-app changes (the
+registered callback URLs are untouched) and no nginx changes on either
+vhost. To rotate the secret later, replace it on both sides and restart
+both services in either order — assertions live at most 120 seconds, so
+the skew costs at most one retried jump.
+
 ## What deploy.sh does
 
 Each run, in order:
