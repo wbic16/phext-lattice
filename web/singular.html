@@ -36,8 +36,9 @@
 
   header.intro { padding: 16px 22px 2px; }
   h1 { color: var(--coord); font-size: 20px; margin: 0 0 6px; }
-  header.intro p { margin: 2px 0 8px; color: var(--dim); max-width: 75ch; }
-  header.intro p b { color: var(--text); font-weight: normal; }
+  section.intro { padding: 2px 22px 10px; }
+  .intro p { margin: 2px 0 8px; color: var(--dim); max-width: 75ch; }
+  .intro p b { color: var(--text); font-weight: normal; }
   .coord { color: var(--coord); }
   main { padding: 12px 22px 22px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
@@ -108,28 +109,6 @@
 </div>
 <header class="intro">
   <h1>Singular</h1>
-  <p><a href="/up-goer-five.html">Up Goer Five</a> holds you to the ten hundred words everyone
-     uses most. Singular holds you to the words in one person's Twitter archive &mdash;
-     Will Bickford's, 2008&ndash;2025.</p>
-  <p>The modes just choose which words count. <span class="coord">Read</span> flags against the
-     words from what he read &mdash; retweets and favorites (<span id="m-read">36,675</span> words).
-     <span class="coord">Write</span> flags against the words from what he wrote &mdash; his own
-     tweets (<span id="m-write">19,094</span> words). <span class="coord">Read/Write</span> flags
-     against both lists together (<span id="m-rw">41,302</span> words). Type or paste below; every
-     word outside the chosen list is marked, live. Matching is strict &mdash; a changed form he
-     never used is marked too &mdash; and case does not matter.</p>
-  <p>The page is also a map of CYOA, by <b>holographic positioning</b>: a word's place is not
-     assigned from outside; it is read off the whole &mdash; every CYOA scroll that holds the word
-     lends it that scroll's coordinate, and the word sits at the average of all its locations.
-     Each location holds a piece of the word; the word's position holds all of its locations at
-     once. A word in his archive but not in CYOA rests at <span class="coord">1.1.1/1.1.1/1.1.1</span>,
-     the home coordinate. A word in neither rests at <span class="coord">9.9.9/9.9.9/9.9.9</span>,
-     the far corner. A word outside the chosen list shows its coordinate and the nearest words
-     inside the list, with distances.</p>
-  <p>The map holds <span id="m-entries">46,719</span> words: <span id="m-placed">15,942</span> placed
-     from CYOA's scrolls (<span id="m-listplaced">10,525</span> of them from his lists), and
-     <span id="m-home">30,777</span> of his list words rest at home. Everything &mdash; the lists
-     and the map &mdash; is inlined in this page; it makes no requests of its own.</p>
 </header>
 <main>
   <div class="bar-row" role="tablist" aria-label="Mode">
@@ -166,6 +145,30 @@
     </div>
   </div>
 </main>
+<section class="intro">
+  <p><a href="/up-goer-five.html">Up Goer Five</a> holds you to the ten hundred words everyone
+     uses most. Singular holds you to the words in one person's Twitter archive &mdash;
+     Will Bickford's, 2008&ndash;2025.</p>
+  <p>The modes just choose which words count. <span class="coord">Read</span> flags against the
+     words from what he read &mdash; retweets and favorites (<span id="m-read">36,675</span> words).
+     <span class="coord">Write</span> flags against the words from what he wrote &mdash; his own
+     tweets (<span id="m-write">19,094</span> words). <span class="coord">Read/Write</span> flags
+     against both lists together (<span id="m-rw">41,302</span> words). Type or paste below; every
+     word outside the chosen list is marked, live. Matching is strict &mdash; a changed form he
+     never used is marked too &mdash; and case does not matter.</p>
+  <p>The page is also a map of CYOA, by <b>holographic positioning</b>: a word's place is not
+     assigned from outside; it is read off the whole &mdash; every CYOA scroll that holds the word
+     lends it that scroll's coordinate, and the word sits at the average of all its locations.
+     Each location holds a piece of the word; the word's position holds all of its locations at
+     once. A word in his archive but not in CYOA rests at <span class="coord">1.1.1/1.1.1/1.1.1</span>,
+     the home coordinate. A word in neither rests at <span class="coord">9.9.9/9.9.9/9.9.9</span>,
+     the far corner. A word outside the chosen list shows its coordinate and the nearest words
+     inside the list, with distances.</p>
+  <p>The map holds <span id="m-entries">46,719</span> words: <span id="m-placed">15,942</span> placed
+     from CYOA's scrolls (<span id="m-listplaced">10,525</span> of them from his lists), and
+     <span id="m-home">30,777</span> of his list words rest at home. Everything &mdash; the lists
+     and the map &mdash; is inlined in this page; it makes no requests of its own.</p>
+</section>
 <footer>
   Singular &middot; part of <a href="/">phext-edit</a> &mdash; an Up Goer Five variant whose
   list is one person's archive. The word lists and the CYOA coordinate map are inlined in this
