@@ -3236,6 +3236,7 @@ body {
   <a class="submit-link" href="submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
   <a class="claim-link" href="claim" title="If your X account is in the wavefront map, claim your space on this server">Claim your space</a>
   <a class="claim-link" href="explore" title="Every placement in the wavefront, explorable in nine dimensions">Explore the map</a>
+  <a class="claim-link" href="api/auth/sso/mutable" title="Mutable OS — documents and Caverns, with this same sign-in">Mutable OS</a>
   <a class="claim-link" id="dashboard-link" href="claim/dashboard" style="display:none" title="Who has claimed their wavefront space, and who has joined since the snapshot — the owner and editors">Claim dashboard</a>
   <span id="signout" class="signout" style="display:none" onclick="signOut()" title="Sign out"></span>
 </div>
@@ -3688,7 +3689,14 @@ async function showAuthScreen(message, sessionFresh) {
     html += `<div style="color:var(--text)">Signed in as ${escHtml(s.name || s.handle)} <span style="color:var(--dim)">(${escHtml(s.who)})</span></div>`;
     html += `<button class="auth-btn" onclick="signOut()">Sign out</button>`;
   } else {
-    const next = encodeURIComponent('/' + location.hash);
+    // A `?next=` in the query wins over the hash form: the Mutable SSO
+    // handoff sends signed-out visitors here with its endpoint as the
+    // next, so sign-in returns them to it and the crossing completes.
+    // Same-site paths only — and authorize_url's safe_next re-checks
+    // server-side regardless.
+    const fromQuery = new URLSearchParams(location.search).get('next');
+    const nextPath = fromQuery && fromQuery.startsWith('/') && !fromQuery.includes(':') ? fromQuery : '/' + location.hash;
+    const next = encodeURIComponent(nextPath);
     const label = { github: 'Sign in with GitHub', google: 'Sign in with Google', x: 'Sign in with X' };
     for (const p of (s.providers || []))
       html += `<a class="auth-btn" href="api/auth/${p}?next=${next}">${label[p] || p}</a>`;
@@ -4073,6 +4081,23 @@ mod public_route_tests {
         assert!(INDEX_HTML.contains("explore the map"), "shell sign-in screen link");
         assert!(ABOUT_HTML.contains("href=\"explore\""), "about link");
         assert!(SITEMAP_XML.contains("https://edit.phext.io/explore</loc>"), "sitemap entry");
+    }
+
+    #[test]
+    fn mutable_os_is_linked_from_the_shell_status_bar() {
+        // The crossing's front door: the editor shell a signed-in user
+        // lands on links the SSO handoff, beside Submit/Claim/Explore —
+        // and the sign-in screen honours the ?next= the handoff sends
+        // signed-out visitors back with.
+        assert!(
+            INDEX_HTML.contains("class=\"claim-link\" href=\"api/auth/sso/mutable\""),
+            "shell status bar link"
+        );
+        assert!(INDEX_HTML.contains(">Mutable OS</a>"), "link label");
+        assert!(
+            INDEX_HTML.contains("URLSearchParams(location.search).get('next')"),
+            "auth screen reads ?next="
+        );
     }
 
     #[test]

@@ -45,6 +45,10 @@ const SESSION_COOKIE: &str = "phext_session";
 const PENDING_COOKIE: &str = "phext_oauth";
 const SESSION_TTL: i64 = 60 * 60 * 24 * 14;
 const PENDING_TTL: i64 = 600;
+/// The Mutable SSO assertion's whole life: long enough for one redirect
+/// chain (Mutable → here → sign-in → back), short enough that a logged
+/// copy is worthless almost immediately.
+const SSO_TTL: i64 = 120;
 const AUTH_WINDOW: Duration = Duration::from_secs(10 * 60);
 const AUTH_PER_IP: usize = 20;
 pub const TEST_CSRF: &str = "csrf-test-token";
@@ -170,6 +174,12 @@ pub struct Oauth {
     /// (e.g. `https://mirrorborn.us/editor`). No trailing slash.
     base: String,
     session_secret: String,
+    /// Signs Mutable SSO assertions, and nothing else. Deliberately not
+    /// the session secret: Mutable holds this key to verify assertions,
+    /// and a leak over there must not mint edit sessions.
+    sso_secret: String,
+    /// Where Mutable lives; assertions are redirected to its callback.
+    sso_target: String,
     cookie_secure: bool,
     github: Option<ProviderKeys>,
     google: Option<ProviderKeys>,
@@ -213,6 +223,26 @@ struct PendingBody {
     exp: i64,
 }
 
+/// The Mutable SSO assertion: a sealed, single-use statement that an
+/// edit session exists, carried to Mutable's callback in a redirect and
+/// verified there under the SSO secret. It is not a session — Mutable
+/// mints its own from it, and this server never accepts one back.
+/// `ret` is a path on Mutable, clamped by `safe_next` before sealing;
+/// `jti` is the single-use id Mutable burns on first sight.
+#[derive(Serialize)]
+struct SsoAssertionBody {
+    aud: String,
+    who: String,
+    handle: String,
+    name: String,
+    email: String,
+    editor: bool,
+    ret: String,
+    iat: i64,
+    exp: i64,
+    jti: String,
+}
+
 struct Pending {
     provider: String,
     state: String,
@@ -232,6 +262,8 @@ impl Oauth {
             &std::env::var("GOOGLE_CLIENT_SECRET").unwrap_or_default(),
             &std::env::var("X_CLIENT_ID").unwrap_or_default(),
             &std::env::var("X_CLIENT_SECRET").unwrap_or_default(),
+            &std::env::var("PHEXT_SSO_SECRET").unwrap_or_default(),
+            &std::env::var("PHEXT_SSO_MUTABLE_URL").unwrap_or_default(),
             Arc::new(HttpSource),
         )
     }
@@ -247,12 +279,14 @@ impl Oauth {
             "google-client-secret",
             "x-client-id",
             "x-client-secret",
+            "test-sso-secret-must-be-32-chars-minimum",
+            "",
             Arc::new(ScriptedSource),
         )
     }
 
     pub fn closed() -> Self {
-        Self::from_parts("", "", false, "", "", "", "", "", "", Arc::new(ScriptedSource))
+        Self::from_parts("", "", false, "", "", "", "", "", "", "", "", Arc::new(ScriptedSource))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -266,13 +300,27 @@ impl Oauth {
         google_secret: &str,
         x_id: &str,
         x_secret: &str,
+        sso_secret: &str,
+        sso_target: &str,
         source: Arc<dyn IdentitySource>,
     ) -> Self {
         let base = base.trim().trim_end_matches('/').to_string();
         let base = if valid_base(&base) { base } else { String::new() };
+        // Unset means the production Mutable; a set-but-invalid value
+        // disables the handoff (empty target) rather than guessing.
+        let sso_target = sso_target.trim().trim_end_matches('/').to_string();
+        let sso_target = if sso_target.is_empty() {
+            "https://mutable.phext.io".to_string()
+        } else if valid_base(&sso_target) {
+            sso_target
+        } else {
+            String::new()
+        };
         Self {
             base,
             session_secret: session_secret.trim().to_string(),
+            sso_secret: sso_secret.trim().to_string(),
+            sso_target,
             cookie_secure,
             github: provider(github_id, github_secret),
             google: provider(google_id, google_secret),
@@ -285,6 +333,22 @@ impl Oauth {
         real_session_secret(&self.session_secret)
             && !self.base.is_empty()
             && (self.github.is_some() || self.google.is_some() || self.x.is_some())
+    }
+
+    /// True when the Mutable SSO handoff is configured: a real SSO
+    /// secret and a valid Mutable target. Independent of `ready()` —
+    /// the handoff mints nothing of its own; it rides the session the
+    /// providers already made, so it needs no provider keys here.
+    pub fn sso_ready(&self) -> bool {
+        real_session_secret(&self.sso_secret) && !self.sso_target.is_empty()
+    }
+
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
+    pub fn sso_target(&self) -> &str {
+        &self.sso_target
     }
 
     pub fn providers(&self) -> Vec<&'static str> {
@@ -456,10 +520,46 @@ impl Oauth {
     }
 
     fn seal<T: Serialize>(&self, body: &T) -> Result<String, String> {
+        self.seal_with(&self.session_secret, body)
+    }
+
+    /// Seal a body under a chosen secret. The session secret signs the
+    /// session and pending cookies; the SSO secret signs Mutable
+    /// assertions. The two keys never substitute for each other, which
+    /// is what keeps a Mutable-side leak from minting edit sessions.
+    fn seal_with<T: Serialize>(&self, secret: &str, body: &T) -> Result<String, String> {
         let json = serde_json::to_vec(body).map_err(|_| "Sign-in did not complete.".to_string())?;
         let payload = base64url(&json);
-        let sig = sign(&self.session_secret, &payload)?;
+        let sig = sign(secret, &payload)?;
         Ok(format!("{payload}.{sig}"))
+    }
+
+    /// Mint the assertion Mutable's callback verifies: who this session
+    /// is, whether it is an editor, and the return path on Mutable —
+    /// sealed under the SSO secret, alive for `SSO_TTL` seconds, with a
+    /// fresh `jti` Mutable burns on first sight. The return path is
+    /// clamped by `safe_next` here, at the moment of sealing, so no
+    /// unsigned return input ever crosses.
+    pub fn sso_assertion(&self, session: &Session, editor: bool, ret: &str) -> Result<String, String> {
+        if !self.sso_ready() {
+            return Err("Sign-in is not set up yet.".into());
+        }
+        let iat = now();
+        self.seal_with(
+            &self.sso_secret,
+            &SsoAssertionBody {
+                aud: "mutable".into(),
+                who: session.who.clone(),
+                handle: session.handle.clone(),
+                name: session.name.clone(),
+                email: session.email.clone(),
+                editor,
+                ret: safe_next(ret),
+                iat,
+                exp: iat + SSO_TTL,
+                jti: random_token(16)?,
+            },
+        )
     }
 
     fn open<T: for<'de> Deserialize<'de>>(&self, token: &str) -> Result<T, String> {
@@ -973,6 +1073,9 @@ impl Gate {
         let reply = match (method, route) {
             ("GET", "/api/session") => self.session_view(headers),
             ("POST", "/api/auth/logout") => self.logout(headers),
+            // Before the generic provider arm: without this exact arm,
+            // `sso` would be parsed as a provider name below.
+            ("GET", "/api/auth/sso/mutable") => self.sso(headers, &query_map(query)),
             ("GET", p) if p.starts_with("/api/auth/") => {
                 let rest = &p["/api/auth/".len()..];
                 let query = query_map(query);
@@ -1121,6 +1224,51 @@ impl Gate {
         }
         Reply::json(200, json!({ "ok": true }))
             .cookie(cookie_header(SESSION_COOKIE, "", 0, self.oauth.cookie_secure()))
+    }
+
+    /// Who may cross to Mutable: any signed-in account. The assertion
+    /// still carries the account's real `editor` flag for Mutable to
+    /// display or use later. To make Mutable editor-only, this one
+    /// predicate becomes `self.is_editor(session)` — nothing else in
+    /// the handoff changes.
+    fn sso_admits(&self, _session: &Session) -> bool {
+        true
+    }
+
+    /// `GET /api/auth/sso/mutable` — the cross-site handoff to Mutable.
+    ///
+    /// Layering follows the claims/submissions precedent in the servers:
+    /// a signed-in account is enough; an editor's place is not required
+    /// (`sso_admits` is the single predicate that decides). With a
+    /// session, the reply 302s to Mutable's callback with a freshly
+    /// sealed assertion. Without one, it 302s to this site's own root
+    /// with this endpoint as the `next`, so the ordinary provider
+    /// sign-in returns the browser here and the handoff completes —
+    /// the OAuth `next` itself stays same-site throughout. Unconfigured
+    /// (no SSO secret), the endpoint simply does not exist: 404.
+    pub fn sso(&self, headers: &HashMap<String, String>, query: &HashMap<String, String>) -> Reply {
+        if self.limits.hit(&client_key(headers)).is_err() {
+            return Reply::error(429, "Too many requests.");
+        }
+        if !self.oauth.sso_ready() {
+            return Reply::error(404, "not found");
+        }
+        let ret = safe_next(query.get("return").map(String::as_str).unwrap_or("/"));
+        let Some(session) = self.session(headers) else {
+            let next = format!("/api/auth/sso/mutable?return={}", form_encode(&ret));
+            return Reply::redirect(format!("{}/?next={}", self.oauth.base(), form_encode(&next)));
+        };
+        if !self.sso_admits(&session) {
+            return Reply::error(403, "This account is not on the editor list.");
+        }
+        let editor = self.is_editor(&session);
+        match self.oauth.sso_assertion(&session, editor, &ret) {
+            Ok(assertion) => Reply::redirect(format!(
+                "{}/api/auth/callback?assertion={assertion}",
+                self.oauth.sso_target()
+            )),
+            Err(message) => Reply::error(403, &message),
+        }
     }
 }
 
@@ -1920,6 +2068,130 @@ mod tests {
             .unwrap();
         assert_eq!(out.status, 200);
         assert!(header(&out, "Set-Cookie")[0].contains("Max-Age=0"));
+    }
+
+    /// Drives a scripted provider flow through `Gate::route` and returns
+    /// the `phext_session=…` cookie pair it sets.
+    fn scripted_session(gate: &Gate, provider: &str, next: &str) -> String {
+        let start = gate.route("GET", &format!("/api/auth/{provider}?next={next}"), &headers(&[])).unwrap();
+        assert_eq!(start.status, 302);
+        let location = header(&start, "Location")[0].to_string();
+        let state = location.split("state=").nth(1).unwrap().split('&').next().unwrap().to_string();
+        let pending = header(&start, "Set-Cookie")[0].split(';').next().unwrap().to_string();
+        let back = gate
+            .route("GET", &format!("/api/auth/{provider}/callback?code=ok&state={state}"), &headers(&[("cookie", &pending)]))
+            .unwrap();
+        assert_eq!(back.status, 302);
+        header(&back, "Set-Cookie")[0].split(';').next().unwrap().to_string()
+    }
+
+    /// Opens a sealed assertion with an explicit secret, the way
+    /// Mutable's callback will — and only with the SSO secret.
+    fn open_assertion(secret: &str, token: &str) -> serde_json::Value {
+        let (payload, sig) = token.split_once('.').unwrap();
+        assert!(verify(secret, payload, sig), "assertion must verify under the SSO secret");
+        serde_json::from_slice(&base64url_decode(payload).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn sso_sends_the_signed_out_to_sign_in_with_itself_as_next() {
+        // The `next` nests: the shell decodes it once to build the
+        // provider link, and the endpoint decodes the `return` inside
+        // it when the browser comes back — so assertions decode twice
+        // to see the path the endpoint will act on.
+        let gate = gate(None, "");
+        let reply = gate.route("GET", "/api/auth/sso/mutable", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 302);
+        let location = header(&reply, "Location")[0];
+        let next = location.strip_prefix("http://127.0.0.1:8080/?next=").unwrap();
+        assert_eq!(percent_decode(&percent_decode(next)), "/api/auth/sso/mutable?return=/");
+
+        // A specific return path rides along, still same-site.
+        let reply = gate.route("GET", "/api/auth/sso/mutable?return=/superposition", &headers(&[])).unwrap();
+        let location = header(&reply, "Location")[0];
+        let next = location.strip_prefix("http://127.0.0.1:8080/?next=").unwrap();
+        assert_eq!(percent_decode(&percent_decode(next)), "/api/auth/sso/mutable?return=/superposition");
+
+        // Hostile returns are clamped by safe_next before they are
+        // carried anywhere: the sealed-and-returned path becomes `/`.
+        for hostile in [
+            "/api/auth/sso/mutable?return=https%3A%2F%2Fevil.example%2Fx",
+            "/api/auth/sso/mutable?return=%2F%2Fevil.example",
+            "/api/auth/sso/mutable?return=%2F%5Cevil",
+        ] {
+            let reply = gate.route("GET", hostile, &headers(&[])).unwrap();
+            assert_eq!(reply.status, 302);
+            let location = header(&reply, "Location")[0];
+            let next = location.strip_prefix("http://127.0.0.1:8080/?next=").unwrap();
+            assert_eq!(percent_decode(&percent_decode(next)), "/api/auth/sso/mutable?return=/", "{hostile}");
+        }
+    }
+
+    #[test]
+    fn sso_mints_a_short_lived_assertion_for_a_signed_in_account() {
+        let gate = gate(None, "");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/mutable");
+        assert!(session.starts_with("phext_session="));
+
+        let jump = gate
+            .route("GET", "/api/auth/sso/mutable?return=/superposition", &headers(&[("cookie", &session)]))
+            .unwrap();
+        assert_eq!(jump.status, 302);
+        let location = header(&jump, "Location")[0];
+        let assertion = location
+            .strip_prefix("https://mutable.phext.io/api/auth/callback?assertion=")
+            .unwrap();
+        let body = open_assertion("test-sso-secret-must-be-32-chars-minimum", assertion);
+        assert_eq!(body["aud"], "mutable");
+        assert_eq!(body["who"], "google:sub-1");
+        assert_eq!(body["handle"], "ada");
+        assert_eq!(body["name"], "Ada Example");
+        assert_eq!(body["email"], "ada@example.com");
+        // The editors list is empty: any signed-in account is an editor.
+        assert_eq!(body["editor"], true);
+        assert_eq!(body["ret"], "/superposition");
+        assert_eq!(body["exp"].as_i64().unwrap() - body["iat"].as_i64().unwrap(), 120);
+        assert!(!body["jti"].as_str().unwrap().is_empty());
+
+        // The session secret does not open it: the keys never substitute.
+        let (payload, sig) = assertion.split_once('.').unwrap();
+        assert!(!verify("test-session-secret-must-be-32chars", payload, sig));
+    }
+
+    #[test]
+    fn sso_carries_editor_false_for_a_signed_in_non_editor() {
+        // The list names someone else: the account still crosses (any
+        // signed-in account may), but the flag tells the truth.
+        let gate = gate(None, "github:999");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/mutable");
+        let jump = gate.route("GET", "/api/auth/sso/mutable", &headers(&[("cookie", &session)])).unwrap();
+        assert_eq!(jump.status, 302);
+        let location = header(&jump, "Location")[0];
+        let assertion = location
+            .strip_prefix("https://mutable.phext.io/api/auth/callback?assertion=")
+            .unwrap();
+        let body = open_assertion("test-sso-secret-must-be-32-chars-minimum", assertion);
+        assert_eq!(body["who"], "google:sub-1");
+        assert_eq!(body["editor"], false);
+        assert_eq!(body["ret"], "/");
+    }
+
+    #[test]
+    fn sso_is_404_until_configured_and_never_swallows_a_provider() {
+        let closed_gate = Gate::new(None, Oauth::closed(), Editors::default());
+        assert!(!closed_gate.oauth().sso_ready());
+        let reply = closed_gate.route("GET", "/api/auth/sso/mutable", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 404);
+        // Arm ordering: a real provider start still reaches the generic
+        // arm (403 here only because the closed gate has no sign-in).
+        let provider = closed_gate.route("GET", "/api/auth/github", &headers(&[])).unwrap();
+        assert_eq!(provider.status, 403);
+
+        // Arm precision: `/api/auth/sso` without `/mutable` is not the
+        // handoff — it parses as a provider name and is refused as one.
+        let ready_gate = gate(None, "");
+        let reply = ready_gate.route("GET", "/api/auth/sso", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 403);
     }
 
     #[test]
