@@ -17,7 +17,11 @@
 use libphext::phext::Coordinate;
 use crate::index::LatticeIndex;
 
-/// The 9 SDLC phases mapped to collection values.
+/// The 10 SDLC phases mapped to collection values.
+/// (Collection 10 = Proofs was added under decision D1 of the phcc
+/// modernization design, 2026-11-07: proof artifacts — ACSL contracts,
+/// verification receipts, waivers — live at the artifact's own address
+/// in their own phase, so the trace walk stays uniform.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(usize)]
 pub enum Phase {
@@ -30,6 +34,7 @@ pub enum Phase {
     Docs          = 7,
     Whitepapers   = 8,
     Training      = 9,
+    Proofs       = 10,
 }
 
 impl Phase {
@@ -44,6 +49,7 @@ impl Phase {
             7 => Some(Phase::Docs),
             8 => Some(Phase::Whitepapers),
             9 => Some(Phase::Training),
+            10 => Some(Phase::Proofs),
             _ => None,
         }
     }
@@ -59,6 +65,7 @@ impl Phase {
             Phase::Docs          => "Docs",
             Phase::Whitepapers   => "Whitepapers",
             Phase::Training      => "Training",
+            Phase::Proofs        => "Proofs",
         }
     }
 
@@ -73,6 +80,7 @@ impl Phase {
             Phase::Docs          => "DOC",
             Phase::Whitepapers   => "WHP",
             Phase::Training      => "TRN",
+            Phase::Proofs        => "PRF",
         }
     }
 
@@ -88,6 +96,7 @@ impl Phase {
             Phase::Docs          => "#7090e0",
             Phase::Whitepapers   => "#b0b0b0",
             Phase::Training      => "#d4a855",
+            Phase::Proofs        => "#7d5ba6",
         }
     }
 
@@ -97,6 +106,7 @@ impl Phase {
             Phase::Meta, Phase::Requirements, Phase::Design,
             Phase::Source, Phase::Tests, Phase::Regressions,
             Phase::Docs, Phase::Whitepapers, Phase::Training,
+            Phase::Proofs,
         ]
     }
 }
@@ -264,6 +274,35 @@ mod tests {
         assert_eq!(ctx.phase, Some(Phase::Design));
         assert_eq!(ctx.phase_name, "Design");
         assert_eq!(ctx.artifact_label, "1.2.1/1.1");
+    }
+
+    #[test]
+    fn proofs_phase_from_collection() {
+        // D1: Collection 10 = Proofs.
+        assert_eq!(Phase::from_collection(10), Some(Phase::Proofs));
+        assert_eq!(Phase::Proofs as usize, 10);
+        assert_eq!(Phase::Proofs.name(), "Proofs");
+        assert_eq!(Phase::Proofs.short(), "PRF");
+        assert_eq!(Phase::Proofs.color(), "#7d5ba6");
+        // The phase after Proofs does not exist.
+        assert_eq!(Phase::from_collection(11), None);
+    }
+
+    #[test]
+    fn proofs_phase_in_trace_walk() {
+        // The trace walk (Phase::all) must include Proofs, in order,
+        // and an artifact address must resolve into the Proofs phase.
+        let all = Phase::all();
+        assert_eq!(all.len(), 10);
+        assert_eq!(all[9], Phase::Proofs);
+
+        let addr = ArtifactAddr { volume: 2, book: 7, chapter: 1, section: 2, scroll: 1 };
+        let c = addr.to_coordinate(Phase::Proofs);
+        assert_eq!(c.y.collection, 10);
+        let ctx = UmlContext::from_coordinate(&c);
+        assert_eq!(ctx.phase, Some(Phase::Proofs));
+        assert_eq!(ctx.phase_name, "Proofs");
+        assert_eq!(ctx.artifact, addr);
     }
 
     #[test]

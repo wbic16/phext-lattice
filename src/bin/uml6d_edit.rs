@@ -1068,6 +1068,7 @@ const PHASES = [
   { c: 7, name: 'Docs',         short: 'DOC',  color: '#7090e0', key: 'D' },
   { c: 8, name: 'Whitepapers',  short: 'WHP',  color: '#b0b0b0', key: 'w' },
   { c: 9, name: 'Training',     short: 'TRN',  color: '#d4a855', key: 'n' },
+  { c: 10, name: 'Proofs',      short: 'PRF',  color: '#7d5ba6', key: 'p' },
 ];
 
 // UML dimension labels
