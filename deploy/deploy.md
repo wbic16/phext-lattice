@@ -187,6 +187,10 @@ The steps below describe the previous layout, where the editor was a path on
 `/editor` redirect on that vhost. Do not copy unit files or nginx snippets
 beside what `deploy.sh` writes.
 
+Ad measurement (first-party funnel log, no third-party script) is described in
+[measure.md](measure.md), including the directory the service writes and how to
+print a report after an ad flight.
+
 ## mirrorborn.us/editor (previous setup)
 
 ## Architecture

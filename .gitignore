@@ -1,3 +1,7 @@
 /target
 Cargo.lock
 .phext-local/
+# local measurement logs (PHEXT_DATA_DIR)
+/data/
+measure.jsonl
+measure.jsonl.*
