@@ -41,6 +41,13 @@
   main { display: grid; grid-template-columns: minmax(340px, 1.2fr) minmax(300px, 1fr);
          gap: 16px; padding: 12px 22px 22px; align-items: start; }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  @media (max-width: 700px) {
+    #topbar { height: auto; flex-wrap: wrap; padding: 6px 12px; row-gap: 6px; }
+    #topbar .back { margin-left: 0; padding: 6px 10px; }
+    header.intro { padding: 14px 14px 2px; }
+    main { padding: 10px 14px 16px; }
+    footer { margin: 0 14px 16px; }
+  }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
           padding: 12px 14px; }
   .card h2 { margin: 0 0 8px; font-size: 12px; font-weight: normal; color: var(--dim); }
@@ -97,6 +104,7 @@
   <a class="back" href="/tts-demo.html">Coordinate TTS demo</a>
   <a class="back" href="/learn-you-phext.html">Learn You Phext</a>
   <a class="back" href="singular.html">Singular</a>
+  <a class="back" href="/phext-previewer.html">Phext Previewer</a>
   <a class="back" href="/">← back to phext-edit</a>
 </div>
 <header class="intro">

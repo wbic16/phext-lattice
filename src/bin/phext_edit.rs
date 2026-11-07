@@ -554,6 +554,7 @@ fn public_document(path: &str) -> Option<PublicDocument> {
         "/learn-you-phext.html" => ("text/html; charset=utf-8", LEARN_YOU_PHEXT_HTML),
         "/learn-you-phext.phext" => ("text/plain; charset=utf-8", LEARN_YOU_PHEXT),
         "/singular.html" => ("text/html; charset=utf-8", SINGULAR_HTML),
+        "/phext-previewer.html" => ("text/html; charset=utf-8", PREVIEWER_HTML),
         "/phext-tts.js" => ("text/javascript; charset=utf-8", PHEXT_TTS_JS),
         "/robots.txt" => ("text/plain; charset=utf-8", ROBOTS_TXT),
         "/sitemap.xml" => ("application/xml; charset=utf-8", SITEMAP_XML),
@@ -2173,6 +2174,13 @@ a { color: #4dc9c9; }
 nav { margin-bottom: 24px; font-size: 14px; }
 .dim { color: #9a9a9a; }
 footer { margin-top: 40px; font-size: 13px; color: #9a9a9a; border-top: 1px solid #2e2e2e; padding-top: 16px; }
+code { overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  main { padding: 24px 14px 40px; }
+  h1 { font-size: 24px; }
+  nav { line-height: 2; }
+  table { display: block; overflow-x: auto; }
+}
 </style>"# } }
 
 // ── Claim dashboard (the owner's page) ─────────────────────────────────
@@ -2721,6 +2729,10 @@ with those files from a browser:</p>
   itself a phext, scroll by scroll.</li>
   <li><a href="singular.html">Singular</a>: an Up Goer Five variant whose word list is one
   person's Twitter archive — read, write, and read/write with only those words.</li>
+  <li><a href="phext-previewer.html">Phext Previewer</a>: open a phext file from your
+  own device and read it scroll by scroll at its coordinates — step by dimension,
+  jump to a coordinate, search the text, and see a map of the whole file. The file
+  is parsed in your browser and never uploaded.</li>
   <li><a href="submit">Upload a phext for review</a> (sign-in needed): offer a phext to
   this server's library. If an editor accepts it, the phext joins the library and the
   uploader becomes an editor too.</li>
@@ -2931,6 +2943,13 @@ const SINGULAR_HTML: &str = include_str!("../../web/singular.html");
 const EXPLORE_HTML: &str = include_str!("../../web/explore.html");
 const WAVEFRONT_EXPLORER_JSON: &str = include_str!("../../web/wavefront-explorer.json");
 
+// The Phext Previewer page likewise lives as a file under web/ and is
+// compiled in: open any .phext file in the browser and read it scroll
+// by scroll, search it, and map it. The file is parsed client-side and
+// never leaves the visitor's device, so the page needs no sign-in and
+// no server route beyond this one.
+const PREVIEWER_HTML: &str = include_str!("../../web/phext-previewer.html");
+
 // Canonical host is https://edit.phext.io (repeated below; tests check both files).
 // Disallow comes before Allow so a first-match crawler still blocks /api.
 // Allow: / is the public landing page (the editor shell). File contents and
@@ -2957,6 +2976,7 @@ const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>https://edit.phext.io/tts-demo.html</loc></url>
   <url><loc>https://edit.phext.io/learn-you-phext.html</loc></url>
   <url><loc>https://edit.phext.io/singular.html</loc></url>
+  <url><loc>https://edit.phext.io/phext-previewer.html</loc></url>
   <url><loc>https://edit.phext.io/submit</loc></url>
   <url><loc>https://edit.phext.io/claim</loc></url>
   <url><loc>https://edit.phext.io/explore</loc></url>
@@ -3195,6 +3215,32 @@ body {
 .auth-btn { display:block; background:var(--panel); border:1px solid var(--border); color:var(--text);
   font-family:inherit; font-size:14px; padding:10px 14px; border-radius:6px; text-decoration:none; cursor:pointer; }
 .auth-btn:hover { border-color:var(--coord); }
+
+/* ── Small screens (phones) ──
+   The shell is a desktop lattice: a fixed 320px left panel beside the
+   content, and a one-row status bar whose links never wrap. Below
+   700px the panel stacks above the content (its panels keep their
+   internal scroll, so every feature stays reachable), the status bar
+   wraps so all of its links stay tappable, overlays fit the viewport,
+   and tap targets grow to a usable size. */
+@media (max-width: 700px) {
+  #coord-bar { padding: 0 10px; overflow-x: auto; white-space: nowrap; }
+  #main { flex-direction: column; }
+  #left-panel { width: 100%; max-height: 42vh; border-right: none; border-bottom: 1px solid var(--border); }
+  #panel-tabs { height: 36px; }
+  #content { padding: 12px 14px; }
+  #editor textarea { padding: 12px 14px; }
+  #editor .editor-toolbar { height: auto; min-height: 40px; flex-wrap: wrap; padding: 4px 8px; }
+  #editor .editor-toolbar button { padding: 8px 12px; }
+  #status-bar { height: auto; min-height: 52px; flex-wrap: wrap; padding: 8px 12px; gap: 8px 14px; font-size: 14px; }
+  #status-bar .help { order: 10; flex-basis: 100%; white-space: normal; overflow: visible; text-overflow: clip; }
+  #status-bar .submit-link, #status-bar .claim-link { margin-left: 0; }
+  .overlay { top: 44px; }
+  #search-overlay, #goto-overlay, #phext-overlay { width: calc(100vw - 24px) !important; max-height: 70vh; }
+  #search-results .hit .hit-coord { min-width: 0; }
+  #auth-screen > div { width: 100%; padding: 0 16px; }
+  .axon { padding: 5px 4px; }
+}
 </style>
 </head>
 <body>
@@ -3236,6 +3282,7 @@ body {
   <a class="submit-link" href="submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
   <a class="claim-link" href="claim" title="If your X account is in the wavefront map, claim your space on this server">Claim your space</a>
   <a class="claim-link" href="explore" title="Every placement in the wavefront, explorable in nine dimensions">Explore the map</a>
+  <a class="claim-link" href="phext-previewer.html" title="Open a phext file from your own device and preview it scroll by scroll — no sign-in needed">Preview a phext</a>
   <a class="claim-link" href="api/auth/sso/mutable" title="Mutable OS — documents and Caverns, with this same sign-in">Mutable OS</a>
   <a class="claim-link" id="dashboard-link" href="claim/dashboard" style="display:none" title="Who has claimed their wavefront space, and who has joined since the snapshot — the owner and editors">Claim dashboard</a>
   <span id="signout" class="signout" style="display:none" onclick="signOut()" title="Sign out"></span>
@@ -3265,7 +3312,7 @@ body {
       A web editor for phext: plain text arranged in 11 dimensions.<br>
       Sign-in only checks who you are; nothing is shared or sold.<br>
       <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a><br>
-      No sign-in needed: <a href="up-goer-five.html" style="color:var(--coord)">Up Goer Five</a> · <a href="tts-demo.html" style="color:var(--coord)">Coordinate TTS demo</a> · <a href="learn-you-phext.html" style="color:var(--coord)">Learn You Phext</a> · <a href="singular.html" style="color:var(--coord)">Singular</a><br>
+      No sign-in needed: <a href="up-goer-five.html" style="color:var(--coord)">Up Goer Five</a> · <a href="tts-demo.html" style="color:var(--coord)">Coordinate TTS demo</a> · <a href="learn-you-phext.html" style="color:var(--coord)">Learn You Phext</a> · <a href="singular.html" style="color:var(--coord)">Singular</a> · <a href="phext-previewer.html" style="color:var(--coord)">Phext Previewer</a><br>
       Have a phext of your own? <a href="submit" style="color:var(--coord)">Upload it for review</a> — if an editor accepts it, you become an editor too. Signing in with X makes you an editor at once.<br>
       Placed in the wavefront map? <a href="claim" style="color:var(--coord)">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="explore" style="color:var(--coord)">explore the map</a> first.
     </div>
@@ -3810,7 +3857,7 @@ async function initApp() {
 mod public_route_tests {
     use super::{
         handle_request, is_api_path, is_editor_shell, public_document, AppState, ABOUT_HTML,
-        INDEX_HTML, LEARN_YOU_PHEXT_HTML, NOT_FOUND_HTML, PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE,
+        INDEX_HTML, LEARN_YOU_PHEXT_HTML, NOT_FOUND_HTML, PREVIEWER_HTML, PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE,
         SITEMAP_XML, STATIC_CACHE, TERMS_HTML, TTS_DEMO_HTML, UP_GOER_FIVE_HTML,
     };
     use phext_lattice::oauth::{Editors, Gate, Oauth};
@@ -4137,6 +4184,46 @@ mod public_route_tests {
         assert!(UP_GOER_FIVE_HTML.contains("href=\"singular.html\""), "up goer five cross-link");
         assert!(TTS_DEMO_HTML.contains("href=\"singular.html\""), "tts demo cross-link");
         assert!(LEARN_YOU_PHEXT_HTML.contains("href=\"singular.html\""), "learn you phext cross-link");
+    }
+
+    #[test]
+    fn previewer_page_is_public_and_linked() {
+        let gate = locked_gate();
+        let page = get(&gate, "/phext-previewer.html");
+        assert_eq!(page.status, 200);
+        assert!(page.content_type.contains("text/html"), "{}", page.content_type);
+        assert!(page.body.contains("Phext Previewer"), "{}", page.body);
+        // The file is parsed on the visitor's device: the page carries
+        // the delimiter table and makes no request of its own for one.
+        assert!(page.body.contains("DELIM_TO_LEVEL"), "the phext parser rides in the page");
+        assert!(page.body.contains("never leaves your device"), "the no-upload promise is stated");
+
+        // Discoverability: the surfaces a visitor actually lands on link
+        // it — the editor shell (sign-in utilities row + status bar), the
+        // About page's utility list, and the sitemap.
+        assert!(INDEX_HTML.contains("href=\"phext-previewer.html\""), "shell links");
+        assert!(INDEX_HTML.contains("Preview a phext</a>"), "shell status bar link");
+        assert!(ABOUT_HTML.contains("href=\"phext-previewer.html\""), "about link");
+        assert!(SITEMAP_XML.contains("https://edit.phext.io/phext-previewer.html</loc>"), "sitemap entry");
+
+        // Cross-links: the sibling utility pages link to the previewer,
+        // the way they cross-link each other.
+        assert!(UP_GOER_FIVE_HTML.contains("href=\"/phext-previewer.html\""), "up goer five cross-link");
+        assert!(TTS_DEMO_HTML.contains("href=\"/phext-previewer.html\""), "tts demo cross-link");
+        assert!(LEARN_YOU_PHEXT_HTML.contains("href=\"/phext-previewer.html\""), "learn you phext cross-link");
+    }
+
+    #[test]
+    fn shell_and_public_pages_carry_small_screen_rules() {
+        // The mobile audit (2026-11-07): the shell had no @media rules at
+        // all — a fixed 320px panel and a no-wrap status bar at phone
+        // width. These assertions keep the small-screen rules in place.
+        assert!(INDEX_HTML.contains("@media (max-width: 700px)"), "shell small-screen rules");
+        assert!(INDEX_HTML.contains("#left-panel { width: 100%"), "panel stacks on phones");
+        assert!(PREVIEWER_HTML.contains("@media (max-width: 700px)"), "previewer small-screen rules");
+        // ABOUT_HTML is built with public_style!(), so this also covers
+        // the privacy/terms/claim/submit pages that share the macro.
+        assert!(ABOUT_HTML.contains("@media (max-width: 700px)"), "public pages small-screen rules");
     }
 
     #[test]
