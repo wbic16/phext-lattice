@@ -193,6 +193,15 @@ pub struct Oauth {
     /// established production origin to fall back to — an SSO redirect
     /// target is never guessed.
     sso_wishnode_target: String,
+    /// Whether the desktop audience (Phext Notepad) is armed:
+    /// `PHEXT_SSO_DESKTOP=1`. A desktop app has no fixed origin to
+    /// configure — its callback is a loopback listener it opens per
+    /// sign-in attempt — so this audience is armed by an explicit
+    /// flag rather than a target URL. Assertions minted for it are
+    /// verified again here at the exchange endpoint, never by the
+    /// app: a shipped binary cannot hold the SSO secret, so the
+    /// secret never leaves this server.
+    sso_desktop: bool,
     cookie_secure: bool,
     github: Option<ProviderKeys>,
     google: Option<ProviderKeys>,
@@ -246,8 +255,19 @@ struct PendingBody {
 /// an assertion minted for a different audience. `ret` is a path on
 /// the audience's site, clamped by `safe_next` before sealing; `jti`
 /// is the single-use id the audience burns on first sight.
-#[derive(Serialize)]
-struct SsoAssertionBody {
+///
+/// The one exception to "never accepts one back" is the `desktop`
+/// audience (Phext Notepad): a shipped app cannot hold the SSO
+/// secret, so its assertions come back here to
+/// `POST /api/auth/desktop/exchange`, which verifies them under the
+/// secret and burns the `jti` server-side. For that audience `ret`
+/// is the app's validated loopback return URL (see
+/// `loopback_return`), and `st` carries the app's per-attempt state
+/// nonce, sealed at mint and demanded back at the exchange. Web
+/// audiences never carry `st` — the field is simply absent from
+/// their assertions.
+#[derive(Serialize, Deserialize)]
+pub struct SsoAssertionBody {
     aud: String,
     who: String,
     handle: String,
@@ -255,6 +275,8 @@ struct SsoAssertionBody {
     email: String,
     editor: bool,
     ret: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    st: Option<String>,
     iat: i64,
     exp: i64,
     jti: String,
@@ -283,6 +305,7 @@ impl Oauth {
             &std::env::var("PHEXT_SSO_MUTABLE_URL").unwrap_or_default(),
             &std::env::var("PHEXT_SSO_EXOCORTEXIA_URL").unwrap_or_default(),
             &std::env::var("PHEXT_SSO_WISHNODE_URL").unwrap_or_default(),
+            std::env::var("PHEXT_SSO_DESKTOP").unwrap_or_default().trim() == "1",
             Arc::new(HttpSource),
         )
     }
@@ -302,12 +325,13 @@ impl Oauth {
             "",
             "https://exocortexia.example",
             "https://wishnode.example",
+            true,
             Arc::new(ScriptedSource),
         )
     }
 
     pub fn closed() -> Self {
-        Self::from_parts("", "", false, "", "", "", "", "", "", "", "", "", "", Arc::new(ScriptedSource))
+        Self::from_parts("", "", false, "", "", "", "", "", "", "", "", "", "", false, Arc::new(ScriptedSource))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -325,6 +349,7 @@ impl Oauth {
         sso_target: &str,
         sso_exocortexia_target: &str,
         sso_wishnode_target: &str,
+        sso_desktop: bool,
         source: Arc<dyn IdentitySource>,
     ) -> Self {
         let base = base.trim().trim_end_matches('/').to_string();
@@ -364,6 +389,7 @@ impl Oauth {
             sso_target,
             sso_exocortexia_target,
             sso_wishnode_target,
+            sso_desktop,
             cookie_secure,
             github: provider(github_id, github_secret),
             google: provider(google_id, google_secret),
@@ -395,6 +421,14 @@ impl Oauth {
         real_session_secret(&self.sso_secret) && self.sso_target_for(aud).is_some()
     }
 
+    /// True when the desktop audience is armed: a real SSO secret
+    /// and the operator's explicit `PHEXT_SSO_DESKTOP=1`. There is no
+    /// target to consult — the app's callback is a per-attempt
+    /// loopback listener — so readiness is the secret plus the flag.
+    pub fn sso_desktop_ready(&self) -> bool {
+        real_session_secret(&self.sso_secret) && self.sso_desktop
+    }
+
     pub fn base(&self) -> &str {
         &self.base
     }
@@ -409,7 +443,11 @@ impl Oauth {
     /// Exocortexia has one only once `PHEXT_SSO_EXOCORTEXIA_URL` is
     /// set, and Wishnode only once `PHEXT_SSO_WISHNODE_URL` is. This
     /// match is the audience allowlist — an audience that is
-    /// not named here can never be minted for.
+    /// not named here can never be minted for. The desktop audience
+    /// is deliberately absent: it has no fixed origin (its callback
+    /// is the app's per-attempt loopback listener), so it is armed
+    /// and minted on its own path (`sso_desktop_ready`,
+    /// `sso_assertion_desktop`).
     pub fn sso_target_for(&self, aud: &str) -> Option<&str> {
         match aud {
             "mutable" if !self.sso_target.is_empty() => Some(&self.sso_target),
@@ -523,16 +561,36 @@ impl Oauth {
         if !valid_who(&identity.who) || identity.handle.is_empty() {
             return Err("Sign-in did not complete.".into());
         }
+        let (session, _csrf) =
+            self.issue_session(&identity.who, &identity.handle, &identity.name, &identity.email)?;
+        Ok((identity, session, format!("{}{}", self.base, pending.next)))
+    }
+
+    /// Seal a fresh session for an identity that has already been
+    /// established — by the provider exchange in `finish`, or by a
+    /// verified desktop SSO assertion at the exchange endpoint. This
+    /// is the one place session values are made: a fresh CSRF token
+    /// and a `SESSION_TTL` seal under the session secret. Returns the
+    /// sealed cookie value and the CSRF token inside it (the desktop
+    /// exchange hands both to the app; the browser flow learns the
+    /// CSRF from `/api/session` instead).
+    pub fn issue_session(
+        &self,
+        who: &str,
+        handle: &str,
+        name: &str,
+        email: &str,
+    ) -> Result<(String, String), String> {
         let csrf = random_token(16)?;
         let session = self.seal(&SessionBody {
-            who: identity.who.clone(),
-            handle: identity.handle.clone(),
-            name: display_name(&identity.name, &identity.handle),
-            email: clean_email(&identity.email),
-            csrf,
+            who: who.to_string(),
+            handle: handle.to_string(),
+            name: display_name(name, handle),
+            email: clean_email(email),
+            csrf: csrf.clone(),
             exp: now() + SESSION_TTL,
         })?;
-        Ok((identity, session, format!("{}{}", self.base, pending.next)))
+        Ok((session, csrf))
     }
 
     pub fn read_session(&self, cookie_header: &str) -> Option<Session> {
@@ -636,6 +694,7 @@ impl Oauth {
                 email: session.email.clone(),
                 editor,
                 ret: safe_next(ret),
+                st: None,
                 iat,
                 exp: iat + SSO_TTL,
                 jti: random_token(16)?,
@@ -643,11 +702,71 @@ impl Oauth {
         )
     }
 
+    /// Mint the desktop audience's assertion. Same sealed format as
+    /// every audience, with the two differences that audience exists
+    /// for: `ret` is the app's loopback return URL, validated by
+    /// `loopback_return` here at the moment of sealing (anything else
+    /// is refused, so no unvalidated return ever crosses), and the
+    /// app's per-attempt `state` nonce rides sealed as `st`, to be
+    /// demanded back at the exchange — an assertion that arrives
+    /// anywhere without its attempt's state is not that attempt's
+    /// assertion. The caller (`Gate::sso_desktop`) has already
+    /// validated the state's shape.
+    pub fn sso_assertion_desktop(
+        &self,
+        session: &Session,
+        editor: bool,
+        ret: &str,
+        state: &str,
+    ) -> Result<String, String> {
+        if !self.sso_desktop_ready() {
+            return Err("Sign-in is not set up yet.".into());
+        }
+        let ret = loopback_return(ret)
+            .ok_or_else(|| "That return address is not a loopback address.".to_string())?;
+        let iat = now();
+        self.seal_with(
+            &self.sso_secret,
+            &SsoAssertionBody {
+                aud: "desktop".into(),
+                who: session.who.clone(),
+                handle: session.handle.clone(),
+                name: session.name.clone(),
+                email: session.email.clone(),
+                editor,
+                ret,
+                st: Some(state.to_string()),
+                iat,
+                exp: iat + SSO_TTL,
+                jti: random_token(16)?,
+            },
+        )
+    }
+
+    /// Open an SSO assertion under the SSO secret — the exchange
+    /// endpoint is the one place this server ever takes an assertion
+    /// back, and only the desktop audience's. Expiry is checked
+    /// here; audience, state, and single-use are the caller's to
+    /// enforce (the burn lives on the `Gate`, which owns request
+    /// state). Every failure is the same error: the exchange must
+    /// not say which check a forged assertion failed.
+    pub fn open_sso_assertion(&self, token: &str) -> Result<SsoAssertionBody, String> {
+        let body = self.open_with::<SsoAssertionBody>(&self.sso_secret, token)?;
+        if body.exp < now() {
+            return Err("Sign-in did not complete.".into());
+        }
+        Ok(body)
+    }
+
     fn open<T: for<'de> Deserialize<'de>>(&self, token: &str) -> Result<T, String> {
+        self.open_with(&self.session_secret, token)
+    }
+
+    fn open_with<T: for<'de> Deserialize<'de>>(&self, secret: &str, token: &str) -> Result<T, String> {
         let (payload, sig) = token
             .split_once('.')
             .ok_or_else(|| "Sign-in did not complete.".to_string())?;
-        if payload.len() > 4000 || sig.len() > 200 || !verify(&self.session_secret, payload, sig) {
+        if payload.len() > 4000 || sig.len() > 200 || !verify(secret, payload, sig) {
             return Err("Sign-in did not complete.".into());
         }
         let bytes = base64url_decode(payload).ok_or_else(|| "Sign-in did not complete.".to_string())?;
@@ -1014,6 +1133,12 @@ pub struct Gate {
     /// Claim mode (`/api/claim` writes). Off unless the operator turns
     /// it on: `PHEXT_CLAIM_ENABLED=1` via `from_env`, or `enable_claims`.
     claims: AtomicBool,
+    /// Desktop SSO assertions already spent at the exchange endpoint:
+    /// `jti` → its `exp`. Web audiences burn their own; the desktop
+    /// audience cannot hold the secret, so its single-use is enforced
+    /// here. Entries are pruned by expiry on every burn, so the set
+    /// holds at most one assertion lifetime's worth of exchanges.
+    burned: std::sync::Mutex<std::collections::HashMap<String, i64>>,
 }
 
 impl Gate {
@@ -1026,7 +1151,23 @@ impl Gate {
             limits: Limiter::standard(),
             local: AtomicBool::new(false),
             claims: AtomicBool::new(false),
+            burned: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// Spend a desktop assertion's `jti`. Returns false when it was
+    /// already spent — a replay. Expired entries are dropped first,
+    /// so the set cannot grow past the assertions one lifetime can
+    /// hold.
+    fn burn_jti(&self, jti: &str, exp: i64) -> bool {
+        let mut burned = self.burned.lock().unwrap();
+        let t = now();
+        burned.retain(|_, e| *e >= t);
+        if burned.contains_key(jti) {
+            return false;
+        }
+        burned.insert(jti.to_string(), exp);
+        true
     }
 
     pub fn from_env(token: Option<String>) -> Self {
@@ -1154,6 +1295,13 @@ impl Gate {
         let reply = match (method, route) {
             ("GET", "/api/session") => self.session_view(headers),
             ("POST", "/api/auth/logout") => self.logout(headers),
+            // The desktop exchange: the one assertion this server
+            // ever takes back. Its credential rides in headers (the
+            // route layer has no body channel; headers are how this
+            // API already carries the CSRF credential). Before the
+            // generic provider arm, which would read `desktop` as a
+            // provider name.
+            ("POST", "/api/auth/desktop/exchange") => self.desktop_exchange(headers),
             // Before the generic provider arm: without this arm, `sso`
             // would be parsed as a provider name below. The segment
             // after `sso/` is the audience; `Gate::sso` answers 404 for
@@ -1346,6 +1494,12 @@ impl Gate {
         if self.limits.hit(&client_key(headers)).is_err() {
             return Reply::error(429, "Too many requests.");
         }
+        // The desktop audience has no configured target to look up —
+        // its return is a per-attempt loopback URL — so it leaves the
+        // shared path here, before the target check.
+        if aud == "desktop" {
+            return self.sso_desktop(headers, query);
+        }
         let Some(target) = self.oauth.sso_target_for(aud) else {
             return Reply::error(404, "not found");
         };
@@ -1366,6 +1520,118 @@ impl Gate {
                 "{target}/api/auth/callback?assertion={assertion}"
             )),
             Err(message) => Reply::error(403, &message),
+        }
+    }
+
+    /// `GET /api/auth/sso/desktop` — the desktop audience's mint
+    /// (Phext Notepad). Same shape as the web handoff (an unarmed
+    /// audience 404s before any session handling; the signed-out are
+    /// sent to sign-in with this endpoint as the `next`), with the
+    /// two differences the audience exists for:
+    ///
+    /// * The return is not an operator-configured origin but the
+    ///   app's own loopback listener, supplied per attempt as
+    ///   `?return=` and admitted only through `loopback_return` —
+    ///   an `http` URL on the `127.0.0.1` or `[::1]` literal with an
+    ///   explicit port. Anything else (a hostname — `localhost`
+    ///   included — another IP, `https`, a missing port) is a 400
+    ///   before any session handling, so a bad return never enters
+    ///   the sign-in bounce.
+    /// * The app's per-attempt `state` nonce is required and rides
+    ///   sealed inside the assertion; the exchange demands it back.
+    ///
+    /// The redirect carries the assertion and the state back to the
+    /// listener as query parameters — the assertion is worthless
+    /// almost immediately (120 seconds, single-use, burned at the
+    /// exchange), the same posture as the web audiences' callbacks.
+    fn sso_desktop(
+        &self,
+        headers: &HashMap<String, String>,
+        query: &HashMap<String, String>,
+    ) -> Reply {
+        if !self.oauth.sso_desktop_ready() {
+            return Reply::error(404, "not found");
+        }
+        let raw_ret = query.get("return").map(String::as_str).unwrap_or("");
+        let Some(ret) = loopback_return(raw_ret) else {
+            return Reply::error(400, "That return address is not a loopback address.");
+        };
+        let state = query.get("state").map(String::as_str).unwrap_or("");
+        if !valid_state_nonce(state) {
+            return Reply::error(400, "That sign-in request is missing its state.");
+        }
+        let Some(session) = self.session(headers) else {
+            let next = format!(
+                "/api/auth/sso/desktop?return={}&state={}",
+                form_encode(&ret),
+                form_encode(state)
+            );
+            return Reply::redirect(format!("{}/?next={}", self.oauth.base(), form_encode(&next)));
+        };
+        if !self.sso_admits(&session) {
+            return Reply::error(403, "This account is not on the editor list.");
+        }
+        let editor = self.is_editor(&session);
+        match self.oauth.sso_assertion_desktop(&session, editor, &ret, state) {
+            Ok(assertion) => {
+                let sep = if ret.contains('?') { '&' } else { '?' };
+                Reply::redirect(format!(
+                    "{ret}{sep}assertion={assertion}&state={}",
+                    form_encode(state)
+                ))
+            }
+            Err(message) => Reply::error(403, &message),
+        }
+    }
+
+    /// `POST /api/auth/desktop/exchange` — the desktop audience's
+    /// assertions come home. The app presents the assertion it caught
+    /// on its loopback listener (`x-phext-assertion`) with the state
+    /// of the attempt that minted it (`x-phext-state`); this server
+    /// verifies the seal under the SSO secret (a shipped app cannot
+    /// hold that secret, so verification lives here and nowhere
+    /// else), the `desktop` audience, the expiry, and the state, and
+    /// burns the `jti` — single-use is enforced on this side of the
+    /// wire. Every validation failure is the same 401: the endpoint
+    /// does not say which check a bad assertion failed.
+    ///
+    /// A verified assertion for an account on the editors list is
+    /// answered with a freshly sealed session value and its CSRF
+    /// token as JSON — the credential the app then presents exactly
+    /// as if the user had handed it the cookie. The gate is checked
+    /// fresh against the current list (not the assertion's `editor`
+    /// claim): a signed-in non-editor's assertion still mints, but
+    /// the exchange answers it with the gate's own refusal and no
+    /// credential, and the attempt spends the assertion either way —
+    /// once admitted, the app simply starts a new attempt.
+    fn desktop_exchange(&self, headers: &HashMap<String, String>) -> Reply {
+        if self.limits.hit(&client_key(headers)).is_err() {
+            return Reply::error(429, "Too many requests.");
+        }
+        if !self.oauth.sso_desktop_ready() {
+            return Reply::error(404, "not found");
+        }
+        let refuse = || Reply::error(401, "Sign-in did not complete.");
+        let assertion = headers.get("x-phext-assertion").map(|v| v.trim()).unwrap_or("");
+        let state = headers.get("x-phext-state").map(|v| v.trim()).unwrap_or("");
+        if assertion.is_empty() || state.is_empty() {
+            return refuse();
+        }
+        let Ok(body) = self.oauth.open_sso_assertion(assertion) else {
+            return refuse();
+        };
+        if body.aud != "desktop" || body.st.as_deref() != Some(state) {
+            return refuse();
+        }
+        if !valid_who(&body.who) || !self.burn_jti(&body.jti, body.exp) {
+            return refuse();
+        }
+        if !self.editors.allows(&body.who, &body.email) {
+            return Reply::error(403, "This account is not on the editor list.");
+        }
+        match self.oauth.issue_session(&body.who, &body.handle, &body.name, &body.email) {
+            Ok((session, csrf)) => Reply::json(200, json!({ "session": session, "csrf": csrf })),
+            Err(_) => Reply::error(500, "Sign-in did not complete."),
         }
     }
 }
@@ -1525,6 +1791,78 @@ pub fn safe_next(next: &str) -> String {
         return "/".into();
     }
     next.to_string()
+}
+
+/// Admit a desktop return URL: the address of the listener the app
+/// opened for this one sign-in attempt. The bar is the loopback
+/// literal itself, checked character by character — not a URL parse
+/// that a hostname or userinfo could slip through:
+///
+/// * scheme `http` exactly. Loopback has a real origin but no CA
+///   issues certificates for it; RFC 8252's native-app practice is
+///   plain http on the loopback interface, which never leaves the
+///   machine.
+/// * host the literal `127.0.0.1` or `[::1]` — not `localhost`, not
+///   any other name, not another loopback address. A name is
+///   whatever the resolver says it is (hosts files are editable),
+///   and the app binds the numeric loopback anyway.
+/// * an explicit port, 1–65535 — the app always listens on an
+///   ephemeral port it was given, never a default.
+/// * then only a path/query tail of plain URL characters: no `#`
+///   (a fragment never reaches a server anyway, and its presence
+///   means the value was not a listener address), no whitespace,
+///   controls, or non-ASCII.
+///
+/// The result is capped short enough to ride the sign-in bounce —
+/// this endpoint travels as the `next` of a `/?next=` redirect, and
+/// `safe_next` refuses anything over 200 characters there.
+pub fn loopback_return(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty()
+        || raw.len() > 160
+        || raw.contains('#')
+        || raw.contains('\\')
+        || raw.chars().any(|ch| ch.is_control() || ch == ' ' || !ch.is_ascii())
+    {
+        return None;
+    }
+    let rest = raw.strip_prefix("http://")?;
+    let authority_len = rest
+        .find(|ch| ch == '/' || ch == '?')
+        .unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_len);
+    let (host, port) = if let Some(v6) = authority.strip_prefix("[::1]:") {
+        ("[::1]", v6)
+    } else if let Some(v4) = authority.strip_prefix("127.0.0.1:") {
+        ("127.0.0.1", v4)
+    } else {
+        return None;
+    };
+    if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let port: u32 = port.parse().ok()?;
+    if port == 0 || port > 65535 {
+        return None;
+    }
+    if !tail
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || "-._~:/?&=%+@!$'()*,".contains(ch))
+    {
+        return None;
+    }
+    Some(format!("http://{host}:{port}{tail}"))
+}
+
+/// The desktop attempt's state nonce: long enough to be unguessable,
+/// plain enough to travel in URLs and assertions unchanged. The app
+/// generates it (32 random hex/letters in practice); this only
+/// checks the shape.
+pub fn valid_state_nonce(state: &str) -> bool {
+    (16..=128).contains(&state.len())
+        && state
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
 }
 
 pub fn valid_who(who: &str) -> bool {
@@ -2372,6 +2710,7 @@ mod tests {
             "",
             "",
             "",
+            false,
             Arc::new(ScriptedSource),
         );
         assert!(oauth.sso_ready());
@@ -2449,6 +2788,7 @@ mod tests {
             "",
             "https://exocortexia.example",
             "",
+            false,
             Arc::new(ScriptedSource),
         );
         assert!(oauth.sso_ready());
@@ -2658,5 +2998,272 @@ mod tests {
         let forwarded = headers(&[("x-forwarded-for", "1.2.3.4, 203.0.113.9")]);
         assert_eq!(client_key(&forwarded), "203.0.113.9");
         assert_eq!(client_key(&headers(&[])), "local");
+    }
+
+    const DESKTOP_STATE: &str = "attempt-state-0123456789abcdef";
+    const DESKTOP_RETURN: &str = "http://127.0.0.1:8912/";
+
+    /// Drive a desktop mint for a signed-in scripted session and
+    /// hand back the assertion the loopback redirect carries.
+    fn desktop_assertion(gate: &Gate, session: &str) -> String {
+        let path = format!(
+            "/api/auth/sso/desktop?return={}&state={DESKTOP_STATE}",
+            form_encode(DESKTOP_RETURN)
+        );
+        let jump = gate.route("GET", &path, &headers(&[("cookie", session)])).unwrap();
+        assert_eq!(jump.status, 302);
+        let location = header(&jump, "Location")[0].to_string();
+        let rest = location
+            .strip_prefix(&format!("{DESKTOP_RETURN}?assertion="))
+            .unwrap_or_else(|| panic!("unexpected redirect: {location}"));
+        let (assertion, state) = rest.split_once("&state=").unwrap();
+        assert_eq!(state, DESKTOP_STATE);
+        assertion.to_string()
+    }
+
+    fn exchange(gate: &Gate, assertion: &str, state: &str) -> Reply {
+        gate.route(
+            "POST",
+            "/api/auth/desktop/exchange",
+            &headers(&[
+                ("x-phext-assertion", assertion),
+                ("x-phext-state", state),
+            ]),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn loopback_return_admits_only_ip_literals_with_ports() {
+        for good in [
+            "http://127.0.0.1:8912/",
+            "http://127.0.0.1:1",
+            "http://[::1]:65535/callback",
+            "http://127.0.0.1:40000/?from=notepad",
+        ] {
+            assert_eq!(loopback_return(good).as_deref(), Some(good), "{good}");
+        }
+        for bad in [
+            "",
+            "http://localhost:8912/",       // a name, not the literal
+            "http://127.0.0.2:8912/",        // another loopback address
+            "http://127.1:8912/",            // shorthand loopback
+            "http://0.0.0.0:8912/",          // the wildcard, not loopback
+            "https://127.0.0.1:8912/",       // no CA certifies loopback
+            "http://127.0.0.1/",             // no port: never a listener
+            "http://127.0.0.1:0/",           // port zero is not a port
+            "http://127.0.0.1:65536/",       // out of range
+            "http://127.0.0.1:8912.evil.example/",
+            "http://user@127.0.0.1:8912/",   // userinfo
+            "http://127.0.0.1:8912/#frag",   // a fragment is not a listener
+            "http://example.com:8912/",      // off this machine entirely
+            "http://127.0.0.1:8912/a b",     // whitespace
+            "//127.0.0.1:8912/",             // no scheme
+        ] {
+            assert_eq!(loopback_return(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn sso_desktop_mints_an_assertion_that_carries_the_state() {
+        let gate = gate(None, "");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/desktop");
+        let assertion = desktop_assertion(&gate, &session);
+        let body = open_assertion("test-sso-secret-must-be-32-chars-minimum", &assertion);
+        assert_eq!(body["aud"], "desktop");
+        assert_eq!(body["who"], "google:sub-1");
+        assert_eq!(body["handle"], "ada");
+        assert_eq!(body["editor"], true);
+        assert_eq!(body["ret"], DESKTOP_RETURN);
+        assert_eq!(body["st"], DESKTOP_STATE);
+        assert_eq!(body["exp"].as_i64().unwrap() - body["iat"].as_i64().unwrap(), 120);
+        assert!(!body["jti"].as_str().unwrap().is_empty());
+        // The session secret does not open it: the keys never substitute.
+        let (payload, sig) = assertion.split_once('.').unwrap();
+        assert!(!verify("test-session-secret-must-be-32chars", payload, sig));
+    }
+
+    #[test]
+    fn sso_desktop_sends_the_signed_out_to_sign_in_with_itself_as_next() {
+        let gate = gate(None, "");
+        let path = format!(
+            "/api/auth/sso/desktop?return={}&state={DESKTOP_STATE}",
+            form_encode(DESKTOP_RETURN)
+        );
+        let reply = gate.route("GET", &path, &headers(&[])).unwrap();
+        assert_eq!(reply.status, 302);
+        let location = header(&reply, "Location")[0];
+        let next = location.strip_prefix("http://127.0.0.1:8080/?next=").unwrap();
+        assert_eq!(
+            percent_decode(&percent_decode(next)),
+            format!("/api/auth/sso/desktop?return={DESKTOP_RETURN}&state={DESKTOP_STATE}")
+        );
+    }
+
+    #[test]
+    fn sso_desktop_refuses_bad_returns_and_states_before_session_work() {
+        // Signed out throughout: a bad return or state is a 400, not
+        // the sign-in bounce — the bounce never carries them.
+        let gate = gate(None, "");
+        for path in [
+            "/api/auth/sso/desktop?return=http://example.com:8912/&state=attempt-state-0123456789abcdef",
+            "/api/auth/sso/desktop?return=http://localhost:8912/&state=attempt-state-0123456789abcdef",
+            "/api/auth/sso/desktop?return=https://127.0.0.1:8912/&state=attempt-state-0123456789abcdef",
+            "/api/auth/sso/desktop?return=http://127.0.0.1:8912/",
+            "/api/auth/sso/desktop?return=http://127.0.0.1:8912/&state=short",
+            "/api/auth/sso/desktop?state=attempt-state-0123456789abcdef",
+        ] {
+            let reply = gate.route("GET", path, &headers(&[])).unwrap();
+            assert_eq!(reply.status, 400, "{path}");
+        }
+    }
+
+    #[test]
+    fn sso_desktop_is_404_until_armed() {
+        // Secret set, web audiences configured, desktop flag off:
+        // both desktop endpoints answer as if they do not exist,
+        // while the web audiences work exactly as before.
+        let oauth = Oauth::from_parts(
+            "http://127.0.0.1:8080",
+            "test-session-secret-must-be-32chars",
+            true,
+            "github-client-id",
+            "github-client-secret",
+            "google-client-id",
+            "google-client-secret",
+            "x-client-id",
+            "x-client-secret",
+            "test-sso-secret-must-be-32-chars-minimum",
+            "",
+            "https://exocortexia.example",
+            "https://wishnode.example",
+            false,
+            Arc::new(ScriptedSource),
+        );
+        assert!(!oauth.sso_desktop_ready());
+        let gate = Gate::new(None, oauth, Editors::parse(""));
+        let session = scripted_session(&gate, "google", "/");
+        let path = format!(
+            "/api/auth/sso/desktop?return={}&state={DESKTOP_STATE}",
+            form_encode(DESKTOP_RETURN)
+        );
+        let reply = gate.route("GET", &path, &headers(&[("cookie", &session)])).unwrap();
+        assert_eq!(reply.status, 404);
+        let reply = exchange(&gate, "whatever", DESKTOP_STATE);
+        assert_eq!(reply.status, 404);
+        let reply = gate.route("GET", "/api/auth/sso/exocortexia", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 302);
+    }
+
+    #[test]
+    fn desktop_exchange_issues_a_session_the_gate_admits() {
+        let gate = gate(None, "");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/desktop");
+        let assertion = desktop_assertion(&gate, &session);
+        let reply = exchange(&gate, &assertion, DESKTOP_STATE);
+        assert_eq!(reply.status, 200);
+        let granted: serde_json::Value =
+            serde_json::from_str(std::str::from_utf8(&reply.body).unwrap()).unwrap();
+        let value = granted["session"].as_str().unwrap();
+        let opened = gate
+            .oauth
+            .read_session(&format!("phext_session={value}"))
+            .expect("a real session");
+        assert_eq!(opened.who, "google:sub-1");
+        assert_eq!(opened.handle, "ada");
+        assert_eq!(granted["csrf"], opened.csrf);
+        // And the gate admits it like any cookie the browser flow set.
+        let cookie = format!("phext_session={value}");
+        assert!(gate.admit("GET", "/api/status", &headers(&[("cookie", &cookie)])).is_ok());
+    }
+
+    #[test]
+    fn desktop_exchange_burns_the_assertion() {
+        let gate = gate(None, "");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/desktop");
+        let assertion = desktop_assertion(&gate, &session);
+        assert_eq!(exchange(&gate, &assertion, DESKTOP_STATE).status, 200);
+        let replay = exchange(&gate, &assertion, DESKTOP_STATE);
+        assert_eq!(replay.status, 401);
+        assert!(written(&replay).contains("Sign-in did not complete."));
+    }
+
+    #[test]
+    fn desktop_exchange_demands_the_attempts_own_state() {
+        let gate = gate(None, "");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/desktop");
+        let assertion = desktop_assertion(&gate, &session);
+        // A wrong state is not this attempt's exchange: refused, and
+        // the assertion is NOT spent — the real attempt can still land.
+        let wrong = exchange(&gate, &assertion, "attempt-state-9999999999999999");
+        assert_eq!(wrong.status, 401);
+        assert_eq!(exchange(&gate, &assertion, DESKTOP_STATE).status, 200);
+    }
+
+    #[test]
+    fn desktop_exchange_rejects_tampered_expired_and_foreign_assertions() {
+        let gate = gate(None, "");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/desktop");
+
+        // Tampered payload: the seal no longer verifies.
+        let assertion = desktop_assertion(&gate, &session);
+        let (payload, sig) = assertion.split_once('.').unwrap();
+        let mut bytes = payload.as_bytes().to_vec();
+        bytes[0] = if bytes[0] == b'A' { b'B' } else { b'A' };
+        let tampered = format!("{}.{}", String::from_utf8(bytes).unwrap(), sig);
+        assert_eq!(exchange(&gate, &tampered, DESKTOP_STATE).status, 401);
+
+        // Expired: honestly sealed under the SSO secret, but its
+        // 120 seconds are long past.
+        let expired = gate
+            .oauth
+            .seal_with(
+                "test-sso-secret-must-be-32-chars-minimum",
+                &SsoAssertionBody {
+                    aud: "desktop".into(),
+                    who: "google:sub-1".into(),
+                    handle: "ada".into(),
+                    name: "Ada Example".into(),
+                    email: "ada@example.com".into(),
+                    editor: true,
+                    ret: DESKTOP_RETURN.into(),
+                    st: Some(DESKTOP_STATE.into()),
+                    iat: now() - 1000,
+                    exp: now() - 880,
+                    jti: "an-already-dead-jti".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(exchange(&gate, &expired, DESKTOP_STATE).status, 401);
+
+        // Foreign: a Mutable assertion is genuine, sealed, unexpired —
+        // and minted for a different audience. Not exchangeable.
+        let jump = gate
+            .route("GET", "/api/auth/sso/mutable", &headers(&[("cookie", &session)]))
+            .unwrap();
+        let location = header(&jump, "Location")[0].to_string();
+        let foreign = location.split("assertion=").nth(1).unwrap().to_string();
+        assert_eq!(exchange(&gate, &foreign, DESKTOP_STATE).status, 401);
+
+        // Garbage is garbage.
+        assert_eq!(exchange(&gate, "not-an-assertion", DESKTOP_STATE).status, 401);
+        assert_eq!(exchange(&gate, "", DESKTOP_STATE).status, 401);
+    }
+
+    #[test]
+    fn desktop_exchange_refuses_a_non_editor_and_still_burns() {
+        // Only GitHub's octocat may edit; the scripted Google user
+        // may sign in — and mint — but must not come away with an
+        // editing session. The refusal is the gate's own sentence,
+        // carries no credential, and spends the assertion.
+        let gate = gate(None, "github:100");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/desktop");
+        let assertion = desktop_assertion(&gate, &session);
+        let reply = exchange(&gate, &assertion, DESKTOP_STATE);
+        assert_eq!(reply.status, 403);
+        let text = String::from_utf8_lossy(&reply.body);
+        assert!(text.contains("This account is not on the editor list."));
+        assert!(!text.contains("\"session\""));
+        assert_eq!(exchange(&gate, &assertion, DESKTOP_STATE).status, 401);
     }
 }
