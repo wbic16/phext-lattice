@@ -4600,6 +4600,7 @@ mod public_route_tests {
                 assert!(!lower.contains(marker), "{name} contains {marker}");
             }
             assert!(!page.contains("buy.stripe.com"), "{name} hardcodes a payment link");
+            assert!(!page.contains("donate.stripe.com"), "{name} hardcodes the live Payment Link");
             assert!(!page.contains(">Support the site</a>"), "{name} bakes in the donation link");
             let hidden = sponsor::apply_slot(page, &SponsorOffer::parse(""));
             assert!(!hidden.contains(sponsor::SLOT), "{name} left the slot in");
