@@ -174,12 +174,19 @@ pub struct Oauth {
     /// (e.g. `https://mirrorborn.us/editor`). No trailing slash.
     base: String,
     session_secret: String,
-    /// Signs Mutable SSO assertions, and nothing else. Deliberately not
-    /// the session secret: Mutable holds this key to verify assertions,
-    /// and a leak over there must not mint edit sessions.
+    /// Signs SSO assertions for every allowlisted audience (Mutable,
+    /// Exocortexia), and nothing else. Deliberately not the session
+    /// secret: each audience holds this key to verify assertions, and
+    /// a leak over there must not mint edit sessions.
     sso_secret: String,
     /// Where Mutable lives; assertions are redirected to its callback.
     sso_target: String,
+    /// Where Exocortexia lives; assertions for that audience are
+    /// redirected to its callback. Empty until `PHEXT_SSO_EXOCORTEXIA_URL`
+    /// is set: unlike Mutable it has no default, because there is no
+    /// established production origin to fall back to — an SSO redirect
+    /// target is never guessed.
+    sso_exocortexia_target: String,
     cookie_secure: bool,
     github: Option<ProviderKeys>,
     google: Option<ProviderKeys>,
@@ -223,12 +230,15 @@ struct PendingBody {
     exp: i64,
 }
 
-/// The Mutable SSO assertion: a sealed, single-use statement that an
-/// edit session exists, carried to Mutable's callback in a redirect and
-/// verified there under the SSO secret. It is not a session — Mutable
-/// mints its own from it, and this server never accepts one back.
-/// `ret` is a path on Mutable, clamped by `safe_next` before sealing;
-/// `jti` is the single-use id Mutable burns on first sight.
+/// The SSO assertion: a sealed, single-use statement that an edit
+/// session exists, carried to an audience's callback in a redirect and
+/// verified there under the SSO secret. It is not a session — the
+/// audience mints its own from it, and this server never accepts one
+/// back. `aud` names the one audience it was minted for (`mutable`,
+/// `exocortexia`); a consumer must reject any other value, including
+/// an assertion minted for a different audience. `ret` is a path on
+/// the audience's site, clamped by `safe_next` before sealing; `jti`
+/// is the single-use id the audience burns on first sight.
 #[derive(Serialize)]
 struct SsoAssertionBody {
     aud: String,
@@ -264,6 +274,7 @@ impl Oauth {
             &std::env::var("X_CLIENT_SECRET").unwrap_or_default(),
             &std::env::var("PHEXT_SSO_SECRET").unwrap_or_default(),
             &std::env::var("PHEXT_SSO_MUTABLE_URL").unwrap_or_default(),
+            &std::env::var("PHEXT_SSO_EXOCORTEXIA_URL").unwrap_or_default(),
             Arc::new(HttpSource),
         )
     }
@@ -281,12 +292,13 @@ impl Oauth {
             "x-client-secret",
             "test-sso-secret-must-be-32-chars-minimum",
             "",
+            "https://exocortexia.example",
             Arc::new(ScriptedSource),
         )
     }
 
     pub fn closed() -> Self {
-        Self::from_parts("", "", false, "", "", "", "", "", "", "", "", Arc::new(ScriptedSource))
+        Self::from_parts("", "", false, "", "", "", "", "", "", "", "", "", Arc::new(ScriptedSource))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -302,6 +314,7 @@ impl Oauth {
         x_secret: &str,
         sso_secret: &str,
         sso_target: &str,
+        sso_exocortexia_target: &str,
         source: Arc<dyn IdentitySource>,
     ) -> Self {
         let base = base.trim().trim_end_matches('/').to_string();
@@ -316,11 +329,22 @@ impl Oauth {
         } else {
             String::new()
         };
+        // Unset or invalid leaves Exocortexia unconfigured (empty
+        // target, its endpoint 404s) rather than redirecting anywhere
+        // guessed — Mutable's default exists because its origin is
+        // established; Exocortexia's is set explicitly at deploy time.
+        let sso_exocortexia_target = sso_exocortexia_target.trim().trim_end_matches('/').to_string();
+        let sso_exocortexia_target = if valid_base(&sso_exocortexia_target) {
+            sso_exocortexia_target
+        } else {
+            String::new()
+        };
         Self {
             base,
             session_secret: session_secret.trim().to_string(),
             sso_secret: sso_secret.trim().to_string(),
             sso_target,
+            sso_exocortexia_target,
             cookie_secure,
             github: provider(github_id, github_secret),
             google: provider(google_id, google_secret),
@@ -340,7 +364,16 @@ impl Oauth {
     /// the handoff mints nothing of its own; it rides the session the
     /// providers already made, so it needs no provider keys here.
     pub fn sso_ready(&self) -> bool {
-        real_session_secret(&self.sso_secret) && !self.sso_target.is_empty()
+        self.sso_ready_for("mutable")
+    }
+
+    /// True when the SSO handoff is configured for one audience: the
+    /// shared SSO secret is real and that audience has a target. Every
+    /// allowlisted audience rides the same secret and the same sealed
+    /// assertion format; only the `aud` claim and the callback origin
+    /// differ.
+    pub fn sso_ready_for(&self, aud: &str) -> bool {
+        real_session_secret(&self.sso_secret) && self.sso_target_for(aud).is_some()
     }
 
     pub fn base(&self) -> &str {
@@ -349,6 +382,22 @@ impl Oauth {
 
     pub fn sso_target(&self) -> &str {
         &self.sso_target
+    }
+
+    /// The callback origin for an audience, or None when the audience
+    /// is not allowlisted or is allowlisted but unconfigured. Mutable
+    /// always has a target (its production origin is the default);
+    /// Exocortexia has one only once `PHEXT_SSO_EXOCORTEXIA_URL` is
+    /// set. This match is the audience allowlist — an audience that is
+    /// not named here can never be minted for.
+    pub fn sso_target_for(&self, aud: &str) -> Option<&str> {
+        match aud {
+            "mutable" if !self.sso_target.is_empty() => Some(&self.sso_target),
+            "exocortexia" if !self.sso_exocortexia_target.is_empty() => {
+                Some(&self.sso_exocortexia_target)
+            }
+            _ => None,
+        }
     }
 
     pub fn providers(&self) -> Vec<&'static str> {
@@ -534,21 +583,30 @@ impl Oauth {
         Ok(format!("{payload}.{sig}"))
     }
 
-    /// Mint the assertion Mutable's callback verifies: who this session
-    /// is, whether it is an editor, and the return path on Mutable —
-    /// sealed under the SSO secret, alive for `SSO_TTL` seconds, with a
-    /// fresh `jti` Mutable burns on first sight. The return path is
+    /// Mint the assertion an audience's callback verifies: who this
+    /// session is, whether it is an editor, and the return path on the
+    /// audience's site — sealed under the shared SSO secret, alive for
+    /// `SSO_TTL` seconds, with a fresh `jti` the audience burns on
+    /// first sight. The format is identical for every audience; only
+    /// the `aud` claim differs, and an audience outside the allowlist
+    /// in `sso_target_for` can never be minted for. The return path is
     /// clamped by `safe_next` here, at the moment of sealing, so no
     /// unsigned return input ever crosses.
-    pub fn sso_assertion(&self, session: &Session, editor: bool, ret: &str) -> Result<String, String> {
-        if !self.sso_ready() {
+    pub fn sso_assertion(
+        &self,
+        aud: &str,
+        session: &Session,
+        editor: bool,
+        ret: &str,
+    ) -> Result<String, String> {
+        if !self.sso_ready_for(aud) {
             return Err("Sign-in is not set up yet.".into());
         }
         let iat = now();
         self.seal_with(
             &self.sso_secret,
             &SsoAssertionBody {
-                aud: "mutable".into(),
+                aud: aud.into(),
                 who: session.who.clone(),
                 handle: session.handle.clone(),
                 name: session.name.clone(),
@@ -1073,9 +1131,15 @@ impl Gate {
         let reply = match (method, route) {
             ("GET", "/api/session") => self.session_view(headers),
             ("POST", "/api/auth/logout") => self.logout(headers),
-            // Before the generic provider arm: without this exact arm,
-            // `sso` would be parsed as a provider name below.
-            ("GET", "/api/auth/sso/mutable") => self.sso(headers, &query_map(query)),
+            // Before the generic provider arm: without this arm, `sso`
+            // would be parsed as a provider name below. The segment
+            // after `sso/` is the audience; `Gate::sso` answers 404 for
+            // anything outside the allowlist, so this one arm serves
+            // every audience — `/api/auth/sso/mutable` behaves exactly
+            // as it did when it stood alone here.
+            ("GET", p) if p.starts_with("/api/auth/sso/") => {
+                self.sso(&p["/api/auth/sso/".len()..], headers, &query_map(query))
+            }
             ("GET", p) if p.starts_with("/api/auth/") => {
                 let rest = &p["/api/auth/".len()..];
                 let query = query_map(query);
@@ -1226,46 +1290,57 @@ impl Gate {
             .cookie(cookie_header(SESSION_COOKIE, "", 0, self.oauth.cookie_secure()))
     }
 
-    /// Who may cross to Mutable: any signed-in account. The assertion
-    /// still carries the account's real `editor` flag for Mutable to
-    /// display or use later. To make Mutable editor-only, this one
-    /// predicate becomes `self.is_editor(session)` — nothing else in
-    /// the handoff changes.
+    /// Who may cross to an SSO audience: any signed-in account. The
+    /// assertion still carries the account's real `editor` flag for
+    /// the audience to display or use later. To make an audience
+    /// editor-only, this one predicate becomes
+    /// `self.is_editor(session)` — nothing else in the handoff changes.
     fn sso_admits(&self, _session: &Session) -> bool {
         true
     }
 
-    /// `GET /api/auth/sso/mutable` — the cross-site handoff to Mutable.
+    /// `GET /api/auth/sso/<aud>` — the cross-site handoff to one
+    /// allowlisted audience (`mutable`, `exocortexia`).
     ///
     /// Layering follows the claims/submissions precedent in the servers:
     /// a signed-in account is enough; an editor's place is not required
     /// (`sso_admits` is the single predicate that decides). With a
-    /// session, the reply 302s to Mutable's callback with a freshly
+    /// session, the reply 302s to the audience's callback with a freshly
     /// sealed assertion. Without one, it 302s to this site's own root
     /// with this endpoint as the `next`, so the ordinary provider
     /// sign-in returns the browser here and the handoff completes —
-    /// the OAuth `next` itself stays same-site throughout. Unconfigured
-    /// (no SSO secret), the endpoint simply does not exist: 404.
-    pub fn sso(&self, headers: &HashMap<String, String>, query: &HashMap<String, String>) -> Reply {
+    /// the OAuth `next` itself stays same-site throughout. An audience
+    /// outside the allowlist, or one not configured (no SSO secret, or
+    /// no target for that audience), simply does not exist: 404 —
+    /// checked before any session handling, so an unknown audience
+    /// never enters the sign-in return flow.
+    pub fn sso(
+        &self,
+        aud: &str,
+        headers: &HashMap<String, String>,
+        query: &HashMap<String, String>,
+    ) -> Reply {
         if self.limits.hit(&client_key(headers)).is_err() {
             return Reply::error(429, "Too many requests.");
         }
-        if !self.oauth.sso_ready() {
+        let Some(target) = self.oauth.sso_target_for(aud) else {
+            return Reply::error(404, "not found");
+        };
+        if !self.oauth.sso_ready_for(aud) {
             return Reply::error(404, "not found");
         }
         let ret = safe_next(query.get("return").map(String::as_str).unwrap_or("/"));
         let Some(session) = self.session(headers) else {
-            let next = format!("/api/auth/sso/mutable?return={}", form_encode(&ret));
+            let next = format!("/api/auth/sso/{aud}?return={}", form_encode(&ret));
             return Reply::redirect(format!("{}/?next={}", self.oauth.base(), form_encode(&next)));
         };
         if !self.sso_admits(&session) {
             return Reply::error(403, "This account is not on the editor list.");
         }
         let editor = self.is_editor(&session);
-        match self.oauth.sso_assertion(&session, editor, &ret) {
+        match self.oauth.sso_assertion(aud, &session, editor, &ret) {
             Ok(assertion) => Reply::redirect(format!(
-                "{}/api/auth/callback?assertion={assertion}",
-                self.oauth.sso_target()
+                "{target}/api/auth/callback?assertion={assertion}"
             )),
             Err(message) => Reply::error(403, &message),
         }
@@ -2192,6 +2267,96 @@ mod tests {
         let ready_gate = gate(None, "");
         let reply = ready_gate.route("GET", "/api/auth/sso", &headers(&[])).unwrap();
         assert_eq!(reply.status, 403);
+    }
+
+    #[test]
+    fn sso_exocortexia_mints_an_assertion_with_its_own_audience() {
+        // The second allowlisted audience mints through the same route
+        // shape, under the same SSO secret, in the same format — the
+        // only differences are the `aud` claim and the callback origin.
+        let gate = gate(None, "");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/exocortexia");
+        let jump = gate
+            .route(
+                "GET",
+                "/api/auth/sso/exocortexia?return=/contracts",
+                &headers(&[("cookie", &session)]),
+            )
+            .unwrap();
+        assert_eq!(jump.status, 302);
+        let location = header(&jump, "Location")[0];
+        let assertion = location
+            .strip_prefix("https://exocortexia.example/api/auth/callback?assertion=")
+            .unwrap();
+        let body = open_assertion("test-sso-secret-must-be-32-chars-minimum", assertion);
+        assert_eq!(body["aud"], "exocortexia");
+        assert_eq!(body["who"], "google:sub-1");
+        assert_eq!(body["handle"], "ada");
+        assert_eq!(body["editor"], true);
+        assert_eq!(body["ret"], "/contracts");
+        assert_eq!(body["exp"].as_i64().unwrap() - body["iat"].as_i64().unwrap(), 120);
+        assert!(!body["jti"].as_str().unwrap().is_empty());
+
+        // The session secret does not open it: the keys never substitute.
+        let (payload, sig) = assertion.split_once('.').unwrap();
+        assert!(!verify("test-session-secret-must-be-32chars", payload, sig));
+    }
+
+    #[test]
+    fn sso_exocortexia_sends_the_signed_out_to_sign_in_with_itself_as_next() {
+        let gate = gate(None, "");
+        let reply = gate.route("GET", "/api/auth/sso/exocortexia", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 302);
+        let location = header(&reply, "Location")[0];
+        let next = location.strip_prefix("http://127.0.0.1:8080/?next=").unwrap();
+        assert_eq!(
+            percent_decode(&percent_decode(next)),
+            "/api/auth/sso/exocortexia?return=/"
+        );
+    }
+
+    #[test]
+    fn sso_rejects_an_audience_outside_the_allowlist() {
+        let gate = gate(None, "");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/mutable");
+        for path in ["/api/auth/sso/evil", "/api/auth/sso/mutable2", "/api/auth/sso/Mutable"] {
+            // Signed in or out, an unknown audience is a plain 404 —
+            // never a sign-in redirect that carries it as the `next`,
+            // and never an assertion.
+            let signed_in = gate.route("GET", path, &headers(&[("cookie", &session)])).unwrap();
+            assert_eq!(signed_in.status, 404, "{path}");
+            let signed_out = gate.route("GET", path, &headers(&[])).unwrap();
+            assert_eq!(signed_out.status, 404, "{path}");
+        }
+    }
+
+    #[test]
+    fn sso_exocortexia_is_404_until_its_url_is_configured() {
+        // The shared secret is set and Mutable is configured (its
+        // default target), but no Exocortexia URL: that endpoint does
+        // not exist, while Mutable's works exactly as before.
+        let oauth = Oauth::from_parts(
+            "http://127.0.0.1:8080",
+            "test-session-secret-must-be-32chars",
+            true,
+            "github-client-id",
+            "github-client-secret",
+            "google-client-id",
+            "google-client-secret",
+            "x-client-id",
+            "x-client-secret",
+            "test-sso-secret-must-be-32-chars-minimum",
+            "",
+            "",
+            Arc::new(ScriptedSource),
+        );
+        assert!(oauth.sso_ready());
+        assert!(!oauth.sso_ready_for("exocortexia"));
+        let gate = Gate::new(None, oauth, Editors::parse(""));
+        let reply = gate.route("GET", "/api/auth/sso/exocortexia", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 404);
+        let reply = gate.route("GET", "/api/auth/sso/mutable", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 302);
     }
 
     #[test]

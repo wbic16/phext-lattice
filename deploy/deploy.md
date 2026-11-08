@@ -49,6 +49,36 @@ Mutable can verify assertions without ever holding a key that could mint
 edit sessions. Without the secret, the SSO endpoint answers 404 and nothing
 else changes.
 
+## Exocortexia single sign-on
+
+The Exocortexia suite crosses the same way, via
+`GET /api/auth/sso/exocortexia`. The endpoint is the Mutable handoff
+generalized by audience: the assertion format, the shared
+`PHEXT_SSO_SECRET`, the 120-second single-use lifetime, and the
+any-signed-in-account rule are all identical — only the sealed `aud`
+claim (`exocortexia`) and the callback origin differ, and each consumer
+rejects assertions minted for another audience. Audiences are
+allowlisted in code (`mutable`, `exocortexia`); anything else under
+`/api/auth/sso/` answers 404, signed in or out.
+
+One extra line in `/etc/phext-edit/oauth.env` turns it on:
+
+```bash
+# No default — until this is set to Exocortexia's real origin, the
+# exocortexia endpoint answers 404. A set-but-invalid value also disables it.
+PHEXT_SSO_EXOCORTEXIA_URL=https://<exocortexia origin>
+```
+
+No new secret is needed: the existing `PHEXT_SSO_SECRET` serves both
+audiences, and Exocortexia's side is configured with that same value
+under its own SSO-secret name. Deploy order matches Mutable's: this
+side first (ship the build, set the URL line, restart phext-edit), then
+enable Exocortexia's consumer side. Verify with a GET —
+`curl -s -o /dev/null -w '%{http_code}' https://edit.phext.io/api/auth/sso/exocortexia`
+answers 302 toward `/?next=…` when logged out, or toward Exocortexia's
+callback with a session cookie. (Use GET, not HEAD: HEAD is not routed
+to the gate and falls through to a 401.)
+
 Deploy order matters in one direction: **this side first.** Ship the build
 and add the secret, then `sudo systemctl restart phext-edit`. Verify with
 `curl -sI https://edit.phext.io/api/auth/sso/mutable` — a 302 toward
