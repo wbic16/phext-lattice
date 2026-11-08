@@ -1200,6 +1200,18 @@ fn crawl(server: &mut Server) -> (BTreeSet<String>, BTreeSet<String>, usize) {
     let mut html_pages = BTreeSet::new();
 
     while let Some((path, from)) = queue.pop_front() {
+        if path.starts_with("/api/auth/sso/") {
+            // The handoff answers 404 until that audience's URL is set.
+            // --local does not set PHEXT_SSO_*_URL, so this is not a dead page.
+            get_checked(server, &path, |resp| {
+                assert_eq!(
+                    resp.status, 404,
+                    "unconfigured SSO {path} from {from}: status {}",
+                    resp.status
+                );
+            });
+            continue;
+        }
         let resp = get_checked(server, &path, |resp| {
             assert!(
                 (200..400).contains(&resp.status),
