@@ -171,6 +171,18 @@ mod tests {
     }
 
     #[test]
+    fn live_payment_link_is_accepted_when_configured() {
+        const LIVE: &str = "https://donate.stripe.com/9B6dRa2t08tu7jUgxo5Vu0b";
+        let offer = SponsorOffer::parse(LIVE);
+        assert_eq!(offer.url(), Some(LIVE));
+        let html = offer.markup();
+        assert!(html.contains("href=\"https://donate.stripe.com/9B6dRa2t08tu7jUgxo5Vu0b\""));
+        assert!(html.contains(">Support the site</a>"));
+        assert!(html.contains("not an advertisement"));
+        assert!(SponsorOffer::parse("").markup().is_empty());
+    }
+
+    #[test]
     fn query_ampersands_are_escaped_in_the_attribute() {
         let offer = SponsorOffer::parse("https://buy.stripe.com/abc?foo=1&bar=2");
         let html = offer.markup();

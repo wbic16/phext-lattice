@@ -35,6 +35,11 @@ APP_DIR="${APP_DIR:-/source/phext-lattice}"
 PHEXT_DIR="${PHEXT_DIR:-/source/human}"
 SERVICE_USER="${SERVICE_USER:-wbic16}"
 OLD_SITE="${OLD_SITE:-mirrorborn.us}"
+# Public Payment Link for the Support the site donation (Sponsor edit.phext.io).
+# Not a secret. A deploy with PHEXT_SPONSOR_URL unset writes this. An explicit
+# empty value still hides the link. Local/dev does not run this default: the
+# editor hides the control when the variable is unset or empty.
+PHEXT_SPONSOR_URL_DEFAULT="https://donate.stripe.com/9B6dRa2t08tu7jUgxo5Vu0b"
 NO_TLS="${NO_TLS:-0}"
 NO_REDIRECT="${NO_REDIRECT:-0}"
 # 1 replaces a site file this script does not own. Anything else does not.
@@ -129,6 +134,14 @@ sponsor_url_ok() {
 validate_sponsor_url() {
   sponsor_url_ok "${PHEXT_SPONSOR_URL:-}" \
     || die "PHEXT_SPONSOR_URL must be an https URL (a Stripe Payment Link) with no spaces, quotes, or userinfo"
+}
+
+# Unset means the live Payment Link. An explicit empty value stays empty so
+# a deploy can still hide the donation link. A set URL is kept.
+resolve_sponsor_url() {
+  if [[ ! -v PHEXT_SPONSOR_URL ]]; then
+    PHEXT_SPONSOR_URL=$PHEXT_SPONSOR_URL_DEFAULT
+  fi
 }
 
 # Rewrite src to dest. A non-empty PHEXT_SPONSOR_URL replaces that one line.
@@ -564,6 +577,23 @@ EOF
   sponsor_url_ok '' || die "empty sponsor URL was rejected"
   if sponsor_url_ok 'http://buy.stripe.com/x'; then die "http sponsor URL was accepted"; fi
   if sponsor_url_ok 'https://user@buy.stripe.com/x'; then die "sponsor URL with userinfo was accepted"; fi
+  unset PHEXT_SPONSOR_URL
+  resolve_sponsor_url
+  [[ "$PHEXT_SPONSOR_URL" == "https://donate.stripe.com/9B6dRa2t08tu7jUgxo5Vu0b" ]] \
+    || die "unset deploy did not use the live Payment Link"
+  [[ "$PHEXT_SPONSOR_URL_DEFAULT" == "$PHEXT_SPONSOR_URL" ]] || die "live Payment Link default drifted"
+  sponsor_url_ok "$PHEXT_SPONSOR_URL_DEFAULT" || die "live Payment Link was rejected"
+  printf 'PHEXT_SESSION_SECRET=keep-me\n' >"$env_in"
+  write_sponsor_env "$env_in" "${work}/live"
+  grep -qx 'PHEXT_SPONSOR_URL="https://donate.stripe.com/9B6dRa2t08tu7jUgxo5Vu0b"' "${work}/live" \
+    || die "live Payment Link was not written"
+  grep -qx 'PHEXT_SESSION_SECRET=keep-me' "${work}/live" || die "live sponsor write dropped the secret line"
+  PHEXT_SPONSOR_URL=
+  resolve_sponsor_url
+  [[ -z "$PHEXT_SPONSOR_URL" ]] || die "explicit empty sponsor URL was replaced with the live link"
+  PHEXT_SPONSOR_URL='https://buy.stripe.com/override'
+  resolve_sponsor_url
+  [[ "$PHEXT_SPONSOR_URL" == "https://buy.stripe.com/override" ]] || die "sponsor URL override was replaced"
   if [[ "$sponsor_saved_set" == "1" ]]; then
     PHEXT_SPONSOR_URL=$sponsor_saved
   else
@@ -623,6 +653,10 @@ main() {
   [[ -x "${APP_DIR}/target/release/phext-edit" ]] || die "release binary was not produced."
 
   # ── Secrets ──
+  # The live Payment Link is public. Apply it when this run did not pass one.
+  # Reject a bad override before any secret file is written.
+  resolve_sponsor_url
+  validate_sponsor_url
   sudo mkdir -p "$CONF_DIR"
   if sudo test -f "${CONF_DIR}/oauth.env"; then
     printf 'Keeping sign-in lines in %s/oauth.env\n' "$CONF_DIR"
@@ -659,8 +693,8 @@ X_CLIENT_SECRET=
 # the return is the app's per-attempt loopback listener.
 #PHEXT_SSO_DESKTOP=1
 # Stripe Payment Link for the Support the site donation. Empty hides the link.
-# Not the Exocortex Founding purchase. deploy.sh fills this from PHEXT_SPONSOR_URL.
-PHEXT_SPONSOR_URL=
+# Not the Exocortex Founding purchase. Unset deploys use the live link.
+PHEXT_SPONSOR_URL="${PHEXT_SPONSOR_URL}"
 EOF
     printf 'Wrote %s/oauth.env (session secret not printed). Fill in the client lines (and PHEXT_EDITORS to restrict who gets in).\n' "$CONF_DIR"
   fi
@@ -861,10 +895,12 @@ EOF
   printf '  listen:    127.0.0.1:%s\n' "$PORT"
   printf '  phexts:    %s\n' "$PHEXT_DIR"
   printf '  secrets:   %s/oauth.env\n' "$CONF_DIR"
-  if [[ -n "${PHEXT_SPONSOR_URL:-}" ]]; then
-    printf '  sponsor:   PHEXT_SPONSOR_URL set in oauth.env\n'
+  if [[ -z "${PHEXT_SPONSOR_URL:-}" ]]; then
+    printf '  sponsor:   PHEXT_SPONSOR_URL empty (donation link hidden)\n'
+  elif [[ "$PHEXT_SPONSOR_URL" == "$PHEXT_SPONSOR_URL_DEFAULT" ]]; then
+    printf '  sponsor:   live Support the site Payment Link\n'
   else
-    printf '  sponsor:   this run did not set PHEXT_SPONSOR_URL (a stored link is kept; a missing one stays empty)\n'
+    printf '  sponsor:   PHEXT_SPONSOR_URL set from the environment\n'
   fi
   printf '  nginx:     %s (%s)\n' "$available" "$nginx_result"
   printf '  tls:       %s\n' "$tls"
