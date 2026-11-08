@@ -241,7 +241,8 @@ struct PendingBody {
 /// verified there under the SSO secret. It is not a session — the
 /// audience mints its own from it, and this server never accepts one
 /// back. `aud` names the one audience it was minted for (`mutable`,
-/// `exocortexia`); a consumer must reject any other value, including
+/// `exocortexia`, `wishnode`); a consumer must reject any other value,
+/// including
 /// an assertion minted for a different audience. `ret` is a path on
 /// the audience's site, clamped by `safe_next` before sealing; `jti`
 /// is the single-use id the audience burns on first sight.
