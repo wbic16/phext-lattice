@@ -5080,7 +5080,7 @@ mod http_tests {
 #[cfg(test)]
 mod link_tests {
     use super::*;
-    use phext_lattice::oauth::{Editors, Gate, Oauth};
+    use phext_lattice::oauth::{Editors, Gate, Oauth, TEST_CSRF};
     use phext_lattice::MappedLattice;
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
@@ -5217,11 +5217,7 @@ mod link_tests {
         let mut app = AppState::new(lattice, aaa.to_string_lossy().to_string());
         app.phext_dir = Some(dir.to_string_lossy().to_string());
         let state = Arc::new(Mutex::new(app));
-        let gate = Gate::new(
-            Some("s3cret-token".into()),
-            Oauth::closed(),
-            Editors::default(),
-        );
+        let gate = Gate::new(Oauth::test_ready(), Editors::default());
         if local {
             gate.enable_local();
         }
@@ -5383,8 +5379,9 @@ mod link_tests {
         assert!(body.contains("unauthorized"));
         assert!(!body.contains(marker));
 
-        let auth = "Authorization: Bearer s3cret-token\r\n";
-        let (status, _, body) = get(port, "/api/status", auth);
+        let cookie = Oauth::test_session_cookie();
+        let auth = format!("Cookie: phext_session={cookie}\r\n");
+        let (status, _, body) = get(port, "/api/status", &auth);
         assert_eq!(status, 200, "{body}");
         assert!(
             body.contains("aaa.phext"),
@@ -5394,7 +5391,7 @@ mod link_tests {
 
         let open = |target: &str| {
             let req = format!(
-                "POST /api/open HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer s3cret-token\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{target}",
+                "POST /api/open HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: phext_session={cookie}\r\nx-csrf-token: {TEST_CSRF}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{target}",
                 target.len()
             );
             http(port, &req)
@@ -5402,14 +5399,14 @@ mod link_tests {
         let (status, _, body) = open("jonas");
         assert_eq!(status, 200, "{body}");
         assert!(body.contains("\"ok\":true"), "{body}");
-        let (status, _, body) = get(port, "/api/nav", auth);
+        let (status, _, body) = get(port, "/api/nav", &auth);
         assert_eq!(status, 200, "{body}");
         assert!(body.contains(marker), "{body}");
         assert!(!body.contains(secret));
 
         let goto = |coord: &str| {
             let req = format!(
-                "POST /api/goto HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer s3cret-token\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{coord}",
+                "POST /api/goto HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: phext_session={cookie}\r\nx-csrf-token: {TEST_CSRF}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{coord}",
                 coord.len()
             );
             let (status, _, body) = http(port, &req);
@@ -5449,7 +5446,7 @@ mod link_tests {
         assert!(body.contains("\"ok\":false"), "{status} {body}");
         assert!(!body.contains(secret));
 
-        let (status, _, body) = get(port, "/api/status", auth);
+        let (status, _, body) = get(port, "/api/status", &auth);
         assert!(body.contains("jonas.phext"), "{status} {body}");
         assert!(!body.contains("secret"));
     }
