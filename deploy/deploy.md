@@ -100,7 +100,8 @@ the same any-signed-in-account rule — only the sealed `aud` claim
 (`wishnode`) and the callback origin differ, and Wishnode's consumer
 rejects assertions minted for another audience. The allowlist in code
 is (`mutable`, `exocortexia`, `wishnode`); anything else under
-`/api/auth/sso/` answers 404, signed in or out.
+`/api/auth/sso/` answers 404, signed in or out. (A fourth audience,
+`desktop`, is armed separately and works differently — see below.)
 
 One extra line in `/etc/phext-edit/oauth.env` turns it on:
 
@@ -119,6 +120,54 @@ then enable Wishnode's consumer side. Verify with a GET —
 answers 302 toward `/?next=…` when logged out, or toward Wishnode's
 callback with a session cookie. (Use GET, not HEAD: HEAD is not routed
 to the gate and falls through to a 401.)
+
+## Desktop (Phext Notepad) single sign-on
+
+The desktop audience serves Phext Notepad, which signs in to this
+server without the user pasting the `phext_session` cookie. It works
+differently from the web audiences because a shipped app cannot hold
+`PHEXT_SSO_SECRET` — a shared secret inside a distributed binary is
+public — so nothing is ever verified on the app's side:
+
+1. The app opens a loopback listener and sends the browser to
+   `GET /api/auth/sso/desktop?return=http://127.0.0.1:<port>/&state=<nonce>`.
+   There is no target URL to configure: the return is per attempt, and
+   only an `http` URL on the `127.0.0.1` or `[::1]` literal with an
+   explicit port is admitted (hostnames — `localhost` included —
+   `https`, and every other address are refused). The signed-out are
+   bounced to sign-in with this endpoint as the `next`, as usual.
+2. The mint redirects to the loopback return with a normal assertion —
+   same sealed format, `aud` `desktop`, 120 seconds — plus the
+   attempt's `state` nonce, which also rides sealed inside it.
+3. The app POSTs the assertion and its state to
+   `POST /api/auth/desktop/exchange` (headers `x-phext-assertion` /
+   `x-phext-state`). This server verifies the seal, the audience, the
+   expiry, and the state, burns the `jti` server-side (single-use is
+   enforced here), checks the account against the editors list, and
+   answers with a freshly sealed session value and its CSRF token as
+   JSON — the credential the app stores and presents exactly like the
+   cookie it replaces. A signed-in non-editor's assertion still mints,
+   but the exchange answers it with the editor-list refusal and no
+   credential.
+
+One line in `/etc/phext-edit/oauth.env` arms it:
+
+```bash
+# Arming flag only — there is no desktop origin to configure (the
+# return is the app's per-attempt loopback listener). Until this is
+# set to exactly 1, both desktop endpoints answer 404.
+PHEXT_SSO_DESKTOP=1
+```
+
+No new secret is needed: the existing `PHEXT_SSO_SECRET` seals the
+assertions and never leaves this server. Ship the build, set the line,
+restart phext-edit. Verify with a GET carrying a valid loopback return
+and a state —
+`curl -s -o /dev/null -w '%{http_code}' 'https://edit.phext.io/api/auth/sso/desktop?return=http://127.0.0.1:8912/&state=attempt-state-0123456789'`
+answers 302 toward `/?next=…` while logged out (404 before the line is
+set, 400 without a valid loopback return or state). Notepad builds
+that know the flow fall back to the cookie paste while the endpoint
+answers 404, so arming order does not strand older installs.
 
 ## What deploy.sh does
 
