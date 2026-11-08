@@ -1295,8 +1295,11 @@ fn get_flag(args: &[String], flag: &str) -> Option<String> {
 
 /// First argument that is not a flag or a flag's value.
 fn positional_file(args: &[String]) -> Option<String> {
+    // "--token" is retired (sign-in only since 2026-11-08) but stays in
+    // this list so a command line or unit file that still passes it has
+    // its value skipped rather than mistaken for a phext file.
     const VALUED: &[&str] = &[
-        "--port", "--host", "--dir", "--home", "--home-coord",
+        "--port", "--host", "--dir", "--token", "--home", "--home-coord",
     ];
     let mut i = 1;
     while i < args.len() {
@@ -1384,6 +1387,7 @@ mod tests {
     }
 
     fn serve(local: bool) -> (u16, tempfile::TempDir) {
+        // Locked by sign-in, as phext-edit now runs: no bearer token.
         let (port, dir, _gate) =
             serve_gate(Gate::new(Oauth::test_ready(), Editors::default()), local);
         (port, dir)
@@ -2288,7 +2292,7 @@ fn dashboard_html(claimed: &[&claims::Claim], total: usize, unclaimed: usize, jo
         }
         out.push_str("</table>\n");
     }
-    out.push_str("<footer>Phext Edit · <a href=\"/about\">About</a> · <a href=\"/privacy\">Privacy Policy</a> · <a href=\"/terms\">Terms of Service</a></footer>\n");
+    out.push_str("<footer>Phext Edit · <a href=\"/about\">About</a> · <a href=\"/privacy\">Privacy Policy</a> · <a href=\"/terms\">Terms of Service</a> · Contact: <a href=\"mailto:will+support@phext.io\">will+support@phext.io</a></footer>\n");
     out.push_str("</main>\n</body>\n</html>\n");
     out
 }
@@ -2996,7 +3000,7 @@ const NOT_FOUND_HTML: &str = concat!(r#"<!DOCTYPE html>
 <h1>Page not found</h1>
 <p>There is no page at that address.</p>
 <p><a href="/">Back to Phext Edit</a></p>
-<footer>Phext Edit · <a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a></footer>
+<footer>Phext Edit · <a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
 </main>
 </body>
 </html>
@@ -3178,14 +3182,11 @@ body {
   transition: background var(--trans-fast), color var(--trans-fast);
 }
 #status-bar .signout:hover { background: var(--coord); color: #000; }
-#status-bar .submit-link {
-  margin-left: auto; color: var(--dim); text-decoration: none; white-space: nowrap;
-}
-#status-bar .submit-link:hover { color: var(--coord); text-decoration: underline; }
-#status-bar .claim-link {
+#status-bar .bar-link {
   margin-left: 14px; color: var(--dim); text-decoration: none; white-space: nowrap;
 }
-#status-bar .claim-link:hover { color: var(--coord); text-decoration: underline; }
+#status-bar .bar-link.first { margin-left: auto; }
+#status-bar .bar-link:hover { color: var(--coord); text-decoration: underline; }
 
 /* ── Overlays ── */
 .overlay {
@@ -3232,7 +3233,7 @@ body {
   #editor .editor-toolbar button { padding: 8px 12px; }
   #status-bar { height: auto; min-height: 52px; flex-wrap: wrap; padding: 8px 12px; gap: 8px 14px; font-size: 14px; }
   #status-bar .help { order: 10; flex-basis: 100%; white-space: normal; overflow: visible; text-overflow: clip; }
-  #status-bar .submit-link, #status-bar .claim-link { margin-left: 0; }
+  #status-bar .bar-link { margin-left: 0; }
   .overlay { top: 44px; }
   #search-overlay, #goto-overlay, #phext-overlay { width: calc(100vw - 24px) !important; max-height: 70vh; }
   #search-results .hit .hit-coord { min-width: 0; }
@@ -3277,12 +3278,12 @@ body {
   <span id="active-file" style="color:var(--dim);cursor:pointer" onclick="openPhextPicker()" title="Click to switch phext"></span>
   <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  u:UG5  t:tree  /:search  g:goto  Home:BASE</span>
   <span class="msg" id="status-msg"></span>
-  <a class="submit-link" href="submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
-  <a class="claim-link" href="claim" title="If your X account is in the wavefront map, claim your space on this server">Claim your space</a>
-  <a class="claim-link" href="explore" title="Every placement in the wavefront, explorable in nine dimensions">Explore the map</a>
-  <a class="claim-link" href="phext-previewer.html" title="Open a phext file from your own device and preview it scroll by scroll — no sign-in needed">Preview a phext</a>
-  <a class="claim-link" href="api/auth/sso/mutable" title="Mutable OS — documents and Caverns, with this same sign-in">Mutable OS</a>
-  <a class="claim-link" id="dashboard-link" href="claim/dashboard" style="display:none" title="Who has claimed their wavefront space, and who has joined since the snapshot — the owner and editors">Claim dashboard</a>
+  <a class="bar-link first" href="submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
+  <a class="bar-link" href="claim" title="If your X account is in the wavefront map, claim your space on this server">Claim your space</a>
+  <a class="bar-link" href="explore" title="Every placement in the wavefront, explorable in nine dimensions">Explore the map</a>
+  <a class="bar-link" href="phext-previewer.html" title="Open a phext file from your own device and preview it scroll by scroll — no sign-in needed">Preview a phext</a>
+  <a class="bar-link" href="api/auth/sso/mutable" title="Mutable OS — documents and Caverns, with this same sign-in">Mutable OS</a>
+  <a class="bar-link" id="dashboard-link" href="claim/dashboard" style="display:none" title="Who has claimed their wavefront space, and who has joined since the snapshot — the owner and editors">Claim dashboard</a>
   <span id="signout" class="signout" style="display:none" onclick="signOut()" title="Sign out"></span>
 </div>
 
@@ -3303,13 +3304,12 @@ body {
     <div id="auth-prompt" style="color:var(--dim);margin-bottom:20px">Sign in to continue</div>
     <div id="auth-providers" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
     <div id="auth-error" style="color:var(--danger);margin-top:8px;font-size:12px"></div>
-    <div style="color:var(--dim);margin-top:28px;font-size:12px;line-height:1.6">
-      A web editor for phext: plain text arranged in 11 dimensions.<br>
+    <div style="color:var(--dim);margin-top:28px;font-size:12px;line-height:1.9">
+      A web editor for phext: plain text arranged in 11 dimensions.
       Sign-in only checks who you are; nothing is shared or sold.<br>
-      <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a><br>
+      <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a> · <a href="mailto:will+support@phext.io" style="color:var(--coord)">Contact</a><br>
       No sign-in needed: <a href="up-goer-five.html" style="color:var(--coord)">Up Goer Five</a> · <a href="tts-demo.html" style="color:var(--coord)">Coordinate TTS demo</a> · <a href="learn-you-phext.html" style="color:var(--coord)">Learn You Phext</a> · <a href="singular.html" style="color:var(--coord)">Singular</a> · <a href="phext-previewer.html" style="color:var(--coord)">Phext Previewer</a><br>
-      Have a phext of your own? <a href="submit" style="color:var(--coord)">Upload it for review</a> — if an editor accepts it, you become an editor too. Signing in with X makes you an editor at once.<br>
-      Placed in the wavefront map? <a href="claim" style="color:var(--coord)">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="explore" style="color:var(--coord)">explore the map</a> first.
+      Your own phext: <a href="submit" style="color:var(--coord)">Submit it for review</a> · In the wavefront map: <a href="claim" style="color:var(--coord)">Claim your space</a> · <a href="explore" style="color:var(--coord)">Explore the map</a> — signing in with X makes you an editor at once.
     </div>
   </div>
 </div>
@@ -3701,6 +3701,9 @@ window.addEventListener('hashchange', async () => {
 // ── Auth ──
 // Sign-in state lives in an HttpOnly cookie; /api/session reports it and the CSRF token.
 async function loadSession() {
+  // Access-token sign-in was retired (2026-11-08): forget any token an
+  // older version of this page saved, so it can never be sent again.
+  localStorage.removeItem('phext-token');
   try { session = await (await fetch('api/session')).json(); } catch { session = null; }
   csrf = (session && session.csrf) || '';
   const so = $('signout');
@@ -3738,7 +3741,8 @@ async function showAuthScreen(message, sessionFresh) {
   $('auth-providers').innerHTML = html;
   $('auth-prompt').textContent =
     s.signed_in && !s.editor ? 'This account is not on the editor list.'
-    : 'Sign in to continue';
+    : s.ready ? 'Sign in to continue'
+    : 'Sign-in is not configured on this server';
   $('auth-error').textContent = message || '';
   $('auth-screen').style.display = 'flex';
 }
@@ -4058,8 +4062,8 @@ mod public_route_tests {
         // Discoverability: the surfaces a signed-in user actually lands on
         // link /claim — the editor shell (status bar + sign-in screen),
         // the About page, and the sitemap. Not just the sitemap.
-        assert!(INDEX_HTML.contains("class=\"claim-link\" href=\"claim\""), "shell status bar link");
-        assert!(INDEX_HTML.contains("Placed in the wavefront map?"), "shell sign-in screen link");
+        assert!(INDEX_HTML.contains("class=\"bar-link\" href=\"claim\""), "shell status bar link");
+        assert!(INDEX_HTML.contains(">Claim your space</a>"), "shell sign-in screen link");
         assert!(ABOUT_HTML.contains("href=\"claim\""), "about link");
         assert!(SITEMAP_XML.contains("https://edit.phext.io/claim</loc>"), "sitemap entry");
     }
@@ -4086,8 +4090,8 @@ mod public_route_tests {
         assert!(data.body.contains("@eigenhector"), "named entries ride along");
 
         // Same discoverability surfaces as /claim.
-        assert!(INDEX_HTML.contains("class=\"claim-link\" href=\"explore\""), "shell status bar link");
-        assert!(INDEX_HTML.contains("explore the map"), "shell sign-in screen link");
+        assert!(INDEX_HTML.contains("class=\"bar-link\" href=\"explore\""), "shell status bar link");
+        assert!(INDEX_HTML.contains("Explore the map"), "shell sign-in screen link");
         assert!(ABOUT_HTML.contains("href=\"explore\""), "about link");
         assert!(SITEMAP_XML.contains("https://edit.phext.io/explore</loc>"), "sitemap entry");
     }
@@ -4099,7 +4103,7 @@ mod public_route_tests {
         // and the sign-in screen honours the ?next= the handoff sends
         // signed-out visitors back with.
         assert!(
-            INDEX_HTML.contains("class=\"claim-link\" href=\"api/auth/sso/mutable\""),
+            INDEX_HTML.contains("class=\"bar-link\" href=\"api/auth/sso/mutable\""),
             "shell status bar link"
         );
         assert!(INDEX_HTML.contains(">Mutable OS</a>"), "link label");
@@ -4241,6 +4245,7 @@ mod public_route_tests {
         );
         assert_eq!(bearer.status, 401, "{}", bearer.body);
         assert!(bearer.content_type.starts_with("application/json"));
+        assert!(bearer.body.contains("\"error\":\"unauthorized\""));
 
         let bearer_missing = http(
             &gate,
