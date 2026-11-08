@@ -433,7 +433,7 @@ const HTML: &str = "text/html; charset=utf-8";
 /// The shell is one embedded document (CSS and JS are inline), so a minute of
 /// freshness plus an ETag is enough. After that the browser revalidates.
 const SHELL_CACHE: &str = "public, max-age=60, must-revalidate";
-/// Favicon bytes are compiled in and change only when the binary does.
+/// Compiled-in bytes (favicon, site artwork) change only when the binary does.
 const STATIC_CACHE: &str = "public, max-age=86400, must-revalidate";
 
 #[derive(Clone, Copy)]
@@ -2319,10 +2319,14 @@ fn main() {
 
 const FAVICON_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">💎</text></svg>"#;
 
+/// Compiled-in bytes answered before the gate: the favicons, and the
+/// shell artwork the sign-in screen and claim dashboard paint with.
 fn icon_body(path: &str) -> Option<(&'static str, &'static [u8])> {
     match path_route(path) {
         "/favicon.ico" => Some(("image/x-icon", favicon_ico())),
         "/favicon.svg" => Some(("image/svg+xml", FAVICON_SVG.as_bytes())),
+        "/banner.webp" => Some(("image/webp", BANNER_WEBP)),
+        "/background.webp" => Some(("image/webp", BACKGROUND_WEBP)),
         _ => None,
     }
 }
@@ -2461,7 +2465,12 @@ fn dashboard_html(claimed: &[&claims::Claim], total: usize, unclaimed: usize, jo
     out.push_str("<title>Phext Edit: claim dashboard</title>\n");
     out.push_str("<link rel=\"icon\" type=\"image/svg+xml\" href=\"/favicon.svg\">\n");
     out.push_str(public_style!());
-    out.push_str("\n<style>\ntable { border-collapse: collapse; margin: 10px 0; }\ntd, th { border: 1px solid #4a4a4a; padding: 4px 10px; text-align: left; }\n</style>\n</head>\n<body>\n<main>\n");
+    // The dashboard wears the shell's artwork like the sign-in screen:
+    // the lattice-vault backdrop fills the window, the text column
+    // keeps the public pages' solid #171717 so no word sits on art,
+    // and the CYOA banner heads the column.
+    out.push_str("\n<style>\ntable { border-collapse: collapse; margin: 10px 0; }\ntd, th { border: 1px solid #4a4a4a; padding: 4px 10px; text-align: left; }\nbody { background: #0b0e13 url(\"/background.webp\") center / cover fixed no-repeat; }\nmain { background: #171717; }\n.dash-banner { display: block; width: 100%; height: 150px; object-fit: cover; object-position: center; border: 1px solid #2e2e2e; border-radius: 8px; margin-bottom: 20px; }\n</style>\n</head>\n<body>\n<main>\n");
+    out.push_str("<img class=\"dash-banner\" src=\"/banner.webp\" alt=\"The Flame at the root coordinate, its light running out along the filaments to a vast wall of scrolls — the phext lattice\">\n");
     out.push_str("<nav><a href=\"/\">Open the editor</a> · <a href=\"/claim\">Claim your space</a> · <a href=\"/explore\">Explore the map</a></nav>\n");
     out.push_str("<h1>💎 Claim dashboard</h1>\n");
     out.push_str("<p class=\"dim\">The owner's view: who has claimed their space from the wavefront, and who has joined it since. Visible only to @wbic16 and the editors.</p>\n");
@@ -3164,6 +3173,15 @@ const WAVEFRONT_EXPLORER_JSON: &str = include_str!("../../web/wavefront-explorer
 // no server route beyond this one.
 const PREVIEWER_HTML: &str = include_str!("../../web/phext-previewer.html");
 
+// The shell's artwork likewise lives under web/ and is compiled in: the
+// CYOA banner (the Flame at the root of the lattice, light running out
+// along the filaments to a wall of scrolls) that tops the sign-in
+// screen and the claim dashboard, and the lattice-vault backdrop behind
+// them. Binary, so include_bytes!; both are served by icon_body, the
+// same pre-gate route as the favicon.
+const BANNER_WEBP: &[u8] = include_bytes!("../../web/banner.webp");
+const BACKGROUND_WEBP: &[u8] = include_bytes!("../../web/background.webp");
+
 // Canonical host is https://edit.phext.io (repeated below; tests check both files).
 // Disallow comes before Allow so a first-match crawler still blocks /api.
 // Allow: / is the public landing page (the editor shell). File contents and
@@ -3427,6 +3445,23 @@ body {
   font-family:inherit; font-size:14px; padding:10px 14px; border-radius:6px; text-decoration:none; cursor:pointer; }
 .auth-btn:hover { border-color:var(--coord); }
 
+/* ── Auth screen artwork ──
+   The sign-in screen is the shell's front door, so it wears the art:
+   the lattice-vault backdrop fills the screen under a half-dark scrim
+   (the vault is darkest at its centre by design, and the scrim keeps
+   the card's words at their usual contrast), and the CYOA banner —
+   the Flame at the root of the lattice — tops the card. The editor's
+   own surfaces keep their solid backgrounds: no artwork ever sits
+   under text being edited. */
+#auth-screen {
+  background: linear-gradient(rgba(11, 14, 19, 0.5), rgba(11, 14, 19, 0.5)),
+    url("/background.webp") center / cover no-repeat #0b0e13;
+}
+#auth-screen .auth-banner {
+  display: block; width: 100%; height: 132px; object-fit: cover; object-position: center;
+  border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px;
+}
+
 /* ── Small screens (phones) ──
    The shell is a desktop lattice: a fixed 320px left panel beside the
    content, and a one-row status bar whose links never wrap. Below
@@ -3450,6 +3485,7 @@ body {
   #search-overlay, #goto-overlay, #phext-overlay { width: calc(100vw - 24px) !important; max-height: 70vh; }
   #search-results .hit .hit-coord { min-width: 0; }
   #auth-screen > div { width: 100%; padding: 0 16px; }
+  #auth-screen .auth-banner { height: 96px; }
   .axon { padding: 5px 4px; }
 }
 </style>
@@ -3510,8 +3546,9 @@ body {
   <div style="color:var(--dim);font-size:11px;margin-bottom:6px">Select a phext file:</div>
   <div id="phext-list" style="max-height:400px;overflow-y:auto"></div>
 </div>
-<div id="auth-screen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:100;align-items:center;justify-content:center">
+<div id="auth-screen" style="display:none;position:fixed;inset:0;z-index:100;align-items:center;justify-content:center">
   <div style="text-align:center;max-width:400px">
+    <img class="auth-banner" src="/banner.webp" loading="lazy" decoding="async" alt="The Flame at the root coordinate, its light running out along the filaments to a vast wall of scrolls — the phext lattice">
     <div style="font-size:24px;margin-bottom:16px;color:var(--coord)">💎 phext-edit</div>
     <div id="auth-prompt" style="color:var(--dim);margin-bottom:20px">Sign in to continue</div>
     <div id="auth-providers" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
@@ -4035,8 +4072,9 @@ async function initApp() {
 mod public_route_tests {
     use super::{
         handle_request, is_api_path, is_editor_shell, public_document, AppState, ABOUT_HTML,
-        INDEX_HTML, LEARN_YOU_PHEXT_HTML, NOT_FOUND_HTML, PREVIEWER_HTML, PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE,
-        SITEMAP_XML, STATIC_CACHE, TERMS_HTML, TTS_DEMO_HTML, UP_GOER_FIVE_HTML,
+        BACKGROUND_WEBP, BANNER_WEBP, INDEX_HTML, LEARN_YOU_PHEXT_HTML, NOT_FOUND_HTML, PREVIEWER_HTML,
+        PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE, SITEMAP_XML, STATIC_CACHE, TERMS_HTML, TTS_DEMO_HTML,
+        UP_GOER_FIVE_HTML,
     };
     use phext_lattice::oauth::{Editors, Gate, Oauth};
     use phext_lattice::MappedLattice;
@@ -4205,6 +4243,21 @@ mod public_route_tests {
         assert_eq!(svg.status, 200);
         assert!(svg.content_type.starts_with("image/svg+xml"));
         assert!(svg.body.contains("<svg"));
+        // The shell artwork rides the same pre-gate route as the favicon:
+        // compiled in, image/webp, day-long static caching with an ETag.
+        let banner = get(&gate, "/banner.webp");
+        assert_eq!(banner.status, 200);
+        assert!(banner.content_type.starts_with("image/webp"));
+        assert!(header_line(&banner.head, "cache-control").contains(STATIC_CACHE));
+        assert!(banner.head.contains("ETag:"));
+        assert_eq!(header_line(&banner.head, "content-length"), BANNER_WEBP.len().to_string());
+        let backdrop = get(&gate, "/background.webp");
+        assert_eq!(backdrop.status, 200);
+        assert!(backdrop.content_type.starts_with("image/webp"));
+        assert!(header_line(&backdrop.head, "cache-control").contains(STATIC_CACHE));
+        assert_eq!(header_line(&backdrop.head, "content-length"), BACKGROUND_WEBP.len().to_string());
+        assert!(INDEX_HTML.contains("src=\"/banner.webp\""), "sign-in banner wired");
+        assert!(INDEX_HTML.contains("url(\"/background.webp\")"), "sign-in backdrop wired");
         let shell = get(&gate, "/");
         let etag = header_line(&shell.head, "etag").trim();
         let again = http(
