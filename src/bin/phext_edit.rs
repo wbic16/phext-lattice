@@ -2536,7 +2536,7 @@ mod local_mode_tests {
     }
 
     #[test]
-    fn switching_phexts_changes_nav_in_local_and_token_mode() {
+    fn switching_phexts_changes_nav_when_local_and_when_signed_in() {
         assert!(INDEX_HTML.contains("p.file"));
         assert!(INDEX_HTML.contains("await initApp();"));
         assert!(INDEX_HTML.contains("lastNav.position?.file"));
@@ -2549,10 +2549,12 @@ mod local_mode_tests {
         std::fs::write(&other, b"other scroll\n").unwrap();
         let (code, denied) = open_phext(port, &other, "");
         assert_eq!(code, 401, "{denied}");
-        let (code, status) = http(port, "GET", "/api/status", "Authorization: Bearer test-token\r\n");
+        let cookie = Oauth::test_session_cookie();
+        let session = format!("Cookie: phext_session={cookie}\r\nx-csrf-token: {TEST_CSRF}\r\n");
+        let (code, status) = http(port, "GET", "/api/status", &session);
         assert_eq!(code, 200, "{status}");
         assert!(response_body(&status).contains("note.phext"), "{status}");
-        assert_switch_changes_scroll(port, dir.path(), "Authorization: Bearer test-token\r\n");
+        assert_switch_changes_scroll(port, dir.path(), &session);
     }
 }
 
@@ -5561,11 +5563,7 @@ mod share_metadata_tests {
     fn share_assets_are_public_when_the_api_is_locked() {
         let lattice = MappedLattice::from_bytes(b"scroll");
         let state = Arc::new(Mutex::new(AppState::new(lattice, "test.phext".into())));
-        let gate = Arc::new(Gate::new(
-            Some("secret-token".into()),
-            Oauth::closed(),
-            Editors::parse(""),
-        ));
+        let gate = Arc::new(Gate::new(Oauth::test_ready(), Editors::default()));
         assert!(gate.locked());
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
