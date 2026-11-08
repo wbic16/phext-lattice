@@ -129,10 +129,8 @@ Each run, in order:
    already succeeds. Nothing is written if that test fails.
 2. Fetches `origin/BRANCH` (default `exo`) and hard-resets `APP_DIR` to it.
 3. Runs `cargo build --release --bin phext-edit` as `SERVICE_USER`.
-4. Creates `/etc/phext-edit/token.env` and `oauth.env` (mode `0600`, root-owned)
-   only when each file is missing. An existing file is left as-is and is never
-   printed. A token in an old unit's `--token` flag is copied into `token.env`
-   once; otherwise a new token is generated.
+4. Creates `/etc/phext-edit/oauth.env` (mode `0600`, root-owned) only when
+   missing. An existing file is left as-is and is never printed.
 5. Writes `/etc/systemd/system/phext-edit.service` (a timestamped `.bak-*` copy
    is kept when the unit changes), `systemctl daemon-reload`, enables the
    service, and **restarts phext-edit**. It waits until `http://127.0.0.1:PORT/`
@@ -280,31 +278,22 @@ The `/source/human` repo was cloned via HTTPS. To update:
 ssh mirrorborn.us "cd /source/human && git pull"
 ```
 
-### 3. Generate an auth token
-
-```bash
-TOKEN=$(openssl rand -hex 24)
-echo "Your token: $TOKEN"
-```
-
 ### 4. Systemd service (requires sudo)
 
 ```bash
 # On mirrorborn.us:
 sudo cp /source/phext-lattice/deploy/phext-edit.service /etc/systemd/system/
-# Edit to set your token:
-sudo sed -i "s/REPLACE_WITH_TOKEN/$TOKEN/" /etc/systemd/system/phext-edit.service
 sudo systemctl daemon-reload
 sudo systemctl enable phext-edit
 sudo systemctl start phext-edit
 # Verify:
 sudo systemctl status phext-edit
-curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/status
+curl -s http://localhost:8080/api/session
 ```
 
-### 4b. GitHub / Google sign-in (optional)
+### 4b. GitHub / Google sign-in
 
-The token keeps working. Sign-in adds a second way in for the people you list.
+Sign-in is the way in, for the people you list.
 Create `/etc/phext-edit/oauth.env` (mode `0600`, owned by root):
 
 ```bash
@@ -325,8 +314,7 @@ ENV
 sudo systemctl restart phext-edit
 ```
 
-Signing in with GitHub or Google skips the token prompt. With `PHEXT_EDITORS`
-empty, any account that signs in can read and edit every phext in the served
+With `PHEXT_EDITORS` empty, any account that signs in can read and edit every phext in the served
 directory. To restrict it, list the accounts; one that is not listed sees its
 `github:<id>` on the sign-in screen, so you can copy it into the list. Every POST from a session also needs the CSRF
 token from `/api/session` (the UI handles this).
@@ -380,7 +368,7 @@ rsync -av /source/site-mirrorborn-us/editor/ /sites/web/mirrorborn.us/editor/
 
 https://mirrorborn.us/editor
 
-Enter your token to authenticate.
+Sign in with GitHub or Google to authenticate.
 
 ## Updating phexts
 
