@@ -500,6 +500,7 @@ main() {
 PHEXT_PUBLIC_URL=https://${DOMAIN}
 PHEXT_SESSION_SECRET=$(random_hex)
 PHEXT_COOKIE_SECURE=1
+# Sign-in is the only way in (access-token sign-in was retired).
 # Empty: any GitHub/Google account gets in.
 # To restrict, list github:<numeric id>, google:<sub>, or email, comma-separated.
 PHEXT_EDITORS=

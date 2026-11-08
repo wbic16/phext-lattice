@@ -130,7 +130,9 @@ Each run, in order:
 2. Fetches `origin/BRANCH` (default `exo`) and hard-resets `APP_DIR` to it.
 3. Runs `cargo build --release --bin phext-edit` as `SERVICE_USER`.
 4. Creates `/etc/phext-edit/oauth.env` (mode `0600`, root-owned) only when
-   missing. An existing file is left as-is and is never printed.
+   missing. An existing file is left as-is and is never printed. (Access-token
+   sign-in was retired in 2026-11; an existing `token.env` is vestigial and
+   can be deleted — nothing reads it.)
 5. Writes `/etc/systemd/system/phext-edit.service` (a timestamped `.bak-*` copy
    is kept when the unit changes), `systemctl daemon-reload`, enables the
    service, and **restarts phext-edit**. It waits until `http://127.0.0.1:PORT/`
@@ -278,7 +280,7 @@ The `/source/human` repo was cloned via HTTPS. To update:
 ssh mirrorborn.us "cd /source/human && git pull"
 ```
 
-### 4. Systemd service (requires sudo)
+### 3. Systemd service (requires sudo)
 
 ```bash
 # On mirrorborn.us:
@@ -286,15 +288,16 @@ sudo cp /source/phext-lattice/deploy/phext-edit.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable phext-edit
 sudo systemctl start phext-edit
-# Verify:
+# Verify (the session endpoint answers while signed out):
 sudo systemctl status phext-edit
 curl -s http://localhost:8080/api/session
 ```
 
-### 4b. GitHub / Google sign-in
+### 4. GitHub / Google sign-in
 
-Sign-in is the way in, for the people you list.
-Create `/etc/phext-edit/oauth.env` (mode `0600`, owned by root):
+Sign-in is the only way in, for the people you list — access-token
+sign-in was retired. Create `/etc/phext-edit/oauth.env` (mode `0600`,
+owned by root):
 
 ```bash
 sudo mkdir -p /etc/phext-edit
