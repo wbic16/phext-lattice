@@ -14,7 +14,7 @@
 #
 # What it touches:
 #   /etc/systemd/system/phext-edit.service   (backed up when it changes)
-#   /etc/phext-edit/token.env, oauth.env     (created only when missing)
+#   /etc/phext-edit/oauth.env              (created only when missing)
 #   /etc/nginx/sites-{available,enabled}/DOMAIN
 #       (deploy/nginx-edit.phext.io.conf once TLS exists; an HTTP bootstrap
 #        before that. A hand-edited file is left in place unless
@@ -491,19 +491,6 @@ main() {
 
   # ── Secrets ──
   sudo mkdir -p "$CONF_DIR"
-  if sudo test -f "${CONF_DIR}/token.env"; then
-    printf 'Keeping %s/token.env\n' "$CONF_DIR"
-  else
-    # Carry the token over from the old unit's --token flag, else mint one.
-    local token=""
-    if sudo test -f "$UNIT_PATH"; then
-      token=$(sudo sed -n 's/.*--token \([^ $][^ ]*\).*/\1/p' "$UNIT_PATH" | head -1)
-    fi
-    [[ -n "$token" ]] || token=$(random_hex)
-    printf 'PHEXT_TOKEN=%s\n' "$token" | install_secret "${CONF_DIR}/token.env"
-    unset token
-    printf 'Wrote %s/token.env (token not printed)\n' "$CONF_DIR"
-  fi
   if sudo test -f "${CONF_DIR}/oauth.env"; then
     printf 'Keeping %s/oauth.env\n' "$CONF_DIR"
   else
@@ -513,7 +500,7 @@ main() {
 PHEXT_PUBLIC_URL=https://${DOMAIN}
 PHEXT_SESSION_SECRET=$(random_hex)
 PHEXT_COOKIE_SECURE=1
-# Signing in skips the token prompt. Empty: any GitHub/Google account gets in.
+# Empty: any GitHub/Google account gets in.
 # To restrict, list github:<numeric id>, google:<sub>, or email, comma-separated.
 PHEXT_EDITORS=
 GITHUB_CLIENT_ID=
@@ -537,9 +524,8 @@ Wants=network-online.target
 Type=simple
 User=${SERVICE_USER}
 WorkingDirectory=${APP_DIR}
-EnvironmentFile=${CONF_DIR}/token.env
 EnvironmentFile=-${CONF_DIR}/oauth.env
-ExecStart=${APP_DIR}/target/release/phext-edit --dir ${PHEXT_DIR} --home ${PHEXT_HOME} --home-coord ${PHEXT_HOME_COORD} --host 127.0.0.1 --port ${PORT} --token \${PHEXT_TOKEN}
+ExecStart=${APP_DIR}/target/release/phext-edit --dir ${PHEXT_DIR} --home ${PHEXT_HOME} --home-coord ${PHEXT_HOME_COORD} --host 127.0.0.1 --port ${PORT}
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
@@ -719,7 +705,7 @@ EOF
   printf '  service:   %s (%s)\n' "$SERVICE" "$(systemctl is-active "$SERVICE")"
   printf '  listen:    127.0.0.1:%s\n' "$PORT"
   printf '  phexts:    %s\n' "$PHEXT_DIR"
-  printf '  secrets:   %s/token.env, %s/oauth.env\n' "$CONF_DIR" "$CONF_DIR"
+  printf '  secrets:   %s/oauth.env\n' "$CONF_DIR"
   printf '  nginx:     %s (%s)\n' "$available" "$nginx_result"
   printf '  tls:       %s\n' "$tls"
   printf '  redirect:  %s\n' "$redirect"

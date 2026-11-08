@@ -85,7 +85,7 @@ cargo build --bin phext-tts
 
 ### Local development
 
-Run the editor on your machine without Google or GitHub sign-in and without an access token:
+Run the editor on your machine without Google or GitHub sign-in:
 
 ```bash
 cargo run --bin phext-edit -- --local

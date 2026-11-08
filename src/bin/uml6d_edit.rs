@@ -480,7 +480,7 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
         return;
     }
 
-    // Sign-in endpoints, then auth check (token or session) — GET / stays open
+    // Sign-in endpoints, then auth check (session) — GET / stays open
     if let Some(reply) = gate.route(&method, &path, &headers) {
         reply.write_to(stream);
         return;
@@ -662,7 +662,6 @@ fn main() {
         eprintln!("  --port <port>     HTTP port (default: 8080)");
         eprintln!("  --host <addr>     Listen address (default: 0.0.0.0; use 127.0.0.1 behind nginx)");
         eprintln!("  --dir <path>      Serve all .phext files in directory");
-        eprintln!("  --token <token>   Require auth token for API access");
         eprintln!();
         eprintln!("GitHub/Google sign-in (environment):");
         eprintln!("  PHEXT_PUBLIC_URL, PHEXT_SESSION_SECRET, PHEXT_EDITORS, PHEXT_COOKIE_SECURE=1");
@@ -672,7 +671,6 @@ fn main() {
 
     let port: u16 = get_flag(&args, "--port").and_then(|p| p.parse().ok()).unwrap_or(8080);
     let host = get_flag(&args, "--host").unwrap_or_else(|| "0.0.0.0".to_string());
-    let token = get_flag(&args, "--token");
     let dir = get_flag(&args, "--dir");
 
     let file_path = if let Some(ref d) = dir {
@@ -702,7 +700,7 @@ fn main() {
     app_state.phext_dir = dir.clone();
 
     let state = Arc::new(Mutex::new(app_state));
-    let gate = Arc::new(Gate::from_env(token));
+    let gate = Arc::new(Gate::from_env());
     let listener = TcpListener::bind(format!("{}:{}", host, port)).unwrap_or_else(|e| {
         eprintln!("Failed to bind {}:{}: {}", host, port, e);
         std::process::exit(1);
@@ -1045,11 +1043,8 @@ body {
 <div id="auth-screen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:100;align-items:center;justify-content:center">
   <div style="text-align:center;max-width:400px">
     <div style="font-size:24px;margin-bottom:16px;color:var(--coord)">6D UML</div>
-    <div id="auth-prompt" style="color:var(--dim);margin-bottom:20px">Enter your access token to continue</div>
+    <div id="auth-prompt" style="color:var(--dim);margin-bottom:20px">Sign in to continue</div>
     <div id="auth-providers" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
-    <input id="auth-input" type="password" placeholder="token" autocomplete="off"
-      style="width:100%;background:var(--panel);border:1px solid var(--border);color:var(--text);
-      font-family:inherit;font-size:14px;padding:10px 14px;border-radius:6px;outline:none;text-align:center" />
     <div id="auth-error" style="color:var(--danger);margin-top:8px;font-size:12px"></div>
   </div>
 </div>
@@ -1083,7 +1078,7 @@ let statusTimeout = null;
 let treeData = null;
 let treeExpanded = {};
 let activePanel = 'sentron';
-let authToken = localStorage.getItem('phext-token') || '';
+
 let needsAuth = false;
 let csrf = '';
 let session = null;
@@ -1123,7 +1118,6 @@ function showPanel(name) {
 
 async function api(method, path, body) {
   const opts = { method, headers: {} };
-  if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
   if (csrf && method !== 'GET') opts.headers['x-csrf-token'] = csrf;
   if (body !== undefined) {
     opts.headers['Content-Type'] = (typeof body === 'object' ? 'application/json' : 'text/plain');
@@ -1511,10 +1505,6 @@ async function loadSession() {
     so.textContent = '⏏ sign out' + (session.handle ? ' ' + session.handle : '');
     so.title = 'Sign out';
     so.style.display = '';
-  } else if (authToken) {
-    so.textContent = '⏏ forget token';
-    so.title = 'Forget the saved access token';
-    so.style.display = '';
   } else {
     so.style.display = 'none';
   }
@@ -1522,8 +1512,6 @@ async function loadSession() {
 async function showAuthScreen(message) {
   await loadSession();
   const s = session || {};
-  // Older servers have no /api/session: fall back to the token prompt.
-  const tokenOk = !session || s.token;
   let html = '';
   if (s.signed_in) {
     html += `<div style="color:var(--text)">Signed in as ${escHtml(s.name || s.handle)} <span style="color:var(--dim)">(${escHtml(s.who)})</span></div>`;
@@ -1537,38 +1525,16 @@ async function showAuthScreen(message) {
   $('auth-providers').innerHTML = html;
   $('auth-prompt').textContent =
     s.signed_in && !s.editor ? 'This account is not on the editor list.'
-    : s.ready && tokenOk ? 'Sign in, or enter your access token'
-    : s.ready ? 'Sign in to continue'
-    : 'Enter your access token to continue';
-  $('auth-input').style.display = tokenOk ? '' : 'none';
+    : 'Sign in to continue';
   $('auth-error').textContent = message || '';
   $('auth-screen').style.display = 'flex';
-  if (tokenOk) $('auth-input').focus();
 }
 async function signOut() {
-  localStorage.removeItem('phext-token');
   if (session && session.signed_in) {
     try { await fetch('api/auth/logout', { method: 'POST', headers: { 'x-csrf-token': csrf } }); } catch {}
   }
   location.reload();
 }
-$('auth-input').addEventListener('keydown', async (e) => {
-  if (e.key === 'Enter') {
-    authToken = $('auth-input').value.trim();
-    try {
-      await api('GET', '/api/status');
-      localStorage.setItem('phext-token', authToken);
-      needsAuth = false;
-      $('auth-screen').style.display = 'none';
-      $('auth-error').textContent = '';
-      initApp();
-    } catch {
-      $('auth-error').textContent = 'Invalid token';
-      $('auth-input').value = '';
-      $('auth-input').focus();
-    }
-  }
-});
 
 // ── Phext picker ──
 async function openPhextPicker() {

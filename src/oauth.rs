@@ -11,10 +11,9 @@
 /// `state` value kept in a second short-lived cookie. Writes (any POST)
 /// also need the session's CSRF token in `x-csrf-token`.
 ///
-/// A signed-in account skips the token prompt. When `PHEXT_EDITORS` is set
-/// (comma-separated `github:<id>`, `google:<sub>`, or email), only those
-/// accounts get in; when it is empty, any signed-in account does.
-/// The `--token` bearer token keeps working alongside sign-in for scripts.
+/// When `PHEXT_EDITORS` is set (comma-separated `github:<id>`, `google:<sub>`,
+/// or email), only those accounts get in; when it is empty, any signed-in
+/// account does.
 ///
 /// The editor list can also grow without the operator: accounts admitted
 /// at runtime (an editor accepting a submission in phext-edit) are added
@@ -825,9 +824,8 @@ impl Editors {
 
 /// In-memory cap on sign-in attempts per client address, per ten minutes.
 ///
-/// Counts OAuth start/callback and a bearer token the server rejected (the
-/// token box sends that secret as `Authorization` on the next API call).
-/// Anonymous 401s are not counted, so opening the signed-out page does not
+/// Counts OAuth start/callback attempts. Anonymous 401s are not counted,
+/// so opening the signed-out page does not
 /// spend the budget. The address is `X-Real-IP` when nginx sets it from
 /// `$remote_addr`; otherwise the last `X-Forwarded-For` hop, which is the
 /// one a single reverse proxy appends.
@@ -1002,10 +1000,9 @@ pub fn status_text(status: u16) -> &'static str {
     }
 }
 
-/// Access control for the editor servers: bearer token, OAuth session, or
-/// open when neither is configured.
+/// Access control for the editor servers: an OAuth session, or open when
+/// sign-in is not configured.
 pub struct Gate {
-    token: Option<String>,
     oauth: Oauth,
     editors: Editors,
     limits: Limiter,
@@ -1017,10 +1014,8 @@ pub struct Gate {
 }
 
 impl Gate {
-    pub fn new(token: Option<String>, oauth: Oauth, editors: Editors) -> Self {
-        let token = token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    pub fn new(oauth: Oauth, editors: Editors) -> Self {
         Self {
-            token,
             oauth,
             editors,
             limits: Limiter::standard(),
@@ -1029,8 +1024,8 @@ impl Gate {
         }
     }
 
-    pub fn from_env(token: Option<String>) -> Self {
-        let gate = Self::new(token, Oauth::from_env(), Editors::from_env());
+    pub fn from_env() -> Self {
+        let gate = Self::new(Oauth::from_env(), Editors::from_env());
         if std::env::var("PHEXT_CLAIM_ENABLED").map(|v| v.trim() == "1").unwrap_or(false) {
             gate.enable_claims();
         }
@@ -1071,7 +1066,7 @@ impl Gate {
 
     /// True when some credential is required for the API.
     pub fn locked(&self) -> bool {
-        self.token.is_some() || self.oauth.ready()
+        self.oauth.ready()
     }
 
     pub fn oauth(&self) -> &Oauth {
@@ -1128,9 +1123,6 @@ impl Gate {
             lines.push("auth: DISABLED (--local, local developer, direct requests only)".to_string());
             return lines;
         }
-        if self.token.is_some() {
-            lines.push("auth: token accepted".to_string());
-        }
         if self.oauth.ready() {
             let who = if self.editors.is_empty() {
                 "any signed-in account".to_string()
@@ -1140,7 +1132,7 @@ impl Gate {
             lines.push(format!("auth: sign-in via {} ({})", self.oauth.providers().join(", "), who));
         }
         if !self.locked() {
-            lines.push("auth: open (no token, sign-in not configured)".to_string());
+            lines.push("auth: open (sign-in not configured)".to_string());
         }
         if self.claims_open() {
             lines.push("claims: open (/api/claim accepts claims)".to_string());
@@ -1190,19 +1182,6 @@ impl Gate {
         if route == "/" || route == "/index.html" || !self.locked() {
             return Ok(());
         }
-        let mut bearer_miss = false;
-        if let Some(ref token) = self.token {
-            let auth = headers.get("authorization").map(String::as_str).unwrap_or("");
-            let given = if auth.len() >= 7 && auth[..7].eq_ignore_ascii_case("bearer ") {
-                &auth[7..]
-            } else {
-                auth
-            };
-            if token_eq(token, given.trim()) {
-                return Ok(());
-            }
-            bearer_miss = !given.trim().is_empty();
-        }
         if let Some(session) = self.oauth.read_session(&cookies(headers)) {
             if !self.editors.allows(&session.who, &session.email) {
                 return Err(self.denied(headers, 403, "This account is not on the editor list."));
@@ -1214,9 +1193,6 @@ impl Gate {
                 }
             }
             return Ok(());
-        }
-        if bearer_miss && self.limits.hit(&client_key(headers)).is_err() {
-            return Err(self.denied(headers, 429, "Too many requests."));
         }
         Err(self.denied(headers, 401, "unauthorized"))
     }
@@ -1230,7 +1206,6 @@ impl Gate {
             return Reply::json(200, json!({
                 "locked": true,
                 "local": true,
-                "token": false,
                 "ready": false,
                 "providers": [],
                 "signed_in": true,
@@ -1249,7 +1224,6 @@ impl Gate {
         let field = |f: fn(&Session) -> &str| session.as_ref().map(f).unwrap_or("").to_string();
         Reply::json(200, json!({
             "locked": self.locked(),
-            "token": self.token.is_some(),
             "ready": self.oauth.ready(),
             "providers": self.oauth.providers(),
             "signed_in": session.is_some(),
@@ -1942,8 +1916,8 @@ mod tests {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
-    fn gate(token: Option<&str>, editors: &str) -> Gate {
-        Gate::new(token.map(str::to_string), Oauth::test_ready(), Editors::parse(editors))
+    fn gate(editors: &str) -> Gate {
+        Gate::new(Oauth::test_ready(), Editors::parse(editors))
     }
 
     fn header<'a>(reply: &'a Reply, name: &str) -> Vec<&'a str> {
@@ -2061,7 +2035,7 @@ mod tests {
     fn admit_account_is_live_and_persists_to_the_editors_file() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("nested").join("admitted-editors.txt");
-        let gate = gate(None, "github:1");
+        let gate = gate("github:1");
         gate.load_editors_file(&file);
         let cookie = format!("phext_session={}", Oauth::test_session_cookie());
         // github:100 starts outside the list: the gate turns it away.
@@ -2090,27 +2064,29 @@ mod tests {
 
     #[test]
     fn an_open_gate_admits_everything() {
-        let gate = Gate::new(None, Oauth::closed(), Editors::default());
+        let gate = Gate::new(Oauth::closed(), Editors::default());
         assert!(!gate.locked());
         assert!(gate.admit("POST", "/api/update", &headers(&[])).is_ok());
     }
 
     #[test]
-    fn the_bearer_token_still_admits() {
-        let gate = Gate::new(Some("s3cret-token".into()), Oauth::closed(), Editors::default());
+    fn a_bearer_header_no_longer_admits() {
+        // The old static-token auth predated sign-in and was removed:
+        // an Authorization header, right or wrong, admits nobody now.
+        let gate = Gate::new(Oauth::test_ready(), Editors::default());
         assert!(gate.admit("GET", "/", &headers(&[])).is_ok());
         assert_eq!(gate.admit("GET", "/api/nav", &headers(&[])).unwrap_err().status, 401);
-        assert!(gate.admit("GET", "/api/nav", &headers(&[("authorization", "Bearer s3cret-token")])).is_ok());
-        assert!(gate.admit("GET", "/api/nav", &headers(&[("authorization", "Bearer nope")])).is_err());
+        assert_eq!(gate.admit("GET", "/api/nav", &headers(&[("authorization", "Bearer s3cret-token")])).unwrap_err().status, 401);
+        assert_eq!(gate.admit("GET", "/api/nav", &headers(&[("authorization", "Bearer nope")])).unwrap_err().status, 401);
     }
 
     #[test]
     fn a_session_needs_the_editor_list_and_csrf_for_writes() {
         let cookie = format!("phext_session={}", Oauth::test_session_cookie());
-        let outsider = gate(None, "github:999");
+        let outsider = gate("github:999");
         assert_eq!(outsider.admit("GET", "/api/nav", &headers(&[("cookie", &cookie)])).unwrap_err().status, 403);
 
-        let gate = gate(None, "github:100");
+        let gate = gate("github:100");
         assert!(gate.admit("GET", "/api/zoom/y/1.1.1?x=1", &headers(&[("cookie", &cookie)])).is_ok());
         assert_eq!(gate.admit("POST", "/api/update", &headers(&[("cookie", &cookie)])).unwrap_err().status, 403);
         assert!(gate
@@ -2121,7 +2097,7 @@ mod tests {
     #[test]
     fn an_empty_editor_list_admits_any_signed_in_account() {
         let cookie = format!("phext_session={}", Oauth::test_session_cookie());
-        let gate = gate(Some("s3cret-token"), "");
+        let gate = gate("");
         assert_eq!(gate.admit("GET", "/api/nav", &headers(&[])).unwrap_err().status, 401);
         assert!(gate.admit("GET", "/api/nav", &headers(&[("cookie", &cookie)])).is_ok());
         assert!(gate
@@ -2132,7 +2108,7 @@ mod tests {
 
     #[test]
     fn the_full_sign_in_flow_sets_a_session() {
-        let gate = gate(None, "github:100");
+        let gate = gate("github:100");
         let start = gate.route("GET", "/api/auth/github?next=%2F%231.1.1%2F1.1.1%2F1.1.2", &headers(&[])).unwrap();
         assert_eq!(start.status, 302);
         let location = header(&start, "Location")[0];
@@ -2158,7 +2134,7 @@ mod tests {
 
     #[test]
     fn logout_needs_csrf_and_clears_the_cookie() {
-        let gate = gate(None, "github:100");
+        let gate = gate("github:100");
         let cookie = format!("phext_session={}", Oauth::test_session_cookie());
         assert_eq!(gate.route("POST", "/api/auth/logout", &headers(&[("cookie", &cookie)])).unwrap().status, 403);
         let out = gate
@@ -2197,7 +2173,7 @@ mod tests {
         // provider link, and the endpoint decodes the `return` inside
         // it when the browser comes back — so assertions decode twice
         // to see the path the endpoint will act on.
-        let gate = gate(None, "");
+        let gate = gate("");
         let reply = gate.route("GET", "/api/auth/sso/mutable", &headers(&[])).unwrap();
         assert_eq!(reply.status, 302);
         let location = header(&reply, "Location")[0];
@@ -2227,7 +2203,7 @@ mod tests {
 
     #[test]
     fn sso_mints_a_short_lived_assertion_for_a_signed_in_account() {
-        let gate = gate(None, "");
+        let gate = gate("");
         let session = scripted_session(&gate, "google", "/api/auth/sso/mutable");
         assert!(session.starts_with("phext_session="));
 
@@ -2260,7 +2236,7 @@ mod tests {
     fn sso_carries_editor_false_for_a_signed_in_non_editor() {
         // The list names someone else: the account still crosses (any
         // signed-in account may), but the flag tells the truth.
-        let gate = gate(None, "github:999");
+        let gate = gate("github:999");
         let session = scripted_session(&gate, "google", "/api/auth/sso/mutable");
         let jump = gate.route("GET", "/api/auth/sso/mutable", &headers(&[("cookie", &session)])).unwrap();
         assert_eq!(jump.status, 302);
@@ -2276,7 +2252,7 @@ mod tests {
 
     #[test]
     fn sso_is_404_until_configured_and_never_swallows_a_provider() {
-        let closed_gate = Gate::new(None, Oauth::closed(), Editors::default());
+        let closed_gate = Gate::new(Oauth::closed(), Editors::default());
         assert!(!closed_gate.oauth().sso_ready());
         let reply = closed_gate.route("GET", "/api/auth/sso/mutable", &headers(&[])).unwrap();
         assert_eq!(reply.status, 404);
@@ -2287,7 +2263,7 @@ mod tests {
 
         // Arm precision: `/api/auth/sso` without `/mutable` is not the
         // handoff — it parses as a provider name and is refused as one.
-        let ready_gate = gate(None, "");
+        let ready_gate = gate("");
         let reply = ready_gate.route("GET", "/api/auth/sso", &headers(&[])).unwrap();
         assert_eq!(reply.status, 403);
     }
@@ -2297,7 +2273,7 @@ mod tests {
         // The second allowlisted audience mints through the same route
         // shape, under the same SSO secret, in the same format — the
         // only differences are the `aud` claim and the callback origin.
-        let gate = gate(None, "");
+        let gate = gate("");
         let session = scripted_session(&gate, "google", "/api/auth/sso/exocortexia");
         let jump = gate
             .route(
@@ -2327,7 +2303,7 @@ mod tests {
 
     #[test]
     fn sso_exocortexia_sends_the_signed_out_to_sign_in_with_itself_as_next() {
-        let gate = gate(None, "");
+        let gate = gate("");
         let reply = gate.route("GET", "/api/auth/sso/exocortexia", &headers(&[])).unwrap();
         assert_eq!(reply.status, 302);
         let location = header(&reply, "Location")[0];
@@ -2340,7 +2316,7 @@ mod tests {
 
     #[test]
     fn sso_rejects_an_audience_outside_the_allowlist() {
-        let gate = gate(None, "");
+        let gate = gate("");
         let session = scripted_session(&gate, "google", "/api/auth/sso/mutable");
         for path in ["/api/auth/sso/evil", "/api/auth/sso/mutable2", "/api/auth/sso/Mutable"] {
             // Signed in or out, an unknown audience is a plain 404 —
@@ -2376,7 +2352,7 @@ mod tests {
         );
         assert!(oauth.sso_ready());
         assert!(!oauth.sso_ready_for("exocortexia"));
-        let gate = Gate::new(None, oauth, Editors::parse(""));
+        let gate = Gate::new(oauth, Editors::parse(""));
         let reply = gate.route("GET", "/api/auth/sso/exocortexia", &headers(&[])).unwrap();
         assert_eq!(reply.status, 404);
         let reply = gate.route("GET", "/api/auth/sso/mutable", &headers(&[])).unwrap();
@@ -2389,7 +2365,7 @@ mod tests {
         // The third allowlisted audience mints through the same route
         // shape, under the same SSO secret, in the same format — the
         // only differences are the `aud` claim and the callback origin.
-        let gate = gate(None, "");
+        let gate = gate("");
         let session = scripted_session(&gate, "google", "/api/auth/sso/wishnode");
         let jump = gate
             .route(
@@ -2419,7 +2395,7 @@ mod tests {
 
     #[test]
     fn sso_wishnode_sends_the_signed_out_to_sign_in_with_itself_as_next() {
-        let gate = gate(None, "");
+        let gate = gate("");
         let reply = gate.route("GET", "/api/auth/sso/wishnode", &headers(&[])).unwrap();
         assert_eq!(reply.status, 302);
         let location = header(&reply, "Location")[0];
@@ -2454,7 +2430,7 @@ mod tests {
         assert!(oauth.sso_ready());
         assert!(oauth.sso_ready_for("exocortexia"));
         assert!(!oauth.sso_ready_for("wishnode"));
-        let gate = Gate::new(None, oauth, Editors::parse(""));
+        let gate = Gate::new(oauth, Editors::parse(""));
         let reply = gate.route("GET", "/api/auth/sso/wishnode", &headers(&[])).unwrap();
         assert_eq!(reply.status, 404);
         let reply = gate.route("GET", "/api/auth/sso/exocortexia", &headers(&[])).unwrap();
@@ -2470,7 +2446,7 @@ mod tests {
         // A token minted for Exocortexia, opened under the shared
         // secret exactly as a consumer opens it, names the wrong
         // audience for Wishnode and must be refused there.
-        let gate = gate(None, "");
+        let gate = gate("");
         let session = scripted_session(&gate, "google", "/api/auth/sso/exocortexia");
         let jump = gate
             .route("GET", "/api/auth/sso/exocortexia", &headers(&[("cookie", &session)]))
@@ -2511,7 +2487,7 @@ mod tests {
 
     #[test]
     fn local_mode_admits_direct_requests_as_a_local_developer() {
-        let gate = Gate::new(Some("s3cret-token".into()), Oauth::closed(), Editors::default());
+        let gate = Gate::new(Oauth::closed(), Editors::default());
         gate.enable_local();
         assert!(gate.is_local());
         assert!(gate.admit("GET", "/api/status", &headers(&[("host", "127.0.0.1:8080")])).is_ok());
@@ -2526,18 +2502,21 @@ mod tests {
     }
 
     #[test]
-    fn local_mode_is_not_subject_to_the_bearer_rate_limit() {
-        let gate = Gate::new(Some("s3cret-token".into()), Oauth::closed(), Editors::default());
+    fn local_mode_admits_requests_carrying_an_authorization_header() {
+        // Since the token auth was removed the header admits nobody by
+        // itself; local mode admits direct requests regardless of it,
+        // and no rate limit applies to the repetitions.
+        let gate = Gate::new(Oauth::closed(), Editors::default());
         gate.enable_local();
-        let bad = headers(&[("host", "127.0.0.1:8080"), ("authorization", "Bearer nope")]);
+        let h = headers(&[("host", "127.0.0.1:8080"), ("authorization", "Bearer nope")]);
         for _ in 0..(AUTH_PER_IP + 5) {
-            assert!(gate.admit("GET", "/api/nav", &bad).is_ok());
+            assert!(gate.admit("GET", "/api/nav", &h).is_ok());
         }
     }
 
     #[test]
     fn local_mode_refuses_a_forwarded_request() {
-        let gate = Gate::new(Some("s3cret-token".into()), Oauth::closed(), Editors::default());
+        let gate = Gate::new(Oauth::closed(), Editors::default());
         gate.enable_local();
         let cases = [
             headers(&[("host", "127.0.0.1"), ("x-forwarded-for", "203.0.113.4")]),
@@ -2561,8 +2540,9 @@ mod tests {
 
     #[test]
     fn local_mode_cannot_be_enabled_by_the_environment_or_a_header() {
-        let gate = Gate::from_env(Some("s3cret-token".into()));
-        assert!(!gate.is_local());
+        let env_gate = Gate::from_env();
+        assert!(!env_gate.is_local());
+        let gate = gate("");
         let denied = gate.admit(
             "GET",
             "/api/nav",
@@ -2588,7 +2568,7 @@ mod tests {
 
     #[test]
     fn auth_responses_stay_private_and_carry_security_headers() {
-        let gate = gate(Some("s3cret-token"), "github:100");
+        let gate = gate("github:100");
         let text = written(&gate.route("GET", "/api/session", &headers(&[])).unwrap());
         assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(text.contains("Cache-Control: no-store\r\n"));
@@ -2607,7 +2587,7 @@ mod tests {
 
     #[test]
     fn https_forwarding_adds_hsts_to_auth_responses() {
-        let gate = gate(None, "");
+        let gate = gate("");
         let text = written(
             &gate
                 .route("GET", "/api/session", &headers(&[("x-forwarded-proto", "https")]))
@@ -2617,27 +2597,10 @@ mod tests {
         assert!(text.contains("upgrade-insecure-requests"));
     }
 
-    #[test]
-    fn wrong_bearer_tokens_are_rate_limited_per_address() {
-        let gate = gate(Some("s3cret-token"), "");
-        let bad = headers(&[("authorization", "Bearer nope"), ("x-real-ip", "198.51.100.20")]);
-        for _ in 0..AUTH_PER_IP {
-            assert_eq!(gate.admit("GET", "/api/status", &bad).unwrap_err().status, 401);
-        }
-        let blocked = gate.admit("GET", "/api/status", &bad).unwrap_err();
-        assert_eq!(blocked.status, 429);
-        assert!(written(&blocked).contains("Retry-After: 600\r\n"));
-        let other = headers(&[("authorization", "Bearer nope"), ("x-real-ip", "198.51.100.21")]);
-        assert_eq!(gate.admit("GET", "/api/status", &other).unwrap_err().status, 401);
-        let good = headers(&[("authorization", "Bearer s3cret-token"), ("x-real-ip", "198.51.100.20")]);
-        assert!(gate.admit("GET", "/api/status", &good).is_ok());
-        let anon = headers(&[("x-real-ip", "198.51.100.20")]);
-        assert_eq!(gate.admit("GET", "/api/status", &anon).unwrap_err().status, 401);
-    }
 
     #[test]
     fn oauth_start_is_rate_limited_per_address() {
-        let gate = gate(None, "github:100");
+        let gate = gate("github:100");
         let h = headers(&[("x-real-ip", "203.0.113.4")]);
         for _ in 0..AUTH_PER_IP {
             assert_eq!(gate.route("GET", "/api/auth/github", &h).unwrap().status, 302);
