@@ -595,7 +595,7 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
 
     // Public documents, then a real 404. Both are answered before the gate so a
     // signed-out visitor is not handed 401 JSON. /api is unchanged: gate.route
-    // still serves sign-in, and gate.admit still requires a token or session.
+    // still serves sign-in, and gate.admit still requires a session.
     // HTML pages revalidate like the shell. Crawler files are compiled in and
     // change only when the binary does, same as the favicon. The 404 is an
     // error, so it stays no-store (no ETag) and still carries the security headers.
@@ -621,7 +621,7 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
         return;
     }
 
-    // Sign-in endpoints, then auth check (token or session) — GET / stays open
+    // Sign-in endpoints, then auth check (session) — GET / stays open
     if let Some(reply) = gate.route(&method, &path, &headers) {
         // Two things happen here, where a sign-in completes. An X
         // sign-in grants editor (Will's ruling, 2026-11-05): an X
@@ -1295,6 +1295,9 @@ fn get_flag(args: &[String], flag: &str) -> Option<String> {
 
 /// First argument that is not a flag or a flag's value.
 fn positional_file(args: &[String]) -> Option<String> {
+    // "--token" is retired (sign-in only since 2026-11-08) but stays in
+    // this list so a command line or unit file that still passes it has
+    // its value skipped rather than mistaken for a phext file.
     const VALUED: &[&str] = &[
         "--port", "--host", "--dir", "--token", "--home", "--home-coord",
     ];
@@ -1384,8 +1387,9 @@ mod tests {
     }
 
     fn serve(local: bool) -> (u16, tempfile::TempDir) {
+        // Locked by sign-in, as phext-edit now runs: no bearer token.
         let (port, dir, _gate) =
-            serve_gate(Gate::new(Some("test-token".into()), Oauth::closed(), Editors::default()), local);
+            serve_gate(Gate::new(None, Oauth::test_ready(), Editors::default()), local);
         (port, dir)
     }
 
@@ -1932,7 +1936,6 @@ fn main() {
         eprintln!("  --port <port>     HTTP port (default: 8080)");
         eprintln!("  --host <addr>     Listen address (default: 0.0.0.0; 127.0.0.1 with --local)");
         eprintln!("  --dir <path>      Serve all .phext files in directory");
-        eprintln!("  --token <token>   Require auth token for API access");
         eprintln!("  --local           Local dev: no sign-in. Loopback bind only.");
         eprintln!("                    Phexts: --dir, else PHEXT_DATA_DIR, else ./.phext-local");
         eprintln!("  --help            Show this help");
@@ -1957,7 +1960,6 @@ fn main() {
     } else {
         get_flag(&args, "--host").unwrap_or_else(|| "0.0.0.0".to_string())
     };
-    let token = get_flag(&args, "--token");
     let mut dir = get_flag(&args, "--dir");
     // `--local` does not inherit PHEXT_HOME: that variable points at the deployed library.
     let mut home_file = get_flag(&args, "--home")
@@ -2033,7 +2035,10 @@ fn main() {
     if let Err(e) = app_state.go_home() { eprintln!("home: {}", e); }
 
     let state = Arc::new(Mutex::new(app_state));
-    let gate = Arc::new(Gate::from_env(token));
+    // phext-edit is sign-in only: the access-token sign-in was dropped
+    // (2026-11-08), so the gate is built without a bearer token. The
+    // Gate type still accepts one for uml6d-edit, which keeps its own.
+    let gate = Arc::new(Gate::from_env(None));
     // Admissions (an editor accepting a submission) persist to an editors
     // file. PHEXT_EDITORS_FILE names it when set — Gate::from_env already
     // loaded that one — otherwise it lives next to the phexts.
@@ -2290,7 +2295,7 @@ fn dashboard_html(claimed: &[&claims::Claim], total: usize, unclaimed: usize, jo
         }
         out.push_str("</table>\n");
     }
-    out.push_str("<footer>Phext Edit · <a href=\"/about\">About</a> · <a href=\"/privacy\">Privacy Policy</a> · <a href=\"/terms\">Terms of Service</a></footer>\n");
+    out.push_str("<footer>Phext Edit · <a href=\"/about\">About</a> · <a href=\"/privacy\">Privacy Policy</a> · <a href=\"/terms\">Terms of Service</a> · Contact: <a href=\"mailto:will+support@phext.io\">will+support@phext.io</a></footer>\n");
     out.push_str("</main>\n</body>\n</html>\n");
     out
 }
@@ -2998,7 +3003,7 @@ const NOT_FOUND_HTML: &str = concat!(r#"<!DOCTYPE html>
 <h1>Page not found</h1>
 <p>There is no page at that address.</p>
 <p><a href="/">Back to Phext Edit</a></p>
-<footer>Phext Edit · <a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a></footer>
+<footer>Phext Edit · <a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
 </main>
 </body>
 </html>
@@ -3180,14 +3185,11 @@ body {
   transition: background var(--trans-fast), color var(--trans-fast);
 }
 #status-bar .signout:hover { background: var(--coord); color: #000; }
-#status-bar .submit-link {
-  margin-left: auto; color: var(--dim); text-decoration: none; white-space: nowrap;
-}
-#status-bar .submit-link:hover { color: var(--coord); text-decoration: underline; }
-#status-bar .claim-link {
+#status-bar .bar-link {
   margin-left: 14px; color: var(--dim); text-decoration: none; white-space: nowrap;
 }
-#status-bar .claim-link:hover { color: var(--coord); text-decoration: underline; }
+#status-bar .bar-link.first { margin-left: auto; }
+#status-bar .bar-link:hover { color: var(--coord); text-decoration: underline; }
 
 /* ── Overlays ── */
 .overlay {
@@ -3234,7 +3236,7 @@ body {
   #editor .editor-toolbar button { padding: 8px 12px; }
   #status-bar { height: auto; min-height: 52px; flex-wrap: wrap; padding: 8px 12px; gap: 8px 14px; font-size: 14px; }
   #status-bar .help { order: 10; flex-basis: 100%; white-space: normal; overflow: visible; text-overflow: clip; }
-  #status-bar .submit-link, #status-bar .claim-link { margin-left: 0; }
+  #status-bar .bar-link { margin-left: 0; }
   .overlay { top: 44px; }
   #search-overlay, #goto-overlay, #phext-overlay { width: calc(100vw - 24px) !important; max-height: 70vh; }
   #search-results .hit .hit-coord { min-width: 0; }
@@ -3279,12 +3281,12 @@ body {
   <span id="active-file" style="color:var(--dim);cursor:pointer" onclick="openPhextPicker()" title="Click to switch phext"></span>
   <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  u:UG5  t:tree  /:search  g:goto  Home:BASE</span>
   <span class="msg" id="status-msg"></span>
-  <a class="submit-link" href="submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
-  <a class="claim-link" href="claim" title="If your X account is in the wavefront map, claim your space on this server">Claim your space</a>
-  <a class="claim-link" href="explore" title="Every placement in the wavefront, explorable in nine dimensions">Explore the map</a>
-  <a class="claim-link" href="phext-previewer.html" title="Open a phext file from your own device and preview it scroll by scroll — no sign-in needed">Preview a phext</a>
-  <a class="claim-link" href="api/auth/sso/mutable" title="Mutable OS — documents and Caverns, with this same sign-in">Mutable OS</a>
-  <a class="claim-link" id="dashboard-link" href="claim/dashboard" style="display:none" title="Who has claimed their wavefront space, and who has joined since the snapshot — the owner and editors">Claim dashboard</a>
+  <a class="bar-link first" href="submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
+  <a class="bar-link" href="claim" title="If your X account is in the wavefront map, claim your space on this server">Claim your space</a>
+  <a class="bar-link" href="explore" title="Every placement in the wavefront, explorable in nine dimensions">Explore the map</a>
+  <a class="bar-link" href="phext-previewer.html" title="Open a phext file from your own device and preview it scroll by scroll — no sign-in needed">Preview a phext</a>
+  <a class="bar-link" href="api/auth/sso/mutable" title="Mutable OS — documents and Caverns, with this same sign-in">Mutable OS</a>
+  <a class="bar-link" id="dashboard-link" href="claim/dashboard" style="display:none" title="Who has claimed their wavefront space, and who has joined since the snapshot — the owner and editors">Claim dashboard</a>
   <span id="signout" class="signout" style="display:none" onclick="signOut()" title="Sign out"></span>
 </div>
 
@@ -3302,19 +3304,15 @@ body {
 <div id="auth-screen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:100;align-items:center;justify-content:center">
   <div style="text-align:center;max-width:400px">
     <div style="font-size:24px;margin-bottom:16px;color:var(--coord)">💎 phext-edit</div>
-    <div id="auth-prompt" style="color:var(--dim);margin-bottom:20px">Enter your access token to continue</div>
+    <div id="auth-prompt" style="color:var(--dim);margin-bottom:20px">Sign in to continue</div>
     <div id="auth-providers" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px"></div>
-    <input id="auth-input" type="password" placeholder="token" autocomplete="off"
-      style="width:100%;background:var(--panel);border:1px solid var(--border);color:var(--text);
-      font-family:inherit;font-size:14px;padding:10px 14px;border-radius:6px;outline:none;text-align:center" />
     <div id="auth-error" style="color:var(--danger);margin-top:8px;font-size:12px"></div>
-    <div style="color:var(--dim);margin-top:28px;font-size:12px;line-height:1.6">
-      A web editor for phext: plain text arranged in 11 dimensions.<br>
+    <div style="color:var(--dim);margin-top:28px;font-size:12px;line-height:1.9">
+      A web editor for phext: plain text arranged in 11 dimensions.
       Sign-in only checks who you are; nothing is shared or sold.<br>
-      <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a><br>
+      <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a> · <a href="mailto:will+support@phext.io" style="color:var(--coord)">Contact</a><br>
       No sign-in needed: <a href="up-goer-five.html" style="color:var(--coord)">Up Goer Five</a> · <a href="tts-demo.html" style="color:var(--coord)">Coordinate TTS demo</a> · <a href="learn-you-phext.html" style="color:var(--coord)">Learn You Phext</a> · <a href="singular.html" style="color:var(--coord)">Singular</a> · <a href="phext-previewer.html" style="color:var(--coord)">Phext Previewer</a><br>
-      Have a phext of your own? <a href="submit" style="color:var(--coord)">Upload it for review</a> — if an editor accepts it, you become an editor too. Signing in with X makes you an editor at once.<br>
-      Placed in the wavefront map? <a href="claim" style="color:var(--coord)">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="explore" style="color:var(--coord)">explore the map</a> first.
+      Your own phext: <a href="submit" style="color:var(--coord)">Submit it for review</a> · In the wavefront map: <a href="claim" style="color:var(--coord)">Claim your space</a> · <a href="explore" style="color:var(--coord)">Explore the map</a> — signing in with X makes you an editor at once.
     </div>
   </div>
 </div>
@@ -3330,7 +3328,6 @@ let statusTimeout = null;
 let treeData = null;
 let treeExpanded = {};
 let activePanel = 'sentron';
-let authToken = localStorage.getItem('phext-token') || '';
 let needsAuth = false;
 let csrf = '';
 let session = null;
@@ -3368,7 +3365,6 @@ function showPanel(name) {
 
 async function api(method, path, body) {
   const opts = { method, headers: {} };
-  if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
   if (csrf && method !== 'GET') opts.headers['x-csrf-token'] = csrf;
   if (body !== undefined) {
     opts.headers['Content-Type'] = (typeof body === 'object' ? 'application/json' : 'text/plain');
@@ -3708,16 +3704,15 @@ window.addEventListener('hashchange', async () => {
 // ── Auth ──
 // Sign-in state lives in an HttpOnly cookie; /api/session reports it and the CSRF token.
 async function loadSession() {
+  // Access-token sign-in was retired (2026-11-08): forget any token an
+  // older version of this page saved, so it can never be sent again.
+  localStorage.removeItem('phext-token');
   try { session = await (await fetch('api/session')).json(); } catch { session = null; }
   csrf = (session && session.csrf) || '';
   const so = $('signout');
   if (session && session.signed_in) {
     so.textContent = '⏏ sign out' + (session.handle ? ' ' + session.handle : '');
     so.title = 'Sign out';
-    so.style.display = '';
-  } else if (authToken) {
-    so.textContent = '⏏ forget token';
-    so.title = 'Forget the saved access token';
     so.style.display = '';
   } else {
     so.style.display = 'none';
@@ -3729,8 +3724,6 @@ async function loadSession() {
 async function showAuthScreen(message, sessionFresh) {
   if (!sessionFresh) await loadSession();
   const s = session || {};
-  // Older servers have no /api/session: fall back to the token prompt.
-  const tokenOk = !session || s.token;
   let html = '';
   if (s.signed_in) {
     html += `<div style="color:var(--text)">Signed in as ${escHtml(s.name || s.handle)} <span style="color:var(--dim)">(${escHtml(s.who)})</span></div>`;
@@ -3751,41 +3744,17 @@ async function showAuthScreen(message, sessionFresh) {
   $('auth-providers').innerHTML = html;
   $('auth-prompt').textContent =
     s.signed_in && !s.editor ? 'This account is not on the editor list.'
-    : s.ready && tokenOk ? 'Sign in, or enter your access token'
     : s.ready ? 'Sign in to continue'
-    : 'Enter your access token to continue';
-  $('auth-input').style.display = tokenOk ? '' : 'none';
+    : 'Sign-in is not configured on this server';
   $('auth-error').textContent = message || '';
   $('auth-screen').style.display = 'flex';
-  if (tokenOk) $('auth-input').focus();
 }
 async function signOut() {
-  localStorage.removeItem('phext-token');
   if (session && session.signed_in) {
     try { await fetch('api/auth/logout', { method: 'POST', headers: { 'x-csrf-token': csrf } }); } catch {}
   }
   location.reload();
 }
-$('auth-input').addEventListener('keydown', async (e) => {
-  if (e.key === 'Enter') {
-    authToken = $('auth-input').value.trim();
-    try {
-      await api('GET', '/api/status');
-      // Success — hide auth screen
-      localStorage.setItem('phext-token', authToken);
-      needsAuth = false;
-      $('auth-screen').style.display = 'none';
-      $('auth-error').textContent = '';
-      if (!/^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(location.hash.replace(/^#/, '')))
-        render(await api('POST', '/api/home'));
-      initApp();
-    } catch {
-      $('auth-error').textContent = 'Invalid token';
-      $('auth-input').value = '';
-      $('auth-input').focus();
-    }
-  }
-});
 
 // ── Phext picker ──
 async function openPhextPicker() {
@@ -3832,7 +3801,7 @@ async function initApp() {
   try {
     await loadSession();
     // Known to be signed out: show sign-in now rather than letting an API call 401.
-    if (session && session.locked && !session.editor && !authToken) {
+    if (session && session.locked && !session.editor) {
       needsAuth = true;
       await showAuthScreen('', true);
       return;
@@ -3874,7 +3843,8 @@ mod public_route_tests {
     }
 
     fn locked_gate() -> Arc<Gate> {
-        Arc::new(Gate::new(Some("s3cret-token".into()), Oauth::closed(), Editors::default()))
+        // Locked by sign-in, as phext-edit now runs: no bearer token.
+        Arc::new(Gate::new(None, Oauth::test_ready(), Editors::default()))
     }
 
     fn open_gate() -> Arc<Gate> {
@@ -4096,8 +4066,8 @@ mod public_route_tests {
         // Discoverability: the surfaces a signed-in user actually lands on
         // link /claim — the editor shell (status bar + sign-in screen),
         // the About page, and the sitemap. Not just the sitemap.
-        assert!(INDEX_HTML.contains("class=\"claim-link\" href=\"claim\""), "shell status bar link");
-        assert!(INDEX_HTML.contains("Placed in the wavefront map?"), "shell sign-in screen link");
+        assert!(INDEX_HTML.contains("class=\"bar-link\" href=\"claim\""), "shell status bar link");
+        assert!(INDEX_HTML.contains(">Claim your space</a>"), "shell sign-in screen link");
         assert!(ABOUT_HTML.contains("href=\"claim\""), "about link");
         assert!(SITEMAP_XML.contains("https://edit.phext.io/claim</loc>"), "sitemap entry");
     }
@@ -4124,8 +4094,8 @@ mod public_route_tests {
         assert!(data.body.contains("@eigenhector"), "named entries ride along");
 
         // Same discoverability surfaces as /claim.
-        assert!(INDEX_HTML.contains("class=\"claim-link\" href=\"explore\""), "shell status bar link");
-        assert!(INDEX_HTML.contains("explore the map"), "shell sign-in screen link");
+        assert!(INDEX_HTML.contains("class=\"bar-link\" href=\"explore\""), "shell status bar link");
+        assert!(INDEX_HTML.contains("Explore the map"), "shell sign-in screen link");
         assert!(ABOUT_HTML.contains("href=\"explore\""), "about link");
         assert!(SITEMAP_XML.contains("https://edit.phext.io/explore</loc>"), "sitemap entry");
     }
@@ -4137,7 +4107,7 @@ mod public_route_tests {
         // and the sign-in screen honours the ?next= the handoff sends
         // signed-out visitors back with.
         assert!(
-            INDEX_HTML.contains("class=\"claim-link\" href=\"api/auth/sso/mutable\""),
+            INDEX_HTML.contains("class=\"bar-link\" href=\"api/auth/sso/mutable\""),
             "shell status bar link"
         );
         assert!(INDEX_HTML.contains(">Mutable OS</a>"), "link label");
@@ -4256,7 +4226,7 @@ mod public_route_tests {
     }
 
     #[test]
-    fn api_paths_still_return_json_and_a_token_still_works() {
+    fn api_paths_still_return_json_and_bearer_tokens_no_longer_work() {
         let gate = locked_gate();
         let denied = get(&gate, "/api/nav");
         assert_eq!(denied.status, 401);
@@ -4271,16 +4241,36 @@ mod public_route_tests {
         assert!(unknown.content_type.starts_with("application/json"));
         assert!(!unknown.body.contains("<html"));
 
-        let authed = http(
+        // Access-token sign-in was dropped (2026-11-08): a bearer header
+        // is just an unauthenticated request now, on known and unknown
+        // paths alike. Sign-in is the only way in.
+        let bearer = http(
             &gate,
             "GET /api/status HTTP/1.1\r\nHost: edit.phext.io\r\nAuthorization: Bearer s3cret-token\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(bearer.status, 401, "{}", bearer.body);
+        assert!(bearer.content_type.starts_with("application/json"));
+        assert!(bearer.body.contains("\"error\":\"unauthorized\""));
+
+        let bearer_missing = http(
+            &gate,
+            "GET /api/does-not-exist HTTP/1.1\r\nHost: edit.phext.io\r\nAuthorization: Bearer s3cret-token\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(bearer_missing.status, 401);
+        assert!(bearer_missing.content_type.starts_with("application/json"));
+
+        // The session cookie is what admits now.
+        let cookie = format!("Cookie: phext_session={}", Oauth::test_session_cookie());
+        let authed = http(
+            &gate,
+            &format!("GET /api/status HTTP/1.1\r\nHost: edit.phext.io\r\n{cookie}\r\nConnection: close\r\n\r\n"),
         );
         assert_eq!(authed.status, 200, "{}", authed.body);
         assert!(authed.content_type.starts_with("application/json"));
 
         let missing = http(
             &gate,
-            "GET /api/does-not-exist HTTP/1.1\r\nHost: edit.phext.io\r\nAuthorization: Bearer s3cret-token\r\nConnection: close\r\n\r\n",
+            &format!("GET /api/does-not-exist HTTP/1.1\r\nHost: edit.phext.io\r\n{cookie}\r\nConnection: close\r\n\r\n"),
         );
         assert_eq!(missing.status, 404);
         assert!(missing.content_type.starts_with("application/json"));
@@ -4292,12 +4282,12 @@ mod public_route_tests {
         assert!(session.body.contains("\"locked\":false"));
 
         // Sign-in itself is an API route and must stay reachable while signed out.
-        let oauth = Arc::new(Gate::new(None, Oauth::test_ready(), Editors::default()));
-        let who = get(&oauth, "/api/session");
+        let who = get(&gate, "/api/session");
         assert_eq!(who.status, 200);
         assert!(who.body.contains("\"locked\":true"));
+        assert!(who.body.contains("\"token\":false"));
         assert!(who.content_type.starts_with("application/json"));
-        let start = get(&oauth, "/api/auth/github");
+        let start = get(&gate, "/api/auth/github");
         assert_eq!(start.status, 302, "{}", start.body);
         assert!(!start.body.contains("Page not found"));
     }
