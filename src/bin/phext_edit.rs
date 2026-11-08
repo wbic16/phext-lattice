@@ -21,6 +21,7 @@ use phext_lattice::{
 use phext_lattice::claims::{self, Tier};
 use phext_lattice::joins;
 use phext_lattice::oauth::{forwarded_https, security_header_block, status_text, Gate, Reply, Session};
+use phext_lattice::sponsor::{self, SponsorOffer};
 use phext_lattice::submissions::{self, Submission, SubmissionStatus};
 use phext_lattice::wavefront;
 use sha2::Digest;
@@ -545,6 +546,32 @@ struct PublicDocument {
     body: &'static str,
 }
 
+fn sponsor_offer() -> &'static SponsorOffer {
+    static OFFER: OnceLock<SponsorOffer> = OnceLock::new();
+    OFFER.get_or_init(SponsorOffer::from_env)
+}
+
+/// Fill the donation slot. Pages without one are returned as-is.
+fn render_with_sponsor(html: &str) -> std::borrow::Cow<'_, str> {
+    if html.contains(sponsor::SLOT) {
+        std::borrow::Cow::Owned(sponsor::apply_slot(html, sponsor_offer()))
+    } else {
+        std::borrow::Cow::Borrowed(html)
+    }
+}
+
+fn send_html(
+    stream: &mut std::net::TcpStream,
+    status: u16,
+    template: &str,
+    class: CacheClass,
+    headers: &HashMap<String, String>,
+    head_only: bool,
+) {
+    let rendered = render_with_sponsor(template);
+    send_response(stream, status, HTML, rendered.as_bytes(), class, headers, head_only);
+}
+
 /// Pages and crawler files a signed-out visitor can read. Exact paths only.
 fn public_document(path: &str) -> Option<PublicDocument> {
     let (content_type, body) = match path_route(path) {
@@ -610,18 +637,26 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
         } else {
             CacheClass::Static
         };
-        let bytes = doc.body.as_bytes();
-        match method.as_str() {
-            "GET" => send_response(stream, 200, doc.content_type, bytes, class, &headers, false),
-            "HEAD" => send_response(stream, 200, doc.content_type, bytes, class, &headers, true),
-            _ => send_response(stream, 405, "text/plain", b"method not allowed", CacheClass::NoStore, &headers, false),
+        if doc.content_type.starts_with("text/html") {
+            match method.as_str() {
+                "GET" => send_html(stream, 200, doc.body, class, &headers, false),
+                "HEAD" => send_html(stream, 200, doc.body, class, &headers, true),
+                _ => send_response(stream, 405, "text/plain", b"method not allowed", CacheClass::NoStore, &headers, false),
+            }
+        } else {
+            let bytes = doc.body.as_bytes();
+            match method.as_str() {
+                "GET" => send_response(stream, 200, doc.content_type, bytes, class, &headers, false),
+                "HEAD" => send_response(stream, 200, doc.content_type, bytes, class, &headers, true),
+                _ => send_response(stream, 405, "text/plain", b"method not allowed", CacheClass::NoStore, &headers, false),
+            }
         }
         return;
     }
     if !is_editor_shell(&path) && !is_api_path(&path) && path_route(&path) != "/submit" && path_route(&path) != "/claim/dashboard" {
         match method.as_str() {
-            "HEAD" => send_response(stream, 404, HTML, NOT_FOUND_HTML.as_bytes(), CacheClass::NoStore, &headers, true),
-            _ => send_response(stream, 404, HTML, NOT_FOUND_HTML.as_bytes(), CacheClass::NoStore, &headers, false),
+            "HEAD" => send_html(stream, 404, NOT_FOUND_HTML, CacheClass::NoStore, &headers, true),
+            _ => send_html(stream, 404, NOT_FOUND_HTML, CacheClass::NoStore, &headers, false),
         }
         return;
     }
@@ -682,10 +717,10 @@ fn handle_request(stream: &mut std::net::TcpStream, state: &Arc<Mutex<AppState>>
 
     match (method.as_str(), path.as_str()) {
         ("GET", p) if is_editor_shell(p) => {
-            send_response(stream, 200, HTML, INDEX_HTML.as_bytes(), CacheClass::Shell, &headers, false);
+            send_html(stream, 200, INDEX_HTML, CacheClass::Shell, &headers, false);
         }
         ("HEAD", p) if is_editor_shell(p) => {
-            send_response(stream, 200, HTML, INDEX_HTML.as_bytes(), CacheClass::Shell, &headers, true);
+            send_html(stream, 200, INDEX_HTML, CacheClass::Shell, &headers, true);
         }
 
         // ── Phext file management ──
@@ -1107,8 +1142,8 @@ fn handle_submissions(
     let route = path_route(path);
     if route == "/submit" {
         match method {
-            "GET" => send_response(stream, 200, HTML, SUBMIT_HTML.as_bytes(), CacheClass::Shell, headers, false),
-            "HEAD" => send_response(stream, 200, HTML, SUBMIT_HTML.as_bytes(), CacheClass::Shell, headers, true),
+            "GET" => send_html(stream, 200, SUBMIT_HTML, CacheClass::Shell, headers, false),
+            "HEAD" => send_html(stream, 200, SUBMIT_HTML, CacheClass::Shell, headers, true),
             _ => send_response(stream, 405, "text/plain", b"method not allowed", CacheClass::NoStore, headers, false),
         }
         return true;
@@ -2134,6 +2169,7 @@ fn main() {
         eprintln!("  PHEXT_PUBLIC_URL, PHEXT_SESSION_SECRET, PHEXT_EDITORS, PHEXT_EDITORS_FILE, PHEXT_COOKIE_SECURE=1");
         eprintln!("  GITHUB_CLIENT_ID/SECRET, GOOGLE_CLIENT_ID/SECRET, X_CLIENT_ID/SECRET");
         eprintln!("  PHEXT_CLAIM_ENABLED=1 opens claim mode (/api/claim; the /claim lookup is always public)");
+        eprintln!("  PHEXT_SPONSOR_URL   Stripe Payment Link for the Support the site donation. Empty hides it.");
         std::process::exit(1);
     }
 
@@ -2302,6 +2338,11 @@ fn main() {
     println!("   active: {} ({} scrolls)", file_path, scroll_count);
     for line in gate.describe() {
         println!("   {}", line);
+    }
+    if sponsor_offer().url().is_some() {
+        println!("   sponsor: Support the site donation link is on");
+    } else {
+        println!("   sponsor: hidden (set PHEXT_SPONSOR_URL to an https Payment Link)");
     }
     println!("   Open in browser: http://localhost:{}", port);
 
@@ -2504,7 +2545,7 @@ fn dashboard_html(claimed: &[&claims::Claim], total: usize, unclaimed: usize, jo
         }
         out.push_str("</table>\n");
     }
-    out.push_str("<footer>Phext Edit · <a href=\"/about\">About</a> · <a href=\"/privacy\">Privacy Policy</a> · <a href=\"/terms\">Terms of Service</a> · Contact: <a href=\"mailto:will+support@phext.io\">will+support@phext.io</a></footer>\n");
+    out.push_str("<footer>Phext Edit · <a href=\"/about\">About</a> · <a href=\"/privacy\">Privacy Policy</a> · <a href=\"/terms\">Terms of Service</a> · Contact: <a href=\"mailto:will+support@phext.io\">will+support@phext.io</a><!--phext-sponsor--></footer>\n");
     out.push_str("</main>\n</body>\n</html>\n");
     out
 }
@@ -2553,7 +2594,8 @@ fn handle_dashboard(
         .filter_map(|claim| wavefront::normalize_handle(&claim.handle))
         .collect();
     let unclaimed = total - claimed_handles.len().min(total);
-    let html = dashboard_html(&claimed, total, unclaimed, &joins);
+    let dash = dashboard_html(&claimed, total, unclaimed, &joins);
+    let html = render_with_sponsor(&dash);
     send_response(stream, 200, HTML, html.as_bytes(), CacheClass::NoStore, headers, method == "HEAD");
     true
 }
@@ -2643,7 +2685,7 @@ alignment metric may differ from Will's, and that is expected. Your map is yours
 <p id="dashboard-link" style="display:none">Owner and editors: the <a href="/claim/dashboard">claim dashboard</a> lists who has claimed their space, and who has joined the wavefront since the snapshot.</p>
 
 <footer>Phext Edit · <a href="about">About</a> · <a href="privacy">Privacy Policy</a> · <a href="terms">Terms of Service</a> ·
-Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--></footer>
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -2790,7 +2832,7 @@ at 10 MiB.</p>
 <div id="lists"></div>
 
 <footer>Phext Edit · <a href="about">About</a> · <a href="privacy">Privacy Policy</a> · <a href="terms">Terms of Service</a> ·
-Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--></footer>
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -2975,8 +3017,14 @@ are, so the server can tell whether your account is on its list of editors.</p>
 not post anything for you, and it does not share or sell your information. The
 <a href="privacy">Privacy Policy</a> gives the details.</p>
 
+<h2>No ads, ever</h2>
+<p>Phext Edit does not show advertisements, and it never will. There is no ad
+slot, ad network, or sponsored placement. A donation, when the link is shown,
+supports the site. It is not an advertisement and it is not an Exocortex
+Founding purchase.</p>
+
 <footer>Phext Edit · <a href="privacy">Privacy Policy</a> · <a href="terms">Terms of Service</a> ·
-Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--></footer>
 </main>
 </body>
 </html>
@@ -2996,7 +3044,7 @@ const PRIVACY_HTML: &str = concat!(r#"<!DOCTYPE html>
 <main>
 <nav><a href="about">About Phext Edit</a> · <a href="terms">Terms of Service</a> · <a href="./">Open the editor</a></nav>
 <h1>Privacy Policy</h1>
-<p class="dim">Effective 30 October 2026</p>
+<p class="dim">Effective 8 November 2026</p>
 
 <p>This policy covers Phext Edit, the web editor for phext files. It explains what Phext Edit
 learns when you sign in, how that information is used, and what happens to it.</p>
@@ -3037,7 +3085,10 @@ with anyone.</p>
     requested and browser) to keep the service running and secure. These logs do not include
     your account details.</li>
 </ul>
-<p>Phext Edit uses no third-party analytics, advertising or tracking scripts.</p>
+<p>Phext Edit uses no third-party analytics, advertising or tracking scripts.
+There are no ads, ever. An optional donation opens a Stripe Payment Link in a
+new tab. Phext Edit does not embed a payment form, and it does not add a
+tracking pixel for an ad campaign.</p>
 
 <h2>Google user data</h2>
 <p>Phext Edit's use and transfer of information received from Google APIs adheres to the
@@ -3059,7 +3110,7 @@ User Data Policy</a>, including the Limited Use requirements.</p>
 <p>If this policy changes, the new version will be posted on this page with a new effective date.</p>
 
 <footer>Phext Edit · <a href="about">About</a> · <a href="terms">Terms of Service</a> ·
-Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--></footer>
 </main>
 </body>
 </html>
@@ -3070,7 +3121,7 @@ const TERMS_HTML: &str = concat!(r#"<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Terms for Phext Edit: sign in with Google, GitHub or X, edit the phext files on this server, no ads.">
+<meta name="description" content="Terms for Phext Edit: sign in with Google, GitHub or X, edit the phext files on this server, no ads ever.">
 <title>Phext Edit: terms of service</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 "#, public_style!(), r#"
@@ -3079,7 +3130,7 @@ const TERMS_HTML: &str = concat!(r#"<!DOCTYPE html>
 <main>
 <nav><a href="about">About Phext Edit</a> · <a href="privacy">Privacy Policy</a> · <a href="./">Open the editor</a></nav>
 <h1>Terms of Service</h1>
-<p class="dim">Effective 30 October 2026</p>
+<p class="dim">Effective 8 November 2026</p>
 
 <p>These terms describe Phext Edit, the web editor for phext files at this site.
 Read them with the <a href="privacy">Privacy Policy</a>, which says what happens
@@ -3101,9 +3152,12 @@ anything for you.</p>
 <p>Text you save is written into the phext files on this server. Those files belong
 to the person who runs the server, and they are not tied to your account.</p>
 
-<h2>Advertising</h2>
-<p>Phext Edit does not show advertisements. It does not use your sign-in or your
-edits for advertising.</p>
+<h2>No ads, ever</h2>
+<p>Phext Edit does not show advertisements, and it never will. There are no ad
+slots, ad networks, sponsored placements, or tracking pixels for ad campaigns.
+It does not use your sign-in or your edits for advertising. A donation supports
+the site. That donation is not an advertisement and it is not an Exocortex
+Founding purchase.</p>
 
 <h2>Questions</h2>
 <p>Email <a href="mailto:will+support@phext.io">will+support@phext.io</a>.</p>
@@ -3112,7 +3166,7 @@ edits for advertising.</p>
 <p>If these terms change, the new version will be posted on this page with a new effective date.</p>
 
 <footer>Phext Edit · <a href="about">About</a> · <a href="privacy">Privacy Policy</a> ·
-Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--></footer>
 </main>
 </body>
 </html>
@@ -3212,7 +3266,7 @@ const NOT_FOUND_HTML: &str = concat!(r#"<!DOCTYPE html>
 <h1>Page not found</h1>
 <p>There is no page at that address.</p>
 <p><a href="/">Back to Phext Edit</a></p>
-<footer>Phext Edit · <a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a></footer>
+<footer>Phext Edit · <a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--></footer>
 </main>
 </body>
 </html>
@@ -3399,6 +3453,10 @@ body {
 }
 #status-bar .bar-link.first { margin-left: auto; }
 #status-bar .bar-link:hover { color: var(--coord); text-decoration: underline; }
+#status-bar .sponsor-offer { margin-left: 14px; white-space: nowrap; }
+#status-bar .sponsor-link { color: var(--dim); text-decoration: none; }
+#status-bar .sponsor-link:hover { color: var(--coord); text-decoration: underline; }
+#auth-screen .sponsor-link { color: var(--coord); }
 
 /* ── Overlays ── */
 .overlay {
@@ -3445,7 +3503,7 @@ body {
   #editor .editor-toolbar button { padding: 8px 12px; }
   #status-bar { height: auto; min-height: 52px; flex-wrap: wrap; padding: 8px 12px; gap: 8px 14px; font-size: 14px; }
   #status-bar .help { order: 10; flex-basis: 100%; white-space: normal; overflow: visible; text-overflow: clip; }
-  #status-bar .bar-link { margin-left: 0; }
+  #status-bar .bar-link, #status-bar .sponsor-offer { margin-left: 0; }
   .overlay { top: 44px; }
   #search-overlay, #goto-overlay, #phext-overlay { width: calc(100vw - 24px) !important; max-height: 70vh; }
   #search-results .hit .hit-coord { min-width: 0; }
@@ -3495,6 +3553,7 @@ body {
   <a class="bar-link" href="explore" title="Every placement in the wavefront, explorable in nine dimensions">Explore the map</a>
   <a class="bar-link" href="phext-previewer.html" title="Open a phext file from your own device and preview it scroll by scroll — no sign-in needed">Preview a phext</a>
   <a class="bar-link" href="api/auth/sso/mutable" title="Mutable OS — documents and Caverns, with this same sign-in">Mutable OS</a>
+  <!--phext-sponsor-->
   <a class="bar-link" id="dashboard-link" href="claim/dashboard" style="display:none" title="Who has claimed their wavefront space, and who has joined since the snapshot — the owner and editors">Claim dashboard</a>
   <span id="signout" class="signout" style="display:none" onclick="signOut()" title="Sign out"></span>
 </div>
@@ -3520,6 +3579,7 @@ body {
       A web editor for phext: plain text arranged in 11 dimensions.
       Sign-in only checks who you are; nothing is shared or sold.<br>
       <a href="about" style="color:var(--coord)">About</a> · <a href="privacy" style="color:var(--coord)">Privacy Policy</a> · <a href="terms" style="color:var(--coord)">Terms of Service</a> · <a href="mailto:will+support@phext.io" style="color:var(--coord)">Contact</a><br>
+      No ads, ever.<!--phext-sponsor--><br>
       No sign-in needed: <a href="up-goer-five.html" style="color:var(--coord)">Up Goer Five</a> · <a href="tts-demo.html" style="color:var(--coord)">Coordinate TTS demo</a> · <a href="learn-you-phext.html" style="color:var(--coord)">Learn You Phext</a> · <a href="singular.html" style="color:var(--coord)">Singular</a> · <a href="phext-previewer.html" style="color:var(--coord)">Phext Previewer</a><br>
       Your own phext: <a href="submit" style="color:var(--coord)">Submit it for review</a> · In the wavefront map: <a href="claim" style="color:var(--coord)">Claim your space</a> · <a href="explore" style="color:var(--coord)">Explore the map</a> — signing in with X makes you an editor at once.
     </div>
@@ -4034,11 +4094,13 @@ async function initApp() {
 #[cfg(test)]
 mod public_route_tests {
     use super::{
-        handle_request, is_api_path, is_editor_shell, public_document, AppState, ABOUT_HTML,
-        INDEX_HTML, LEARN_YOU_PHEXT_HTML, NOT_FOUND_HTML, PREVIEWER_HTML, PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE,
-        SITEMAP_XML, STATIC_CACHE, TERMS_HTML, TTS_DEMO_HTML, UP_GOER_FIVE_HTML,
+        dashboard_html, handle_request, is_api_path, is_editor_shell, public_document, AppState, ABOUT_HTML,
+        CLAIM_HTML, EXPLORE_HTML, INDEX_HTML, LEARN_YOU_PHEXT_HTML, NOT_FOUND_HTML, PREVIEWER_HTML,
+        PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE, SINGULAR_HTML, SITEMAP_XML, STATIC_CACHE, SUBMIT_HTML,
+        TERMS_HTML, TTS_DEMO_HTML, UP_GOER_FIVE_HTML,
     };
     use phext_lattice::oauth::{Editors, Gate, Oauth};
+    use phext_lattice::sponsor::{self, SponsorOffer};
     use phext_lattice::MappedLattice;
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
@@ -4497,6 +4559,90 @@ mod public_route_tests {
         let start = get(&oauth, "/api/auth/github");
         assert_eq!(start.status, 302, "{}", start.body);
         assert!(!start.body.contains("Page not found"));
+    }
+
+    #[test]
+    fn sponsor_url_comes_from_config_and_pages_have_no_ad_markup() {
+        const AD_MARKERS: &[&str] = &[
+            "adsbygoogle",
+            "carbonads",
+            "ethicalads",
+            "ethical-ads",
+            "doubleclick.net",
+            "googlesyndication",
+            "googletagmanager",
+            "googletagservices",
+            "ad-slot",
+            "data-ad-",
+            "buysellads",
+            "carbon.js",
+        ];
+        let pages = [
+            ("shell", INDEX_HTML),
+            ("about", ABOUT_HTML),
+            ("privacy", PRIVACY_HTML),
+            ("terms", TERMS_HTML),
+            ("claim", CLAIM_HTML),
+            ("submit", SUBMIT_HTML),
+            ("missing", NOT_FOUND_HTML),
+            ("ug5", UP_GOER_FIVE_HTML),
+            ("tts", TTS_DEMO_HTML),
+            ("learn", LEARN_YOU_PHEXT_HTML),
+            ("singular", SINGULAR_HTML),
+            ("preview", PREVIEWER_HTML),
+            ("explore", EXPLORE_HTML),
+        ];
+        let offer = SponsorOffer::parse("https://buy.stripe.com/test_site?foo=1&bar=2");
+        for (name, page) in pages {
+            assert!(page.contains(sponsor::SLOT), "{name} missing sponsor slot");
+            let lower = page.to_ascii_lowercase();
+            for marker in AD_MARKERS {
+                assert!(!lower.contains(marker), "{name} contains {marker}");
+            }
+            assert!(!page.contains("buy.stripe.com"), "{name} hardcodes a payment link");
+            assert!(!page.contains(">Support the site</a>"), "{name} bakes in the donation link");
+            let hidden = sponsor::apply_slot(page, &SponsorOffer::parse(""));
+            assert!(!hidden.contains(sponsor::SLOT), "{name} left the slot in");
+            assert!(!hidden.contains(">Support the site</a>"), "{name} shows a link with no URL");
+            assert!(!hidden.contains("buy.stripe.com"), "{name}");
+            let shown = sponsor::apply_slot(page, &offer);
+            assert!(shown.contains("href=\"https://buy.stripe.com/test_site?foo=1&amp;bar=2\""));
+            assert!(shown.contains(">Support the site</a>"));
+            assert!(shown.contains("not an advertisement"));
+            assert!(shown.contains("Exocortex Founding"));
+            let shown_lower = shown.to_ascii_lowercase();
+            for marker in AD_MARKERS {
+                assert!(!shown_lower.contains(marker), "{name} render contains {marker}");
+            }
+        }
+        assert!(INDEX_HTML.matches(sponsor::SLOT).count() >= 2, "status bar and sign-in screen");
+        assert!(TERMS_HTML.contains("No ads, ever"));
+        assert!(TERMS_HTML.contains("does not show advertisements"));
+        assert!(ABOUT_HTML.contains("No ads, ever"));
+        assert!(PRIVACY_HTML.contains("no ads, ever"));
+
+        let dash = dashboard_html(
+            &[] as &[&phext_lattice::claims::Claim],
+            0,
+            0,
+            &[] as &[phext_lattice::joins::Join],
+        );
+        assert!(dash.contains(sponsor::SLOT), "dashboard footer");
+
+        // The served page follows the process environment, same value parse accepts.
+        let about = get(&locked_gate(), "/about");
+        assert_eq!(about.status, 200);
+        assert!(about.body.contains("No ads, ever"));
+        assert!(!about.body.contains(sponsor::SLOT));
+        match SponsorOffer::from_env().url() {
+            None => {
+                assert!(!about.body.contains(">Support the site</a>"));
+                assert!(!about.body.contains("buy.stripe.com"));
+            }
+            Some(url) => {
+                assert!(about.body.contains(&sponsor::apply_slot("<!--phext-sponsor-->", &SponsorOffer::parse(url))));
+            }
+        }
     }
 }
 

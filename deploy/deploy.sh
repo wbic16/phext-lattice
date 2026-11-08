@@ -14,7 +14,9 @@
 #
 # What it touches:
 #   /etc/systemd/system/phext-edit.service   (backed up when it changes)
-#   /etc/phext-edit/oauth.env              (created only when missing)
+#   /etc/phext-edit/oauth.env              (created only when missing;
+#                                           PHEXT_SPONSOR_URL is reconciled
+#                                           on every run)
 #   /etc/nginx/sites-{available,enabled}/DOMAIN
 #       (deploy/nginx-edit.phext.io.conf once TLS exists; an HTTP bootstrap
 #        before that. A hand-edited file is left in place unless
@@ -93,6 +95,101 @@ install_secret() {
 
 as_owner() {
   sudo -u "$SERVICE_USER" -H env PATH="/snap/bin:/home/${SERVICE_USER}/.cargo/bin:${PATH}" "$@"
+}
+
+# A Stripe Payment Link is public config, not a secret. Empty is valid: the
+# editor hides the donation link. The shape matches what src/sponsor.rs will
+# place in an href (https, a dotted host, no spaces, quotes, or userinfo).
+sponsor_url_ok() {
+  local value=$1 host name port
+  [[ -z "$value" ]] && return 0
+  [[ ${#value} -le 2048 ]] || return 1
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *$'\t'* && "$value" != *" "* ]] || return 1
+  [[ "$value" == https://* ]] || return 1
+  [[ "$value" != *'"'* && "$value" != *"'"* && "$value" != *'\\'* && "$value" != *'<'* && "$value" != *'>'* && "$value" != *'@'* && "$value" != *'`'* ]] || return 1
+  host=${value#https://}
+  host=${host%%/*}
+  host=${host%%\?*}
+  host=${host%%#*}
+  [[ -n "$host" && "$host" != .* && "$host" != *. && "$host" != *..* ]] || return 1
+  name=$host
+  port=""
+  if [[ "$host" == *:* ]]; then
+    name=${host%%:*}
+    port=${host#*:}
+  fi
+  [[ "$name" == *.* && "$name" != -* && "$name" != *- ]] || return 1
+  [[ "$name" =~ ^[A-Za-z0-9.-]+$ ]] || return 1
+  if [[ -n "$port" ]]; then
+    [[ "$port" =~ ^[0-9]{1,5}$ ]] || return 1
+  fi
+  return 0
+}
+
+validate_sponsor_url() {
+  sponsor_url_ok "${PHEXT_SPONSOR_URL:-}" \
+    || die "PHEXT_SPONSOR_URL must be an https URL (a Stripe Payment Link) with no spaces, quotes, or userinfo"
+}
+
+# Rewrite src to dest. A non-empty PHEXT_SPONSOR_URL replaces that one line.
+# An empty value keeps a line that is already there, and adds an empty
+# assignment when the key is missing. Every other line is copied through.
+write_sponsor_env() {
+  local src=$1 dest=$2
+  local value="${PHEXT_SPONSOR_URL:-}"
+  if [[ -n "$value" ]]; then
+    awk -v url="$value" '
+      BEGIN { found = 0 }
+      /^PHEXT_SPONSOR_URL=/ {
+        if (!found) print "PHEXT_SPONSOR_URL=\"" url "\""
+        found = 1
+        next
+      }
+      { print }
+      END { if (!found) print "PHEXT_SPONSOR_URL=\"" url "\"" }
+    ' "$src" >"$dest"
+    return 0
+  fi
+  if grep -q '^PHEXT_SPONSOR_URL=' "$src"; then
+    cat "$src" >"$dest"
+    return 0
+  fi
+  awk '
+    { print }
+    END {
+      print ""
+      print "# Stripe Payment Link for the Support the site donation. Empty hides the link."
+      print "PHEXT_SPONSOR_URL="
+    }
+  ' "$src" >"$dest"
+}
+
+# oauth.env is root-owned 0600. Copy it aside, edit only the sponsor line,
+# and install it back. The Payment Link is not printed. Other lines, including
+# the session secret, are not printed either.
+apply_sponsor_env() {
+  local dest="${CONF_DIR}/oauth.env" src tmp
+  validate_sponsor_url
+  src=$(mktemp)
+  tmp=$(mktemp)
+  chmod 600 "$src" "$tmp"
+  if sudo test -f "$dest"; then
+    read_root_file "$dest" "$src"
+  else
+    : >"$src"
+  fi
+  write_sponsor_env "$src" "$tmp"
+  if sudo test -f "$dest" && sudo cmp -s "$tmp" "$dest"; then
+    printf 'Keeping PHEXT_SPONSOR_URL in %s\n' "$dest"
+  else
+    install_secret "$dest" <"$tmp"
+    if [[ -n "${PHEXT_SPONSOR_URL:-}" ]]; then
+      printf 'Set PHEXT_SPONSOR_URL in %s (Payment Link not printed)\n' "$dest"
+    else
+      printf 'Recorded empty PHEXT_SPONSOR_URL in %s\n' "$dest"
+    fi
+  fi
+  rm -f "$src" "$tmp"
 }
 
 dns_points_here() {
@@ -437,6 +534,42 @@ EOF
   drop_missing_dhparam "$dh"
   grep -q ssl_dhparam "$dh" || die "present ssl_dhparam file was dropped"
 
+  local sponsor_saved_set=0 sponsor_saved=""
+  if [[ -v PHEXT_SPONSOR_URL ]]; then
+    sponsor_saved_set=1
+    sponsor_saved=$PHEXT_SPONSOR_URL
+  fi
+  local env_in="${work}/oauth.env"
+  printf 'PHEXT_SESSION_SECRET=keep-me\nPHEXT_EDITORS=\n' >"$env_in"
+  PHEXT_SPONSOR_URL=
+  write_sponsor_env "$env_in" "${work}/sponsor-added"
+  grep -qx 'PHEXT_SESSION_SECRET=keep-me' "${work}/sponsor-added" || die "sponsor update dropped another line"
+  grep -qx 'PHEXT_SPONSOR_URL=' "${work}/sponsor-added" || die "empty PHEXT_SPONSOR_URL was not added"
+  write_sponsor_env "${work}/sponsor-added" "${work}/sponsor-kept"
+  [[ "$(grep -c '^PHEXT_SPONSOR_URL=' "${work}/sponsor-kept")" -eq 1 ]] || die "empty sponsor line was duplicated"
+  PHEXT_SPONSOR_URL='https://buy.stripe.com/test_sponsor?foo=1&bar=2'
+  write_sponsor_env "${work}/sponsor-kept" "${work}/sponsor-set"
+  grep -qx 'PHEXT_SPONSOR_URL="https://buy.stripe.com/test_sponsor?foo=1&bar=2"' "${work}/sponsor-set" \
+    || die "PHEXT_SPONSOR_URL was not written from the environment"
+  grep -qx 'PHEXT_SESSION_SECRET=keep-me' "${work}/sponsor-set" || die "setting the sponsor URL dropped the secret line"
+  PHEXT_SPONSOR_URL=
+  write_sponsor_env "${work}/sponsor-set" "${work}/sponsor-preserved"
+  grep -qx 'PHEXT_SPONSOR_URL="https://buy.stripe.com/test_sponsor?foo=1&bar=2"' "${work}/sponsor-preserved" \
+    || die "an empty deploy wiped a stored Payment Link"
+  printf 'PHEXT_SPONSOR_URL=\nPHEXT_SPONSOR_URL=old\n' >"${work}/dup"
+  PHEXT_SPONSOR_URL='https://buy.stripe.com/once'
+  write_sponsor_env "${work}/dup" "${work}/collapsed"
+  [[ "$(grep -c '^PHEXT_SPONSOR_URL=' "${work}/collapsed")" -eq 1 ]] || die "duplicate sponsor lines were kept"
+  sponsor_url_ok 'https://buy.stripe.com/test_ok' || die "https sponsor URL was rejected"
+  sponsor_url_ok '' || die "empty sponsor URL was rejected"
+  if sponsor_url_ok 'http://buy.stripe.com/x'; then die "http sponsor URL was accepted"; fi
+  if sponsor_url_ok 'https://user@buy.stripe.com/x'; then die "sponsor URL with userinfo was accepted"; fi
+  if [[ "$sponsor_saved_set" == "1" ]]; then
+    PHEXT_SPONSOR_URL=$sponsor_saved
+  else
+    unset PHEXT_SPONSOR_URL
+  fi
+
   rm -rf "$work"
   printf 'deploy.sh --check: nginx render, marker hash, and latch ok\n'
   printf '  template:  %s\n' "$template"
@@ -492,7 +625,7 @@ main() {
   # ── Secrets ──
   sudo mkdir -p "$CONF_DIR"
   if sudo test -f "${CONF_DIR}/oauth.env"; then
-    printf 'Keeping %s/oauth.env\n' "$CONF_DIR"
+    printf 'Keeping sign-in lines in %s/oauth.env\n' "$CONF_DIR"
   else
     install_secret "${CONF_DIR}/oauth.env" <<EOF
 # GitHub/Google sign-in for phext-edit. Leave a client line blank to keep
@@ -508,9 +641,13 @@ GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+# Stripe Payment Link for the Support the site donation. Empty hides the link.
+# Not the Exocortex Founding purchase. deploy.sh fills this from PHEXT_SPONSOR_URL.
+PHEXT_SPONSOR_URL=
 EOF
     printf 'Wrote %s/oauth.env (session secret not printed). Fill in the client lines (and PHEXT_EDITORS to restrict who gets in).\n' "$CONF_DIR"
   fi
+  apply_sponsor_env
 
   # ── systemd ──
   local unit_tmp
@@ -707,6 +844,11 @@ EOF
   printf '  listen:    127.0.0.1:%s\n' "$PORT"
   printf '  phexts:    %s\n' "$PHEXT_DIR"
   printf '  secrets:   %s/oauth.env\n' "$CONF_DIR"
+  if [[ -n "${PHEXT_SPONSOR_URL:-}" ]]; then
+    printf '  sponsor:   PHEXT_SPONSOR_URL set in oauth.env\n'
+  else
+    printf '  sponsor:   this run did not set PHEXT_SPONSOR_URL (a stored link is kept; a missing one stays empty)\n'
+  fi
   printf '  nginx:     %s (%s)\n' "$available" "$nginx_result"
   printf '  tls:       %s\n' "$tls"
   printf '  redirect:  %s\n' "$redirect"
