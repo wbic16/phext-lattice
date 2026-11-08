@@ -1347,9 +1347,9 @@ fn parse_dimension(bit: &str) -> Option<usize> {
         return None;
     }
     let n: usize = bit.parse().ok()?;
-    (libphext::phext::COORDINATE_MINIMUM..=libphext::phext::COORDINATE_MAXIMUM)
-        .contains(&n)
-        .then_some(n)
+    // libphext 0.4 removed COORDINATE_MAXIMUM. A dimension is any
+    // number at or above the human minimum.
+    (n >= libphext::phext::COORDINATE_MINIMUM).then_some(n)
 }
 
 fn coordinate_from(nums: [usize; 9]) -> libphext::phext::Coordinate {
@@ -5098,13 +5098,14 @@ mod link_tests {
         assert_eq!(coord_scroll("1.1.1;1.1.1;1.1.2"), 2);
         assert_eq!(coord_scroll("1/1/1/1/1/1/1/1/2"), 2);
         assert_eq!(coord_scroll("01.1.1/1.1.1/1.1.2"), 2);
+        // libphext 0.4 uncapped coordinates, so a scroll past the old maximum is real.
+        assert_eq!(coord_scroll("1.1.1/1.1.1/1.1.1001"), 1001);
         for bad in [
             "",
             "nope",
             "1.1.1",
             "1.1.1/1.1.1",
             "0.1.1/1.1.1/1.1.1",
-            "1.1.1/1.1.1/1.1.1001",
             "../etc",
             "1.1.1/1.1.1/1.1.1/1.1",
             "1.2.3.4/1.1.1/1.1.1",
