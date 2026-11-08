@@ -187,6 +187,12 @@ pub struct Oauth {
     /// established production origin to fall back to — an SSO redirect
     /// target is never guessed.
     sso_exocortexia_target: String,
+    /// Where Wishnode lives; assertions for that audience are
+    /// redirected to its callback. Empty until `PHEXT_SSO_WISHNODE_URL`
+    /// is set: like Exocortexia it has no default, because there is no
+    /// established production origin to fall back to — an SSO redirect
+    /// target is never guessed.
+    sso_wishnode_target: String,
     cookie_secure: bool,
     github: Option<ProviderKeys>,
     google: Option<ProviderKeys>,
@@ -275,6 +281,7 @@ impl Oauth {
             &std::env::var("PHEXT_SSO_SECRET").unwrap_or_default(),
             &std::env::var("PHEXT_SSO_MUTABLE_URL").unwrap_or_default(),
             &std::env::var("PHEXT_SSO_EXOCORTEXIA_URL").unwrap_or_default(),
+            &std::env::var("PHEXT_SSO_WISHNODE_URL").unwrap_or_default(),
             Arc::new(HttpSource),
         )
     }
@@ -293,12 +300,13 @@ impl Oauth {
             "test-sso-secret-must-be-32-chars-minimum",
             "",
             "https://exocortexia.example",
+            "https://wishnode.example",
             Arc::new(ScriptedSource),
         )
     }
 
     pub fn closed() -> Self {
-        Self::from_parts("", "", false, "", "", "", "", "", "", "", "", "", Arc::new(ScriptedSource))
+        Self::from_parts("", "", false, "", "", "", "", "", "", "", "", "", "", Arc::new(ScriptedSource))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -315,6 +323,7 @@ impl Oauth {
         sso_secret: &str,
         sso_target: &str,
         sso_exocortexia_target: &str,
+        sso_wishnode_target: &str,
         source: Arc<dyn IdentitySource>,
     ) -> Self {
         let base = base.trim().trim_end_matches('/').to_string();
@@ -339,12 +348,21 @@ impl Oauth {
         } else {
             String::new()
         };
+        // Unset or invalid leaves Wishnode unconfigured the same way
+        // (empty target, its endpoint 404s), for the same reason.
+        let sso_wishnode_target = sso_wishnode_target.trim().trim_end_matches('/').to_string();
+        let sso_wishnode_target = if valid_base(&sso_wishnode_target) {
+            sso_wishnode_target
+        } else {
+            String::new()
+        };
         Self {
             base,
             session_secret: session_secret.trim().to_string(),
             sso_secret: sso_secret.trim().to_string(),
             sso_target,
             sso_exocortexia_target,
+            sso_wishnode_target,
             cookie_secure,
             github: provider(github_id, github_secret),
             google: provider(google_id, google_secret),
@@ -388,13 +406,17 @@ impl Oauth {
     /// is not allowlisted or is allowlisted but unconfigured. Mutable
     /// always has a target (its production origin is the default);
     /// Exocortexia has one only once `PHEXT_SSO_EXOCORTEXIA_URL` is
-    /// set. This match is the audience allowlist — an audience that is
+    /// set, and Wishnode only once `PHEXT_SSO_WISHNODE_URL` is. This
+    /// match is the audience allowlist — an audience that is
     /// not named here can never be minted for.
     pub fn sso_target_for(&self, aud: &str) -> Option<&str> {
         match aud {
             "mutable" if !self.sso_target.is_empty() => Some(&self.sso_target),
             "exocortexia" if !self.sso_exocortexia_target.is_empty() => {
                 Some(&self.sso_exocortexia_target)
+            }
+            "wishnode" if !self.sso_wishnode_target.is_empty() => {
+                Some(&self.sso_wishnode_target)
             }
             _ => None,
         }
@@ -1300,7 +1322,7 @@ impl Gate {
     }
 
     /// `GET /api/auth/sso/<aud>` — the cross-site handoff to one
-    /// allowlisted audience (`mutable`, `exocortexia`).
+    /// allowlisted audience (`mutable`, `exocortexia`, `wishnode`).
     ///
     /// Layering follows the claims/submissions precedent in the servers:
     /// a signed-in account is enough; an editor's place is not required
@@ -2348,6 +2370,7 @@ mod tests {
             "test-sso-secret-must-be-32-chars-minimum",
             "",
             "",
+            "",
             Arc::new(ScriptedSource),
         );
         assert!(oauth.sso_ready());
@@ -2357,6 +2380,107 @@ mod tests {
         assert_eq!(reply.status, 404);
         let reply = gate.route("GET", "/api/auth/sso/mutable", &headers(&[])).unwrap();
         assert_eq!(reply.status, 302);
+    }
+
+
+    #[test]
+    fn sso_wishnode_mints_an_assertion_with_its_own_audience() {
+        // The third allowlisted audience mints through the same route
+        // shape, under the same SSO secret, in the same format — the
+        // only differences are the `aud` claim and the callback origin.
+        let gate = gate(None, "");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/wishnode");
+        let jump = gate
+            .route(
+                "GET",
+                "/api/auth/sso/wishnode?return=/intake",
+                &headers(&[("cookie", &session)]),
+            )
+            .unwrap();
+        assert_eq!(jump.status, 302);
+        let location = header(&jump, "Location")[0];
+        let assertion = location
+            .strip_prefix("https://wishnode.example/api/auth/callback?assertion=")
+            .unwrap();
+        let body = open_assertion("test-sso-secret-must-be-32-chars-minimum", assertion);
+        assert_eq!(body["aud"], "wishnode");
+        assert_eq!(body["who"], "google:sub-1");
+        assert_eq!(body["handle"], "ada");
+        assert_eq!(body["editor"], true);
+        assert_eq!(body["ret"], "/intake");
+        assert_eq!(body["exp"].as_i64().unwrap() - body["iat"].as_i64().unwrap(), 120);
+        assert!(!body["jti"].as_str().unwrap().is_empty());
+
+        // The session secret does not open it: the keys never substitute.
+        let (payload, sig) = assertion.split_once('.').unwrap();
+        assert!(!verify("test-session-secret-must-be-32chars", payload, sig));
+    }
+
+    #[test]
+    fn sso_wishnode_sends_the_signed_out_to_sign_in_with_itself_as_next() {
+        let gate = gate(None, "");
+        let reply = gate.route("GET", "/api/auth/sso/wishnode", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 302);
+        let location = header(&reply, "Location")[0];
+        let next = location.strip_prefix("http://127.0.0.1:8080/?next=").unwrap();
+        assert_eq!(
+            percent_decode(&percent_decode(next)),
+            "/api/auth/sso/wishnode?return=/"
+        );
+    }
+
+    #[test]
+    fn sso_wishnode_is_404_until_its_url_is_configured() {
+        // The shared secret is set and both earlier audiences are
+        // configured, but no Wishnode URL: that endpoint does not
+        // exist, while Mutable's and Exocortexia's work as before.
+        let oauth = Oauth::from_parts(
+            "http://127.0.0.1:8080",
+            "test-session-secret-must-be-32chars",
+            true,
+            "github-client-id",
+            "github-client-secret",
+            "google-client-id",
+            "google-client-secret",
+            "x-client-id",
+            "x-client-secret",
+            "test-sso-secret-must-be-32-chars-minimum",
+            "",
+            "https://exocortexia.example",
+            "",
+            Arc::new(ScriptedSource),
+        );
+        assert!(oauth.sso_ready());
+        assert!(oauth.sso_ready_for("exocortexia"));
+        assert!(!oauth.sso_ready_for("wishnode"));
+        let gate = Gate::new(None, oauth, Editors::parse(""));
+        let reply = gate.route("GET", "/api/auth/sso/wishnode", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 404);
+        let reply = gate.route("GET", "/api/auth/sso/exocortexia", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 302);
+        let reply = gate.route("GET", "/api/auth/sso/mutable", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 302);
+    }
+
+    #[test]
+    fn sso_consumer_rejects_an_assertion_minted_for_another_audience() {
+        // The consumer-side half of the `aud` binding: an assertion is
+        // only good at the audience named in its sealed `aud` claim.
+        // A token minted for Exocortexia, opened under the shared
+        // secret exactly as a consumer opens it, names the wrong
+        // audience for Wishnode and must be refused there.
+        let gate = gate(None, "");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/exocortexia");
+        let jump = gate
+            .route("GET", "/api/auth/sso/exocortexia", &headers(&[("cookie", &session)]))
+            .unwrap();
+        let location = header(&jump, "Location")[0];
+        let assertion = location
+            .strip_prefix("https://exocortexia.example/api/auth/callback?assertion=")
+            .unwrap();
+        let body = open_assertion("test-sso-secret-must-be-32-chars-minimum", assertion);
+        assert_eq!(body["aud"], "exocortexia");
+        assert_ne!(body["aud"], "wishnode");
     }
 
     #[test]
