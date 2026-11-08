@@ -31,6 +31,8 @@ pub mod joins;
 #[cfg(feature = "web")]
 pub mod oauth;
 #[cfg(feature = "web")]
+pub mod sponsor;
+#[cfg(feature = "web")]
 pub mod submissions;
 #[cfg(feature = "web")]
 pub mod wavefront;

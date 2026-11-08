@@ -71,6 +71,7 @@ file out of the build context as well.
 | `PHEXT_SSO_EXOCORTEXIA_URL` | no | Exocortexia origin. Unset = that handoff answers 404. |
 | `PHEXT_SSO_WISHNODE_URL` | no | Wishnode origin. Unset = that handoff answers 404. |
 | `PHEXT_SSO_DESKTOP` | no | Arming flag for the desktop (Phext Notepad) SSO audience: `1` arms it. Not a secret, and there is no desktop origin to configure — the return is the app's per-attempt loopback listener. Unset = both desktop endpoints answer 404. |
+| `PHEXT_SPONSOR_URL` | no | HTTPS Stripe Payment Link for the Support the site donation. Empty or unset hides the link. Not an ad, and not a Stripe secret. |
 
 With no provider configured and no session secret, the gate is open —
 anyone who can reach the port can edit. That shape is for local

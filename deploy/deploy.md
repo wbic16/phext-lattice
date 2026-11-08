@@ -17,8 +17,9 @@ bash /source/phext-lattice/deploy/deploy.sh
 
 Sign-in settings live in `/etc/phext-edit/oauth.env`. The callback URL is
 `https://edit.phext.io/api/auth/<provider>/callback`. The script creates that
-file only when it is missing; later edits stay put until you restart, and the
-next `deploy.sh` run restarts phext-edit.
+file only when it is missing. Later edits to the sign-in lines stay put. Each
+run does update `PHEXT_SPONSOR_URL` in that file from the environment of the
+run (see below). The next `deploy.sh` run restarts phext-edit.
 
 For the Google consent screen (Branding), use `https://edit.phext.io/about` as
 the application home page and `https://edit.phext.io/privacy` as the privacy
@@ -179,6 +180,51 @@ set, 400 without a valid loopback return or state). Notepad builds
 that know the flow fall back to the cookie paste while the endpoint
 answers 404, so arming order does not strand older installs.
 
+## Sponsor donation (no ads)
+
+Phext Edit does not show advertisements, and it never will. There is no ad
+slot, ad network, sponsored placement, or tracking pixel for an ad campaign.
+The one offer on the site is a donation link, "Support the site", which opens
+a Stripe Payment Link (Stripe's hosted Checkout) in a new tab. It is a
+donation to support the site. It is not an advertisement and it is not the
+Exocortex Founding purchase. Do not put that other Payment Link in this
+variable.
+
+The app does not call the Stripe API, does not embed Stripe.js, and does not
+store a Stripe secret key. Create the Payment Link in the Stripe Dashboard
+(a sandbox link while you are testing, then the live link). The URL looks
+like `https://buy.stripe.com/...`.
+
+`PHEXT_SPONSOR_URL` is how deploy sets it. Nothing in the git repo holds the
+URL. Export it for the deploy run:
+
+```bash
+PHEXT_SPONSOR_URL='https://buy.stripe.com/...' bash /source/phext-lattice/deploy/deploy.sh
+```
+
+`deploy.sh` writes that value into `/etc/phext-edit/oauth.env`, which the
+phext-edit service already loads, then restarts phext-edit. It changes only
+the `PHEXT_SPONSOR_URL` line. Other lines are left as they are and are never
+printed. The Payment Link itself is not printed.
+
+A run that does not set `PHEXT_SPONSOR_URL` keeps a URL already stored in the
+file. If the key is missing and this run does not set one, the script adds
+`PHEXT_SPONSOR_URL=` so the process still starts. An empty value hides the
+link. The editor runs either way; local and dev machines without Stripe do
+not show a dead link.
+
+The value has to be one `https` URL with a host name and no spaces, quotes,
+backslashes, or userinfo (`user@host`). `deploy.sh` refuses anything else.
+The editor also hides a value it cannot place safely in the page.
+
+Stripe's hosted confirmation page is the thank-you for this version, and
+Stripe Dashboard receipts cover the receipt. This server does not handle a
+webhook. A signed webhook handler for `checkout.session.completed` and
+`checkout.session.async_payment_succeeded` — fulfilling only when
+`payment_status` is not `unpaid` — is required before any post-donation side
+effect (an email, a badge, access, or anything else that must happen because
+someone paid) is treated as done.
+
 ## What deploy.sh does
 
 Each run, in order:
@@ -191,7 +237,10 @@ Each run, in order:
 4. Creates `/etc/phext-edit/oauth.env` (mode `0600`, root-owned) only when
    missing. An existing file is left as-is and is never printed. (Access-token
    sign-in was retired in 2026-11; an existing `token.env` is vestigial and
-   can be deleted — nothing reads it.)
+   can be deleted — nothing reads it.) Every run then sets `PHEXT_SPONSOR_URL`
+   in that file from the environment of the run. An empty value adds the key
+   when it is missing and does not erase a URL already stored. The value is
+   not printed.
 5. Writes `/etc/systemd/system/phext-edit.service` (a timestamped `.bak-*` copy
    is kept when the unit changes), `systemctl daemon-reload`, enables the
    service, and **restarts phext-edit**. It waits until `http://127.0.0.1:PORT/`
