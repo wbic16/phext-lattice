@@ -1200,6 +1200,39 @@ fn crawl(server: &mut Server) -> (BTreeSet<String>, BTreeSet<String>, usize) {
     let mut html_pages = BTreeSet::new();
 
     while let Some((path, from)) = queue.pop_front() {
+        if path.starts_with("/api/auth/sso/") {
+            // The handoff answers 404 until that audience's URL is set.
+            // --local does not set PHEXT_SSO_*_URL, so this is not a dead page.
+            get_checked(server, &path, |resp| {
+                assert_eq!(
+                    resp.status, 404,
+                    "unconfigured SSO {path} from {from}: status {}",
+                    resp.status
+                );
+            });
+            continue;
+        }
+        let provider_base = path.split('?').next().unwrap_or(&path);
+        if matches!(provider_base, "/api/auth/google" | "/api/auth/github" | "/api/auth/x") {
+            // A sign-in start answers 403 until that provider is configured.
+            // --local configures none. The signed-out shell links the starts
+            // statically so sign-in works without JavaScript on a configured
+            // server, so the not-set-up answer is not a dead page (same
+            // treatment as the SSO handoffs above).
+            get_checked(server, &path, |resp| {
+                assert_eq!(
+                    resp.status, 403,
+                    "unconfigured provider {path} from {from}: status {}",
+                    resp.status
+                );
+                assert!(
+                    snippet(resp).contains("Sign-in is not set up yet"),
+                    "unconfigured provider {path} from {from}: {}",
+                    snippet(resp)
+                );
+            });
+            continue;
+        }
         let resp = get_checked(server, &path, |resp| {
             assert!(
                 (200..400).contains(&resp.status),
