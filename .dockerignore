@@ -1,0 +1,9 @@
+# Keep the Docker build context to what the build actually reads:
+# Cargo.toml, src/, and web/ (the include_str! assets). Everything else
+# — VCS state, build output, local phext data, and filled-in env files
+# carrying real credentials — stays out of the context and the image.
+.git
+/target
+/.phext-local
+/phext-edit.env
+.env

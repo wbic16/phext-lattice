@@ -97,6 +97,13 @@ The flag is refused unless the process binds to a loopback address (`127.0.0.1`,
 
 Phext files for that run come from `--dir` when you pass it, otherwise from `PHEXT_DATA_DIR`, otherwise from `./.phext-local` (created on first run, with a `welcome.phext` if the directory is empty). That default is separate from the production library, so a local session does not edit deployed phexts. `PHEXT_HOME` is ignored under `--local` unless you pass `--home`.
 
+### Deployment
+
+Production runs on the host under systemd via
+[`deploy/deploy.sh`](deploy/deploy.md). The same binary also ships
+as a container image — Docker Compose, non-root, environment-only
+configuration — documented in [deploy/CONTAINER.md](deploy/CONTAINER.md).
+
 ### Submissions: upload for review
 
 phext-edit's editor is gated by an editors list, which used to make the

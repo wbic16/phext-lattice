@@ -25,6 +25,16 @@ the application home page and `https://edit.phext.io/privacy` as the privacy
 policy link. Both are served by phext-edit itself and open without signing in.
 Add `phext.io` under authorized domains. Terms are at `https://edit.phext.io/terms`.
 
+## Container deployment (additional path)
+
+`deploy.sh` in this document is the supported path for the current
+host. phext-edit can also run as a container under Docker Compose —
+same binary, same environment contract, same data directory — as
+documented in [CONTAINER.md](CONTAINER.md). The container path does
+not replace `deploy.sh`: it reuses the nginx site `deploy.sh`
+installs, and the two paths must not run at once against the same
+port or the same data directory.
+
 ## Mutable OS single sign-on
 
 Mutable (mutable.phext.io) takes its sign-in from here. A signed-in account
