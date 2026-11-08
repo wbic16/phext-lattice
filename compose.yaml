@@ -1,0 +1,61 @@
+# Container deployment for edit.phext.io — the runbook is
+# deploy/CONTAINER.md. Build and first run:
+#
+#   cp deploy/phext-edit.env.example phext-edit.env   # fill it in
+#   docker compose build
+#   docker compose up -d
+#
+# This is an ADDITIONAL deployment path. The host path (deploy/deploy.sh
+# + systemd + the host's nginx) stays as it is — do not run both against
+# the same port or the same phext data.
+#
+# Proxy contract: the container publishes on host loopback only, so the
+# host's existing nginx site (deploy/nginx-edit.phext.io.conf, installed
+# by deploy.sh) proxies 127.0.0.1:8080 exactly as it does for the
+# systemd service today — TLS, rate limits, and headers unchanged. Any
+# nginx proxying in this stack must keep `proxy_http_version 1.1`
+# (the shipped site already does): SQ, the phext serving layer behind
+# the same proxy family, answers HTTP/1.0 upstreams with 403.
+
+services:
+  edit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: phext-edit:local
+    container_name: phext-edit
+    restart: unless-stopped
+    # Sign-in secrets and settings (deploy/phext-edit.env.example).
+    # Absent file = an unconfigured, open editor — for local
+    # evaluation only, never for a public host.
+    env_file:
+      - path: ./phext-edit.env
+        required: false
+    environment:
+      PHEXT_DATA_DIR: /data
+      PHEXT_EDIT_HOST: 0.0.0.0
+      PHEXT_EDIT_PORT: "8080"
+    ports:
+      # Host loopback only — nginx is the public face, as on the host
+      # path (the systemd unit binds 127.0.0.1 for the same reason).
+      # Do not publish 8080 on a public interface.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - phext-data:/data
+    # The server writes only inside /data (the phext library, its
+    # claims/joins/submissions subdirectories, admitted-editors.txt).
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    # Deliberately NOT set: security_opt no-new-privileges. It is the
+    # one systemd-unit hardening (NoNewPrivileges=true) this file does
+    # not mirror — on AppArmor-confined Docker (the snap package, which
+    # is what verified this path) the runtime refuses every exec under
+    # it and the container cannot start. On a runtime that supports
+    # it, add: security_opt: ["no-new-privileges:true"].
+
+volumes:
+  phext-data:
+    name: phext-data
