@@ -840,12 +840,30 @@ fn sponsor_offer() -> &'static SponsorOffer {
     OFFER.get_or_init(SponsorOffer::from_env)
 }
 
-/// Fill the donation slot. Pages without one are returned as-is.
-fn render_with_sponsor(html: &str) -> std::borrow::Cow<'_, str> {
-    if html.contains(sponsor::SLOT) {
-        std::borrow::Cow::Owned(sponsor::apply_slot(html, sponsor_offer()))
+/// Placeholder in the served HTML for the build stamp. Filled when a
+/// page is served, like the sponsor slot.
+const BUILD_SLOT: &str = "<!--phext-build-->";
+
+/// This build's identity, baked in by build.rs (see that file): the
+/// release tag the build descends from, how far past it, and the commit
+/// — e.g. `v1.0.0-5-g9458cb10` — or `v<crate version>+unknown` when the
+/// build could learn neither. Every page footer shows it, so a bug
+/// report can name the build it was seen on, and a fix already landed
+/// can be told apart from a fix still waiting on a deploy.
+const BUILD_STAMP: &str = env!("PHEXT_LATTICE_BUILD");
+
+/// Fill the serve-time slots: the build stamp, then the donation slot.
+/// Pages without a slot are returned as-is.
+fn render_page(html: &str) -> std::borrow::Cow<'_, str> {
+    let stamped = if html.contains(BUILD_SLOT) {
+        std::borrow::Cow::Owned(html.replace(BUILD_SLOT, BUILD_STAMP))
     } else {
         std::borrow::Cow::Borrowed(html)
+    };
+    if stamped.contains(sponsor::SLOT) {
+        std::borrow::Cow::Owned(sponsor::apply_slot(&stamped, sponsor_offer()))
+    } else {
+        stamped
     }
 }
 
@@ -857,7 +875,7 @@ fn send_html(
     headers: &HashMap<String, String>,
     head_only: bool,
 ) {
-    let rendered = render_with_sponsor(template);
+    let rendered = render_page(template);
     send_response(stream, status, HTML, rendered.as_bytes(), class, headers, head_only);
 }
 
@@ -963,9 +981,13 @@ fn handle_request(
             send_redirect(stream, &link.location(), &headers);
             return;
         }
+        // The same rendering as `/`: the serve-time slots (build stamp,
+        // sponsor) are filled here too, so this shell is not the one
+        // surface that hides which build is running.
+        let page = render_page(INDEX_HTML);
         match method.as_str() {
-            "GET" => send_response(stream, 200, HTML, INDEX_HTML.as_bytes(), CacheClass::Shell, &headers, false),
-            "HEAD" => send_response(stream, 200, HTML, INDEX_HTML.as_bytes(), CacheClass::Shell, &headers, true),
+            "GET" => send_response(stream, 200, HTML, page.as_bytes(), CacheClass::Shell, &headers, false),
+            "HEAD" => send_response(stream, 200, HTML, page.as_bytes(), CacheClass::Shell, &headers, true),
             _ => send_response(stream, 405, "text/plain; charset=utf-8", b"method not allowed", CacheClass::NoStore, &headers, false),
         }
         return;
@@ -1014,7 +1036,7 @@ fn handle_request(
     let route = path_route(&path);
     if (method == "GET" || method == "HEAD") && (route == "/" || route == "/index.html") {
         let page = index_page(gate, &headers);
-        let rendered = render_with_sponsor(&page);
+        let rendered = render_page(&page);
         let bytes = rendered.as_bytes();
         send_response(stream, 200, HTML, bytes, CacheClass::Shell, &headers, method == "HEAD");
         return;
@@ -1907,16 +1929,18 @@ fn send_not_found(
         .map(|v| v.to_ascii_lowercase())
         .unwrap_or_default();
     let json = accept.contains("application/json") && !accept.contains("text/html");
-    let (content_type, body): (&str, &[u8]) = if json {
-        ("application/json", API_NOT_FOUND)
+    let (content_type, body): (&str, Vec<u8>) = if json {
+        ("application/json", API_NOT_FOUND.to_vec())
     } else {
-        (HTML, NOT_FOUND_HTML.as_bytes())
+        // Rendered like every other page serve, so the 404 footer
+        // carries the build stamp and the sponsor slot is filled.
+        (HTML, render_page(NOT_FOUND_HTML).into_owned().into_bytes())
     };
     send_response(
         stream,
         404,
         content_type,
-        body,
+        &body,
         CacheClass::NoStore,
         headers,
         method == "HEAD",
@@ -3303,7 +3327,7 @@ fn dashboard_html(claimed: &[&claims::Claim], total: usize, unclaimed: usize, jo
         }
         out.push_str("</table>\n");
     }
-    out.push_str("<footer>Phext Edit · <a href=\"/about\">About</a> · <a href=\"/privacy\">Privacy Policy</a> · <a href=\"/terms\">Terms of Service</a> · Contact: <a href=\"mailto:will+support@phext.io\">will+support@phext.io</a><!--phext-sponsor--></footer>\n");
+    out.push_str("<footer>Phext Edit · <a href=\"/about\">About</a> · <a href=\"/privacy\">Privacy Policy</a> · <a href=\"/terms\">Terms of Service</a> · Contact: <a href=\"mailto:will+support@phext.io\">will+support@phext.io</a><!--phext-sponsor--> · build <!--phext-build--></footer>\n");
     out.push_str("</main>\n</body>\n</html>\n");
     out
 }
@@ -3353,7 +3377,7 @@ fn handle_dashboard(
         .collect();
     let unclaimed = total - claimed_handles.len().min(total);
     let dash = dashboard_html(&claimed, total, unclaimed, &joins);
-    let html = render_with_sponsor(&dash);
+    let html = render_page(&dash);
     send_response(stream, 200, HTML, html.as_bytes(), CacheClass::NoStore, headers, method == "HEAD");
     true
 }
@@ -3443,7 +3467,7 @@ alignment metric may differ from Will's, and that is expected. Your map is yours
 <p id="dashboard-link" style="display:none">Owner and editors: the <a href="/claim/dashboard">claim dashboard</a> lists who has claimed their space, and who has joined the wavefront since the snapshot.</p>
 
 <footer>Phext Edit · <a href="about">About</a> · <a href="privacy">Privacy Policy</a> · <a href="terms">Terms of Service</a> ·
-Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--></footer>
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--> · build <!--phext-build--></footer>
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -3590,7 +3614,7 @@ at 10 MiB.</p>
 <div id="lists"></div>
 
 <footer>Phext Edit · <a href="about">About</a> · <a href="privacy">Privacy Policy</a> · <a href="terms">Terms of Service</a> ·
-Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--></footer>
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--> · build <!--phext-build--></footer>
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -3785,7 +3809,7 @@ supports the site. It is not an advertisement and it is not an Exocortex
 Founding purchase.</p>
 
 <footer>Phext Edit · <a href="privacy">Privacy Policy</a> · <a href="terms">Terms of Service</a> ·
-Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--></footer>
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--> · build <!--phext-build--></footer>
 </main>
 </body>
 </html>
@@ -3874,7 +3898,7 @@ User Data Policy</a>, including the Limited Use requirements.</p>
 <p>If this policy changes, the new version will be posted on this page with a new effective date.</p>
 
 <footer>Phext Edit · <a href="about">About</a> · <a href="terms">Terms of Service</a> ·
-Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--></footer>
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--> · build <!--phext-build--></footer>
 </main>
 </body>
 </html>
@@ -3933,7 +3957,7 @@ Founding purchase.</p>
 <p>If these terms change, the new version will be posted on this page with a new effective date.</p>
 
 <footer>Phext Edit · <a href="about">About</a> · <a href="privacy">Privacy Policy</a> ·
-Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--></footer>
+Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--> · build <!--phext-build--></footer>
 </main>
 </body>
 </html>
@@ -4047,7 +4071,7 @@ const NOT_FOUND_HTML: &str = concat!(r#"<!DOCTYPE html>
 <h1>Page not found</h1>
 <p>There is no page at that address.</p>
 <p><a href="/">Back to Phext Edit</a></p>
-<footer>Phext Edit · <a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--></footer>
+<footer>Phext Edit · <a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--> · build <!--phext-build--></footer>
 </main>
 </body>
 </html>
@@ -4263,6 +4287,7 @@ body {
 #status-bar .sponsor-offer { margin-left: 14px; white-space: nowrap; }
 #status-bar .sponsor-link { color: var(--dim); text-decoration: none; }
 #status-bar .sponsor-link:hover { color: var(--coord); text-decoration: underline; }
+#status-bar .build-stamp { color: var(--dim); }
 #auth-screen .sponsor-link { color: var(--coord); }
 
 /* ── Overlays ── */
@@ -4570,6 +4595,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
   <a class="bar-link" href="/phext-previewer.html" title="Open a phext file from your own device and preview it scroll by scroll — no sign-in needed">Preview a phext</a>
   <a class="bar-link" href="/api/auth/sso/mutable" title="Mutable OS — documents and Caverns, with this same sign-in">Mutable OS</a>
   <!--phext-sponsor-->
+  <span class="build-stamp" title="The build this server is running — name it in a bug report"><!--phext-build--></span>
   <a class="bar-link" id="dashboard-link" href="/claim/dashboard" style="display:none" title="Who has claimed their wavefront space, and who has joined since the snapshot — the owner and editors">Claim dashboard</a>
   <button type="button" id="signout" class="signout" style="display:none" onclick="signOut()" title="Sign out"></button>
 </div>
@@ -4602,7 +4628,8 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
     <p class="links"><a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · <a href="mailto:will+support@phext.io">Contact</a><br>
       No sign-in needed: <a href="/up-goer-five.html">Up Goer Five</a> · <a href="/tts-demo.html">Coordinate TTS demo</a> · <a href="/learn-you-phext.html">Learn You Phext</a> · <a href="/singular.html">Singular</a> · <a href="/phext-previewer.html">Phext Previewer</a><br>
       Have a phext of your own? <a href="/submit">Upload it for review</a> — if an editor accepts it, you become an editor too. Signing in with X makes you an editor at once.<br>
-      Placed in the wavefront map? <a href="/claim">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="/explore">explore the map</a> first. No ads, ever.<!--phext-sponsor--></p>
+      Placed in the wavefront map? <a href="/claim">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="/explore">explore the map</a> first. No ads, ever.<!--phext-sponsor--><br>
+      Running build: <!--phext-build--></p>
     <noscript>JavaScript opens the demo. Sign in with the Google, GitHub, or X links above works without it.</noscript>
   </div>
 </div>
@@ -5485,8 +5512,9 @@ $('try-demo').addEventListener('click', (e) => {
 #[cfg(test)]
 mod public_route_tests {
     use super::{
-        dashboard_html, handle_request, is_api_path, is_editor_shell, public_document, AppState,
-        DemoCatalog, ABOUT_HTML, BACKGROUND_WEBP, BANNER_WEBP, CLAIM_HTML, EXPLORE_HTML, INDEX_HTML,
+        dashboard_html, handle_request, is_api_path, is_editor_shell, public_document, render_page,
+        AppState, DemoCatalog, ABOUT_HTML, BACKGROUND_WEBP, BANNER_WEBP, BUILD_SLOT, BUILD_STAMP,
+        CLAIM_HTML, EXPLORE_HTML, INDEX_HTML,
         LEARN_YOU_PHEXT_HTML, NOT_FOUND_HTML, PREVIEWER_HTML, PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE,
         SINGULAR_HTML, SITEMAP_XML, STATIC_CACHE, SUBMIT_HTML, TERMS_HTML, TTS_DEMO_HTML,
         UP_GOER_FIVE_HTML, DEFAULT_COORD,
@@ -6083,6 +6111,70 @@ mod public_route_tests {
                 assert!(about.body.contains(&sponsor::apply_slot("<!--phext-sponsor-->", &SponsorOffer::parse(url))));
             }
         }
+    }
+
+    #[test]
+    fn every_page_carries_the_build_stamp() {
+        // The stamp is baked in at compile time (build.rs). It must be a
+        // single short token: it is served into footers unescaped.
+        assert!(!BUILD_STAMP.is_empty(), "build stamp baked in");
+        assert!(
+            !BUILD_STAMP.contains(char::is_whitespace),
+            "build stamp is one token: {BUILD_STAMP}"
+        );
+        let pages: [(&str, &str); 13] = [
+            ("shell", INDEX_HTML),
+            ("about", ABOUT_HTML),
+            ("privacy", PRIVACY_HTML),
+            ("terms", TERMS_HTML),
+            ("claim", CLAIM_HTML),
+            ("submit", SUBMIT_HTML),
+            ("missing", NOT_FOUND_HTML),
+            ("ug5", UP_GOER_FIVE_HTML),
+            ("tts", TTS_DEMO_HTML),
+            ("learn", LEARN_YOU_PHEXT_HTML),
+            ("singular", SINGULAR_HTML),
+            ("preview", PREVIEWER_HTML),
+            ("explore", EXPLORE_HTML),
+        ];
+        for (name, page) in pages {
+            assert!(page.contains(BUILD_SLOT), "{name} missing build slot");
+            let rendered = render_page(page);
+            assert!(
+                rendered.contains(BUILD_STAMP),
+                "{name} does not show the running build"
+            );
+            assert!(!rendered.contains(BUILD_SLOT), "{name} left the build slot in");
+            assert!(
+                !rendered.contains(sponsor::SLOT),
+                "{name} left the sponsor slot in"
+            );
+        }
+        assert!(
+            INDEX_HTML.matches(BUILD_SLOT).count() >= 2,
+            "status bar and sign-in screen"
+        );
+        let dash = dashboard_html(
+            &[] as &[&phext_lattice::claims::Claim],
+            0,
+            0,
+            &[] as &[phext_lattice::joins::Join],
+        );
+        assert!(dash.contains(BUILD_SLOT), "dashboard footer");
+
+        // Served pages carry the running build, not the slot.
+        let about = get(&locked_gate(), "/about");
+        assert_eq!(about.status, 200);
+        assert!(about.body.contains(BUILD_STAMP), "served /about shows the build");
+        assert!(!about.body.contains(BUILD_SLOT));
+        let shell = get(&locked_gate(), "/");
+        assert_eq!(shell.status, 200);
+        assert!(shell.body.contains(BUILD_STAMP), "served shell shows the build");
+        assert!(!shell.body.contains(BUILD_SLOT));
+        let missing = get(&locked_gate(), "/no-such-phext/");
+        assert_eq!(missing.status, 404);
+        assert!(missing.body.contains(BUILD_STAMP), "served 404 shows the build");
+        assert!(!missing.body.contains(BUILD_SLOT));
     }
 }
 
