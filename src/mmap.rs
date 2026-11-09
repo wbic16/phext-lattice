@@ -14,12 +14,15 @@ use std::path::{Path, PathBuf};
 use std::io;
 use memmap2::Mmap;
 use libphext::phext::Coordinate;
-use crate::index::LatticeIndex;
+use crate::index::{LatticeIndex, ScrollSpan};
 
 /// A memory-mapped phext document with copy-on-write editing.
 pub struct MappedLattice {
     /// The underlying memory-mapped file (read-only).
-    mmap: Mmap,
+    ///
+    /// `None` only while `save` has dropped the map so the file can be
+    /// replaced. Windows refuses that rename while a view is still mapped.
+    mmap: Option<Mmap>,
     /// Path to the backing file.
     path: PathBuf,
     /// The coordinate → byte-span index built over the mmap.
@@ -54,12 +57,31 @@ impl MappedLattice {
     /// Open a phext file and build the lattice index.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<MappedLattice> {
         let path = path.as_ref().to_path_buf();
-        let file = std::fs::File::open(&path).map_err(|err| io_at("open", &path, err))?;
-        let mmap = unsafe { Mmap::map(&file) }.map_err(|err| io_at("memory-map", &path, err))?;
+        let mmap = map_file(&path)?;
         let index = LatticeIndex::build(&mmap);
 
         Ok(MappedLattice {
-            mmap,
+            mmap: Some(mmap),
+            path,
+            index,
+            overlay: HashMap::new(),
+            _temp_file: None,
+        })
+    }
+
+    /// Open a phext file with an index built elsewhere (e.g. loaded from a
+    /// `sidecar`), skipping the O(n) scan. Fails if the index was built for a
+    /// buffer of a different length.
+    pub fn open_with_index<P: AsRef<Path>>(path: P, index: LatticeIndex) -> io::Result<MappedLattice> {
+        let path = path.as_ref().to_path_buf();
+        let file = std::fs::File::open(&path).map_err(|err| io_at("open", &path, err))?;
+        let mmap = unsafe { Mmap::map(&file) }.map_err(|err| io_at("memory-map", &path, err))?;
+        if mmap.len() != index.buffer_len() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!(
+                "index covers {} bytes but {} has {}", index.buffer_len(), path.display(), mmap.len())));
+        }
+        Ok(MappedLattice {
+            mmap: Some(mmap),
             path,
             index,
             overlay: HashMap::new(),
@@ -92,7 +114,8 @@ impl MappedLattice {
 
         // Fall back to mmap
         if let Some(span) = self.index.get(coord) {
-            let bytes = &self.mmap[span.start..span.end];
+            let bytes = self.bytes();
+            let bytes = &bytes[span.start..span.end];
             // Phext content is UTF-8
             Some(String::from_utf8_lossy(bytes).into_owned())
         } else {
@@ -165,6 +188,13 @@ impl MappedLattice {
         self.overlay.len()
     }
 
+    /// Coordinates with unsaved edits (modified, inserted, or deleted), sorted.
+    pub fn pending_coordinates(&self) -> Vec<Coordinate> {
+        let mut coords: Vec<Coordinate> = self.overlay.keys().copied().collect();
+        coords.sort();
+        coords
+    }
+
     /// Save to the backing file. Reconstructs the phext from mmap + overlay.
     /// Uses atomic rename via NamedTempFile to prevent partial-write corruption.
     pub fn save(&mut self) -> io::Result<()> {
@@ -172,7 +202,7 @@ impl MappedLattice {
             return Err(io::Error::new(io::ErrorKind::Other, "save: no backing file path"));
         }
         let dest = self.path.clone();
-        let content = self.to_phext_bytes();
+        let (content, spans, clean) = self.serialize();
 
         // Write to a temp file in the same directory, then atomically rename.
         // This ensures no partial-write state is ever visible on disk.
@@ -187,17 +217,58 @@ impl MappedLattice {
             }
         }
         tmp.as_file().sync_all().map_err(|err| io_at("sync", tmp.path(), err))?;
-        tmp.persist(&dest).map_err(|err| {
-            io_at("replace", &dest, io::Error::new(io::ErrorKind::Other, err.to_string()))
-        })?;
 
-        // Re-map the file and rebuild index
-        let file = std::fs::File::open(&dest).map_err(|err| io_at("open", &dest, err))?;
-        self.mmap = unsafe { Mmap::map(&file) }.map_err(|err| io_at("memory-map", &dest, err))?;
-        self.index = LatticeIndex::build(&self.mmap);
+        // Drop the map before the rename. On Windows the destination still
+        // has a mapped view, and MoveFileEx fails with ERROR_USER_MAPPED_FILE
+        // (os error 1224): "The requested operation cannot be performed on a
+        // file with a user-mapped section open." memmap2 also holds a
+        // duplicated file handle until the map is dropped. A zero-length file
+        // is not mapped, so the failure shows up once the phext has bytes —
+        // edit, insert a scroll, save. Linux rename succeeds either way.
+        drop(self.mmap.take());
+        let file = match tmp.persist(&dest) {
+            Ok(file) => file,
+            Err(err) => {
+                let replace_err = io_at("replace", &dest, err.error);
+                if let Err(reopen) = self.remap(&dest) {
+                    return Err(io::Error::new(
+                        replace_err.kind(),
+                        format!("{replace_err}; reopening the original file failed: {reopen}"),
+                    ));
+                }
+                return Err(replace_err);
+            }
+        };
+        // Map the handle persist just renamed. If that fails, reopen by path.
+        self.mmap = Some(match unsafe { Mmap::map(&file) } {
+            Ok(mmap) => mmap,
+            Err(err) => {
+                drop(file);
+                map_file(&dest).map_err(|_| io_at("memory-map", &dest, err))?
+            }
+        });
+
+        // The spans recorded while serializing are the index, unless an edit
+        // smuggled in delimiter bytes; then rescan.
+        let index = if clean {
+            LatticeIndex::from_entries(spans, self.bytes().len())
+        } else {
+            LatticeIndex::build(self.bytes())
+        };
+        self.index = index;
         self.overlay.clear();
 
         Ok(())
+    }
+
+    /// Map `path` into `self.mmap`, replacing whatever was there.
+    fn remap(&mut self, path: &Path) -> io::Result<()> {
+        self.mmap = Some(map_file(path)?);
+        Ok(())
+    }
+
+    fn bytes(&self) -> &[u8] {
+        self.mmap.as_deref().expect("phext file is not mapped")
     }
 
     /// Save to a specific path.
@@ -208,6 +279,13 @@ impl MappedLattice {
 
     /// Reconstruct the full phext as bytes from mmap + overlay.
     pub fn to_phext_bytes(&self) -> Vec<u8> {
+        self.serialize().0
+    }
+
+    /// Serialize mmap + overlay, recording each non-empty scroll's span as it is
+    /// written. The flag is false if an overlay scroll contains delimiter bytes,
+    /// in which case the recorded spans don't describe the output.
+    fn serialize(&self) -> (Vec<u8>, Vec<(Coordinate, ScrollSpan)>, bool) {
         use libphext::phext::{
             SCROLL_BREAK, SECTION_BREAK, CHAPTER_BREAK, BOOK_BREAK,
             VOLUME_BREAK, COLLECTION_BREAK, SERIES_BREAK, SHELF_BREAK, LIBRARY_BREAK,
@@ -216,6 +294,8 @@ impl MappedLattice {
 
         let coords = self.populated_coordinates();
         let mut output: Vec<u8> = Vec::new();
+        let mut spans: Vec<(Coordinate, ScrollSpan)> = Vec::with_capacity(coords.len());
+        let mut clean = true;
         let mut current = default_coordinate();
 
         for coord in coords {
@@ -259,20 +339,27 @@ impl MappedLattice {
 
             // Write scroll content
             if let Some(content) = self.read_scroll(&coord) {
+                if self.overlay.contains_key(&coord) && content.bytes().any(crate::sidecar::is_break) {
+                    clean = false;
+                }
+                let start = output.len();
                 output.extend_from_slice(content.as_bytes());
+                if output.len() > start {
+                    spans.push((coord, ScrollSpan { start, end: output.len() }));
+                }
             }
 
             current = coord;
         }
 
-        output
+        (output, spans, clean)
     }
 
     /// Access the raw mmap buffer for search operations.
     /// Returns None if overlay has modifications (use to_phext_bytes instead).
     pub fn raw_buffer(&self) -> Option<&[u8]> {
         if self.overlay.is_empty() {
-            Some(&self.mmap)
+            self.mmap.as_deref()
         } else {
             None
         }
@@ -310,12 +397,17 @@ fn mapped_from_bytes(bytes: &[u8]) -> io::Result<MappedLattice> {
     let (tmp, file) = tempfile_from_bytes(bytes)?;
     let mmap = unsafe { Mmap::map(&file) }.map_err(|err| io_at("memory-map", &tmp, err))?;
     Ok(MappedLattice {
-        mmap,
+        mmap: Some(mmap),
         path: PathBuf::new(),
         index,
         overlay: HashMap::new(),
         _temp_file: Some(tmp),
     })
+}
+
+fn map_file(path: &Path) -> io::Result<Mmap> {
+    let file = std::fs::File::open(path).map_err(|err| io_at("open", path, err))?;
+    unsafe { Mmap::map(&file) }.map_err(|err| io_at("memory-map", path, err))
 }
 
 /// Write bytes under `std::env::temp_dir` and return the path plus the open file.
@@ -465,5 +557,87 @@ mod tests {
         assert!(tmp.is_file(), "missing {}", tmp.display());
         // The backing file is created with Path::join, not a hard-coded "/tmp/..." string.
         assert_eq!(tmp.parent().unwrap(), temp_root.as_path());
+    }
+
+    #[test]
+    fn save_records_the_same_index_a_scan_would_build() {
+        let dir = std::env::temp_dir().join(format!("phext-lattice-save-index-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.phext");
+        std::fs::write(&path, test_phext()).unwrap();
+        let mut lat = MappedLattice::open(&path).unwrap();
+        lat.write_scroll(to_coordinate("1.1.1/1.1.1/1.1.2"), "longer scroll two".into());
+        lat.write_scroll(to_coordinate("1.1.1/1.1.2/1.1.1"), "new book".into());
+        lat.write_scroll(to_coordinate("2.1.1/1.1.1/1.1.1"), "".into());
+        lat.delete_scroll(to_coordinate("1.1.1/1.1.1/1.2.1"));
+        lat.save().unwrap();
+        let scanned = LatticeIndex::build(&std::fs::read(&path).unwrap());
+        assert_eq!(lat.index().coordinates(), scanned.coordinates());
+        assert_eq!(lat.index().spans(), scanned.spans());
+
+        // an edit containing a delimiter falls back to a rescan
+        lat.write_scroll(to_coordinate("1.1.1/1.1.1/1.1.1"), "split\x17here".into());
+        lat.save().unwrap();
+        let scanned = LatticeIndex::build(&std::fs::read(&path).unwrap());
+        assert_eq!(lat.index().coordinates(), scanned.coordinates());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Edit an existing scroll, insert one that was not in the file, save,
+    /// and read both back from a fresh open. This is the phext-edit flow
+    /// (POST /api/update, then POST /api/save) that failed on Windows with
+    /// `replace <path>` while the destination was still mapped.
+    #[test]
+    fn save_after_edit_and_insert_scroll_reloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.phext");
+        std::fs::write(&path, test_phext()).unwrap();
+
+        let edited = to_coordinate("1.1.1/1.1.1/1.1.1");
+        let kept = to_coordinate("1.1.1/1.1.1/1.1.2");
+        let inserted = to_coordinate("1.1.1/1.1.1/1.1.3");
+        let section = to_coordinate("1.1.1/1.1.1/1.2.1");
+
+        let mut lat = MappedLattice::open(&path).unwrap();
+        lat.write_scroll(edited, "edited scroll one".into());
+        lat.write_scroll(inserted, "brand new scroll".into());
+        lat.save().unwrap_or_else(|err| panic!("save failed: {err}"));
+        assert!(!lat.is_dirty());
+        assert_eq!(lat.read_scroll(&edited).as_deref(), Some("edited scroll one"));
+        assert_eq!(lat.read_scroll(&inserted).as_deref(), Some("brand new scroll"));
+
+        let reloaded = MappedLattice::open(&path).unwrap();
+        assert_eq!(reloaded.read_scroll(&edited).as_deref(), Some("edited scroll one"));
+        assert_eq!(reloaded.read_scroll(&kept).as_deref(), Some("scroll two"));
+        assert_eq!(reloaded.read_scroll(&inserted).as_deref(), Some("brand new scroll"));
+        assert_eq!(reloaded.read_scroll(&section).as_deref(), Some("section two"));
+        let scanned = LatticeIndex::build(&std::fs::read(&path).unwrap());
+        assert_eq!(reloaded.index().coordinates(), scanned.coordinates());
+        assert_eq!(reloaded.index().spans(), scanned.spans());
+    }
+
+    /// A failed replace still names the operation and the full path. The UI
+    /// shows that string as `disk save failed: save failed: replace <path>: …`.
+    #[test]
+    fn failed_replace_names_the_operation_and_full_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("doc.phext");
+        std::fs::write(&path, test_phext()).unwrap();
+        let mut lat = MappedLattice::open(&path).unwrap();
+        let inserted = to_coordinate("1.1.1/1.1.1/1.1.3");
+        lat.write_scroll(inserted, "brand new scroll".into());
+
+        // A directory cannot be the target of a file rename, so persist fails
+        // on the same step Windows hits while the phext is still mapped.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let err = lat.save().expect_err("replace onto a directory");
+        let msg = err.to_string();
+        let full = path.display().to_string();
+        assert!(msg.starts_with("replace "), "{msg}");
+        assert!(msg.contains(&full), "{msg} missing {full}");
+        // The insert is still in the overlay; the disk replace did not land.
+        assert!(lat.is_dirty());
+        assert_eq!(lat.read_scroll(&inserted).as_deref(), Some("brand new scroll"));
     }
 }
