@@ -3537,7 +3537,7 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="description" content="phext-edit: browse and edit phext files, plain text arranged in 11 dimensions, from your browser.">
-<title>💎 phext-edit</title>
+<title>Phext Edit</title>
 <!-- Also served at /<name>/. Asset and API URLs in this shell are absolute. -->
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
@@ -4001,6 +4001,25 @@ function publishCoord(coord) {
   urlReady = true;
 }
 
+// First 40 UTF-8 bytes of the scroll, cut on a character boundary, then one line.
+function scrollTitle(text) {
+  const raw = text == null ? '' : String(text);
+  const bytes = new TextEncoder().encode(raw);
+  let n = Math.min(40, bytes.length);
+  if (n < bytes.length && (bytes[n] & 0xc0) === 0x80) {
+    while (n > 0 && (bytes[n] & 0xc0) === 0x80) n--;
+  }
+  const snippet = new TextDecoder().decode(bytes.subarray(0, n))
+    .replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, ' ')
+    .replace(/ +/g, ' ')
+    .trim();
+  return snippet ? snippet + ' | Phext Edit' : 'Phext Edit';
+}
+
+function setScrollTitle(text) {
+  document.title = scrollTitle(text);
+}
+
 function render(nav, skipHash) {
   lastNav = nav;
   const p = nav.position;
@@ -4013,6 +4032,7 @@ function render(nav, skipHash) {
 
   renderSentron(nav);
   renderContent(nav);
+  setScrollTitle(nav.scroll && nav.scroll.content);
   if (activePanel === 'navtree' && treeData) highlightTreeNode(p.coordinate);
 }
 
@@ -4181,6 +4201,7 @@ function enterEdit() {
   $('edit-coord').textContent = lastNav.position.coordinate;
   $('edit-textarea').value = lastNav.scroll.content || '';
   $('edit-textarea').focus();
+  setScrollTitle($('edit-textarea').value);
 }
 
 // UG5 mode for the current scroll: stash its text and coordinate for the
@@ -4217,7 +4238,11 @@ async function saveToDisk() {
   if (res.ok) { dirty = false; $('dirty-flag').textContent = ''; showMsg('💾 saved to disk'); }
   else { showMsg('disk save failed: ' + res.message); }
 }
-function cancelEdit() { setMode('lattice'); }
+function cancelEdit() {
+  setMode('lattice');
+  if (lastNav && lastNav.scroll) setScrollTitle(lastNav.scroll.content);
+}
+$('edit-textarea').addEventListener('input', () => setScrollTitle($('edit-textarea').value));
 
 // ── Search ──
 async function doSearch(query) {
@@ -4573,6 +4598,10 @@ mod public_route_tests {
         assert!(INDEX_HTML.contains("hashchange"));
         assert!(INDEX_HTML.contains("popstate"));
         assert!(INDEX_HTML.contains(DEFAULT_COORD));
+        assert!(INDEX_HTML.contains("<title>Phext Edit</title>"));
+        assert!(INDEX_HTML.contains(" | Phext Edit"));
+        assert!(INDEX_HTML.contains("function scrollTitle"));
+        assert!(INDEX_HTML.contains("new TextEncoder()"));
         assert!(TERMS_HTML.contains("href=\"about\""));
         assert!(TERMS_HTML.contains("href=\"privacy\""));
         assert!(TERMS_HTML.contains("will+support@phext.io"));
