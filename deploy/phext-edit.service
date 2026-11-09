@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-# GitHub/Google sign-in settings (see deploy.md step 4b)
+# GitHub/Google sign-in settings (see deploy.md step 4)
 EnvironmentFile=-/etc/phext-edit/oauth.env
 User=wbic16
 ExecStart=/source/phext-lattice/target/release/phext-edit --dir /source/human --home choose-your-own-adventure.phext --home-coord 10.10.2/1.1.1/1.10.10 --port 8080
