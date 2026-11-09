@@ -3736,13 +3736,23 @@ body {
 }
 .overlay input:focus { border-color: var(--coord); }
 #search-results { max-height: 300px; overflow-y: auto; margin-top: 6px; }
-#search-results .hit {
+#search-results .hit,
+#phext-list .hit {
   padding: 4px 8px; cursor: pointer; border-radius: 3px; display: flex; gap: 10px;
   transition: background var(--trans-fast);
+  text-decoration: none; color: inherit;
 }
-#search-results .hit:hover { background: #ffffff10; }
-#search-results .hit .hit-coord { color: var(--coord); min-width: 160px; }
-#search-results .hit .hit-ctx { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#search-results .hit:hover,
+#phext-list .hit:hover { background: #ffffff10; }
+#search-results .hit .hit-coord,
+#phext-list .hit .hit-coord {
+  color: var(--coord); min-width: 160px; cursor: pointer;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+#search-results .hit:hover .hit-coord,
+#phext-list .hit:hover .hit-coord { color: var(--active); }
+#search-results .hit .hit-ctx,
+#phext-list .hit .hit-ctx { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .auth-btn { display:block; background:var(--panel); border:1px solid var(--border); color:var(--text);
   font-family:inherit; font-size:14px; padding:10px 14px; border-radius:6px; text-decoration:none; cursor:pointer; }
 .auth-btn:hover { border-color:var(--coord); }
@@ -3771,7 +3781,8 @@ body {
   #status-bar .bar-link { margin-left: 0; }
   .overlay { top: 44px; }
   #search-overlay, #goto-overlay, #phext-overlay { width: calc(100vw - 24px) !important; max-height: 70vh; max-height: 70dvh; }
-  #search-results .hit .hit-coord { min-width: 0; }
+  #search-results .hit .hit-coord,
+  #phext-list .hit .hit-coord { min-width: 0; }
   #auth-screen > div { width: 100%; padding: 0 16px; }
   .auth-btn { min-height: 44px; display: flex; align-items: center; justify-content: center; }
   .axon { padding: 5px 4px; }
@@ -4409,9 +4420,11 @@ async function openPhextPicker() {
     let html = '';
     for (const f of files) {
       const kb = (f.bytes / 1024).toFixed(1);
-      html += `<div class="hit" onclick="switchPhext('${escAttr(f.name)}','${escAttr(f.path)}')">
+      const stem = fileStem(f.name);
+      const href = (PHEXT_NAME_RE.test(stem) && !RESERVED_PHEXT[stem]) ? '/' + stem + '/' : '#';
+      html += `<a class="hit" href="${escAttr(href)}" onclick="event.preventDefault();switchPhext('${escAttr(f.name)}','${escAttr(f.path)}')">
         <span class="hit-coord">${escHtml(f.name)}</span>
-        <span class="hit-ctx">${kb} KB</span></div>`;
+        <span class="hit-ctx">${kb} KB</span></a>`;
     }
     $('phext-list').innerHTML = html || '<div style="color:var(--dim);padding:8px">no phext files</div>';
     mode = 'phext-pick';
@@ -4601,6 +4614,9 @@ mod public_route_tests {
         assert!(INDEX_HTML.contains("<title>Phext Edit</title>"));
         assert!(INDEX_HTML.contains(" | Phext Edit"));
         assert!(INDEX_HTML.contains("function scrollTitle"));
+        assert!(INDEX_HTML.contains("#phext-list .hit"));
+        assert!(INDEX_HTML.contains("#phext-list .hit .hit-coord"));
+        assert!(INDEX_HTML.contains("<a class=\"hit\""));
         assert!(INDEX_HTML.contains("new TextEncoder()"));
         assert!(TERMS_HTML.contains("href=\"about\""));
         assert!(TERMS_HTML.contains("href=\"privacy\""));
