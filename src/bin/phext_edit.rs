@@ -3453,7 +3453,7 @@ body {
   .overlay input { font-size: 16px; }
   input, select { font-size: 16px; }
   #editor .editor-toolbar { height: auto; min-height: 40px; flex-wrap: wrap; padding: 4px 8px; }
-  #editor .editor-toolbar button { padding: 8px 12px; }
+  #editor .editor-toolbar button { padding: 8px 12px; min-height: 44px; }
   #status-bar { height: auto; min-height: 52px; flex-wrap: wrap; padding: 8px 12px; gap: 8px 14px; font-size: 14px; }
   #status-bar .help { order: 10; flex-basis: 100%; white-space: normal; overflow: visible; text-overflow: clip; }
   #status-bar .bar-link { margin-left: 0; }
@@ -3461,6 +3461,7 @@ body {
   #search-overlay, #goto-overlay, #phext-overlay { width: calc(100vw - 24px) !important; max-height: 70vh; max-height: 70dvh; }
   #search-results .hit .hit-coord { min-width: 0; }
   #auth-screen > div { width: 100%; padding: 0 16px; }
+  .auth-btn { min-height: 44px; display: flex; align-items: center; justify-content: center; }
   .axon { padding: 5px 4px; }
 }
 
