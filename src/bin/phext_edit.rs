@@ -4464,6 +4464,17 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
   #search-results .hit .hit-coord,
   #phext-list .hit .hit-coord { min-width: 0; }
   .auth-btn { display: flex; align-items: center; justify-content: center; }
+  /* Inside the sheets, content fits the phone's full width
+     without running off the right edge: Sentron's header and axon
+     counts may wrap instead of pushing, the density sparklines may
+     break, and the tree indents less per level so deep groups keep
+     their labels on screen. */
+  #sentron-panel .header { overflow-wrap: anywhere; }
+  .axon { flex-wrap: wrap; }
+  .densities .row { flex-wrap: wrap; }
+  .densities .row .spark { letter-spacing: 0; overflow-wrap: anywhere; min-width: 0; }
+  .nt-children { margin-left: 10px; }
+  .nt-group .nt-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
