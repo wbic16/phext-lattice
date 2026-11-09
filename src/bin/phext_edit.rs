@@ -3224,7 +3224,7 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="description" content="phext-edit: browse and edit phext files, plain text arranged in 11 dimensions, from your browser.">
 <title>💎 phext-edit</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -3240,7 +3240,7 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
 body {
   background: var(--bg); color: var(--text);
   font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-  font-size: 13px; height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  font-size: 13px; height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden;
 }
 
 /* ── Coordinate bar ── */
@@ -3394,11 +3394,19 @@ body {
   transition: background var(--trans-fast), color var(--trans-fast);
 }
 #status-bar .signout:hover { background: var(--coord); color: #000; }
+#status-bar .touch-actions { display: flex; gap: 6px; }
+#status-bar .touch-actions button {
+  background: var(--bar); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 10px; font-family: inherit; font-size: 13px;
+  cursor: pointer; white-space: nowrap; transition: border-color var(--trans-fast), color var(--trans-fast);
+}
+#status-bar .touch-actions button:hover { border-color: var(--coord); color: var(--coord); }
 #status-bar .bar-link {
   margin-left: 14px; color: var(--dim); text-decoration: none; white-space: nowrap;
 }
 #status-bar .bar-link.first { margin-left: auto; }
 #status-bar .bar-link:hover { color: var(--coord); text-decoration: underline; }
+#status-bar { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
 /* ── Overlays ── */
 .overlay {
@@ -3437,20 +3445,38 @@ body {
 @media (max-width: 700px) {
   #coord-bar { padding: 0 10px; overflow-x: auto; white-space: nowrap; }
   #main { flex-direction: column; }
-  #left-panel { width: 100%; max-height: 42vh; border-right: none; border-bottom: 1px solid var(--border); }
+  #left-panel { width: 100%; max-height: 42vh; max-height: 42dvh; border-right: none; border-bottom: 1px solid var(--border); }
   #panel-tabs { height: 36px; }
   #content { padding: 12px 14px; }
   #editor textarea { padding: 12px 14px; }
+  #editor textarea { font-size: 16px; }
+  .overlay input { font-size: 16px; }
+  input, select { font-size: 16px; }
   #editor .editor-toolbar { height: auto; min-height: 40px; flex-wrap: wrap; padding: 4px 8px; }
-  #editor .editor-toolbar button { padding: 8px 12px; }
+  #editor .editor-toolbar button { padding: 8px 12px; min-height: 44px; }
   #status-bar { height: auto; min-height: 52px; flex-wrap: wrap; padding: 8px 12px; gap: 8px 14px; font-size: 14px; }
   #status-bar .help { order: 10; flex-basis: 100%; white-space: normal; overflow: visible; text-overflow: clip; }
   #status-bar .bar-link { margin-left: 0; }
   .overlay { top: 44px; }
-  #search-overlay, #goto-overlay, #phext-overlay { width: calc(100vw - 24px) !important; max-height: 70vh; }
+  #search-overlay, #goto-overlay, #phext-overlay { width: calc(100vw - 24px) !important; max-height: 70vh; max-height: 70dvh; }
   #search-results .hit .hit-coord { min-width: 0; }
   #auth-screen > div { width: 100%; padding: 0 16px; }
+  .auth-btn { min-height: 44px; display: flex; align-items: center; justify-content: center; }
   .axon { padding: 5px 4px; }
+}
+
+/* ── Landscape phones (701–1100px wide) ──
+   Too wide for the small-screen rules above, too narrow for the
+   desktop status bar: that bar is a single nowrap row measuring
+   ~1487px of content, so at 844/915px its tail — Preview, Mutable
+   OS, Claim dashboard, sign out — was clipped off-screen with no way
+   to scroll to it. Give this band the same wrap treatment as the
+   small-screen rules so every item stays reachable. Portrait and
+   full desktop widths are untouched. */
+@media (min-width: 701px) and (max-width: 1100px) {
+  #status-bar { height: auto; min-height: 52px; flex-wrap: wrap; padding: 8px 12px; gap: 8px 14px; }
+  #status-bar .help { order: 10; flex-basis: 100%; white-space: normal; overflow: visible; text-overflow: clip; }
+  #status-bar .bar-link { margin-left: 0; }
 }
 </style>
 </head>
@@ -3488,6 +3514,7 @@ body {
 <div id="status-bar">
   <span class="mode lattice" id="mode-label">LATTICE</span>
   <span id="active-file" style="color:var(--dim);cursor:pointer" onclick="openPhextPicker()" title="Click to switch phext"></span>
+  <span class="touch-actions"><button type="button" onclick="enterEdit()" title="Edit the current scroll (key: e)">✎ Edit</button><button type="button" onclick="openSearch()" title="Search scrolls (key: /)">⌕ Search</button><button type="button" onclick="openGoto()" title="Go to a coordinate (key: g)">⌖ Goto</button></span>
   <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  u:UG5  t:tree  /:search  g:goto  Home:BASE</span>
   <span class="msg" id="status-msg"></span>
   <a class="bar-link first" href="submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
@@ -3510,7 +3537,7 @@ body {
   <div style="color:var(--dim);font-size:11px;margin-bottom:6px">Select a phext file:</div>
   <div id="phext-list" style="max-height:400px;overflow-y:auto"></div>
 </div>
-<div id="auth-screen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:100;align-items:center;justify-content:center">
+<div id="auth-screen" style="display:none;position:fixed;inset:0;padding:env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);background:var(--bg);z-index:100;align-items:center;justify-content:center">
   <div style="text-align:center;max-width:400px">
     <div style="font-size:24px;margin-bottom:16px;color:var(--coord)">💎 phext-edit</div>
     <div id="auth-prompt" style="color:var(--dim);margin-bottom:20px">Sign in to continue</div>
@@ -3565,8 +3592,14 @@ function setMode(m) {
 
 function showPanel(name) {
   activePanel = name;
-  $('sentron-panel').style.display = (name === 'sentron') ? '' : 'none';
-  $('navtree-panel').style.display = (name === 'navtree') ? '' : 'none';
+  // Explicit values, never '': the stylesheet hides #navtree-panel
+  // (display: none) until first use, and an empty inline style does
+  // not override a stylesheet rule — with '' the Nav panel could
+  // never be shown. 'block' is the panels' natural display (they are
+  // block-level flex items of the column #left-panel; flex: 1 still
+  // sizes them), and an inline value always wins over the stylesheet.
+  $('sentron-panel').style.display = (name === 'sentron') ? 'block' : 'none';
+  $('navtree-panel').style.display = (name === 'navtree') ? 'block' : 'none';
   $('tab-sentron').className = 'tab' + (name === 'sentron' ? ' active' : '');
   $('tab-navtree').className = 'tab' + (name === 'navtree' ? ' active' : '');
   if (name === 'navtree' && !treeData) loadTree();
