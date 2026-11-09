@@ -3224,7 +3224,7 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="description" content="phext-edit: browse and edit phext files, plain text arranged in 11 dimensions, from your browser.">
 <title>💎 phext-edit</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -3240,7 +3240,7 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
 body {
   background: var(--bg); color: var(--text);
   font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-  font-size: 13px; height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  font-size: 13px; height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden;
 }
 
 /* ── Coordinate bar ── */
@@ -3406,6 +3406,7 @@ body {
 }
 #status-bar .bar-link.first { margin-left: auto; }
 #status-bar .bar-link:hover { color: var(--coord); text-decoration: underline; }
+#status-bar { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
 /* ── Overlays ── */
 .overlay {
@@ -3444,17 +3445,20 @@ body {
 @media (max-width: 700px) {
   #coord-bar { padding: 0 10px; overflow-x: auto; white-space: nowrap; }
   #main { flex-direction: column; }
-  #left-panel { width: 100%; max-height: 42vh; border-right: none; border-bottom: 1px solid var(--border); }
+  #left-panel { width: 100%; max-height: 42vh; max-height: 42dvh; border-right: none; border-bottom: 1px solid var(--border); }
   #panel-tabs { height: 36px; }
   #content { padding: 12px 14px; }
   #editor textarea { padding: 12px 14px; }
+  #editor textarea { font-size: 16px; }
+  .overlay input { font-size: 16px; }
+  input, select { font-size: 16px; }
   #editor .editor-toolbar { height: auto; min-height: 40px; flex-wrap: wrap; padding: 4px 8px; }
   #editor .editor-toolbar button { padding: 8px 12px; }
   #status-bar { height: auto; min-height: 52px; flex-wrap: wrap; padding: 8px 12px; gap: 8px 14px; font-size: 14px; }
   #status-bar .help { order: 10; flex-basis: 100%; white-space: normal; overflow: visible; text-overflow: clip; }
   #status-bar .bar-link { margin-left: 0; }
   .overlay { top: 44px; }
-  #search-overlay, #goto-overlay, #phext-overlay { width: calc(100vw - 24px) !important; max-height: 70vh; }
+  #search-overlay, #goto-overlay, #phext-overlay { width: calc(100vw - 24px) !important; max-height: 70vh; max-height: 70dvh; }
   #search-results .hit .hit-coord { min-width: 0; }
   #auth-screen > div { width: 100%; padding: 0 16px; }
   .axon { padding: 5px 4px; }
@@ -3532,7 +3536,7 @@ body {
   <div style="color:var(--dim);font-size:11px;margin-bottom:6px">Select a phext file:</div>
   <div id="phext-list" style="max-height:400px;overflow-y:auto"></div>
 </div>
-<div id="auth-screen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:100;align-items:center;justify-content:center">
+<div id="auth-screen" style="display:none;position:fixed;inset:0;padding:env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);background:var(--bg);z-index:100;align-items:center;justify-content:center">
   <div style="text-align:center;max-width:400px">
     <div style="font-size:24px;margin-bottom:16px;color:var(--coord)">💎 phext-edit</div>
     <div id="auth-prompt" style="color:var(--dim);margin-bottom:20px">Sign in to continue</div>
