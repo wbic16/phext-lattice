@@ -3891,7 +3891,8 @@ const TERMS_HTML: &str = concat!(r#"<!DOCTYPE html>
 "#, public_style!(), r#"
 </head>
 <body>
-<main>
+<a class="skip-link" href='#content'>Skip to content</a>
+<main id="content">
 <nav><a href="about">About Phext Edit</a> · <a href="privacy">Privacy Policy</a> · <a href="./">Open the editor</a></nav>
 <h1>Terms of Service</h1>
 <p class="dim">Effective 8 November 2026</p>
@@ -4036,7 +4037,8 @@ const NOT_FOUND_HTML: &str = concat!(r#"<!DOCTYPE html>
 "#, public_style!(), r#"
 </head>
 <body>
-<main>
+<a class="skip-link" href='#content'>Skip to content</a>
+<main id="content">
 <nav><a href="/">Phext Edit</a> · <a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a></nav>
 <h1>Page not found</h1>
 <p>There is no page at that address.</p>
@@ -6805,7 +6807,7 @@ mod link_tests {
 }
 
 mod a11y {
-    use super::{ABOUT_HTML, INDEX_HTML, PRIVACY_HTML};
+    use super::{ABOUT_HTML, INDEX_HTML, PRIVACY_HTML, TERMS_HTML};
 
     fn channel(c: f64) -> f64 {
         if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
@@ -6853,7 +6855,7 @@ mod a11y {
 
     #[test]
     fn public_pages_are_responsive() {
-        for page in [ABOUT_HTML, PRIVACY_HTML] {
+        for page in [ABOUT_HTML, PRIVACY_HTML, TERMS_HTML] {
             assert!(page.contains("width=device-width"));
             assert!(page.contains("@media (max-width: 760px)"));
             assert!(page.contains("class=\"skip-link\""));
