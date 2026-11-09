@@ -2206,6 +2206,7 @@ mod local_mode_tests {
         assert_eq!(code, 200, "{body}");
         assert!(body.contains("data-open=\"1\""), "signed-out intro stays up without --local");
         assert!(body.contains("Try the demo"));
+        assert!(body.contains("Content-Security-Policy"));
         let (code, body) = http(port, "GET", "/?demo", "");
         assert_eq!(code, 200, "{body}");
         assert!(body.contains("const wantDemo"));
@@ -2239,6 +2240,7 @@ mod local_mode_tests {
         assert_eq!(code, 200, "{body}");
         assert!(body.contains("data-open=\"0\""), "--local opens the editor");
         assert!(!body.contains("data-open=\"1\""));
+        assert!(body.contains("Content-Security-Policy"));
         let (code, body) = http(port, "GET", "/?demo", "");
         assert_eq!(code, 200, "{body}");
         assert!(body.contains("const wantDemo"));
@@ -3891,7 +3893,8 @@ const TERMS_HTML: &str = concat!(r#"<!DOCTYPE html>
 "#, public_style!(), r#"
 </head>
 <body>
-<main>
+<a class="skip-link" href='#content'>Skip to content</a>
+<main id="content">
 <nav><a href="about">About Phext Edit</a> · <a href="privacy">Privacy Policy</a> · <a href="./">Open the editor</a></nav>
 <h1>Terms of Service</h1>
 <p class="dim">Effective 8 November 2026</p>
@@ -3999,6 +4002,7 @@ const ROBOTS_TXT: &str = "\
 User-agent: *\n\
 Disallow: /api\n\
 Allow: /\n\
+Allow: /?demo\n\
 Allow: /index.html\n\
 Allow: /about\n\
 Allow: /privacy\n\
@@ -4010,6 +4014,7 @@ Sitemap: https://edit.phext.io/sitemap.xml\n\
 const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://edit.phext.io/</loc></url>
+  <url><loc>https://edit.phext.io/?demo</loc></url>
   <url><loc>https://edit.phext.io/about</loc></url>
   <url><loc>https://edit.phext.io/privacy</loc></url>
   <url><loc>https://edit.phext.io/terms</loc></url>
@@ -4036,7 +4041,8 @@ const NOT_FOUND_HTML: &str = concat!(r#"<!DOCTYPE html>
 "#, public_style!(), r#"
 </head>
 <body>
-<main>
+<a class="skip-link" href='#content'>Skip to content</a>
+<main id="content">
 <nav><a href="/">Phext Edit</a> · <a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a></nav>
 <h1>Page not found</h1>
 <p>There is no page at that address.</p>
@@ -6904,7 +6910,7 @@ mod link_tests {
 }
 
 mod a11y {
-    use super::{ABOUT_HTML, INDEX_HTML, PRIVACY_HTML};
+    use super::{ABOUT_HTML, INDEX_HTML, PRIVACY_HTML, TERMS_HTML};
 
     fn channel(c: f64) -> f64 {
         if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
@@ -6952,7 +6958,7 @@ mod a11y {
 
     #[test]
     fn public_pages_are_responsive() {
-        for page in [ABOUT_HTML, PRIVACY_HTML] {
+        for page in [ABOUT_HTML, PRIVACY_HTML, TERMS_HTML] {
             assert!(page.contains("width=device-width"));
             assert!(page.contains("@media (max-width: 760px)"));
             assert!(page.contains("class=\"skip-link\""));
