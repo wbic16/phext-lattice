@@ -4420,12 +4420,32 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
   #status-bar button.signout, #status-bar button#active-file,
   #editor .editor-toolbar button, .auth-btn { min-height: 44px; }
   button.axon, button.nt-group, button.nt-scroll, .hit { padding: 10px 8px; }
-  #content { padding: 12px; }
+  #content { padding: 10px 12px; }
   #editor .editor-toolbar { height: auto; min-height: 44px; flex-wrap: wrap; padding: 4px 8px; }
   #editor .editor-toolbar button { padding: 8px 12px; }
   #editor textarea, .overlay input { font-size: 16px; }
   input, select { font-size: 16px; }
-  #status-bar { height: auto; min-height: 52px; flex-wrap: wrap; align-items: center; padding: 8px 10px; gap: 8px 14px; font-size: 14px; }
+  /* No permanent status bar on phones: hidden until More raises
+     it as a bottom sheet (body.more-open, below). That is what
+     gives the content — above all the editor — the full height of
+     the screen. */
+  #status-bar { display: none; }
+  body.more-open #status-bar {
+    display: flex; position: fixed; left: 0; right: 0; bottom: 0; height: auto;
+    max-height: 72vh; max-height: 72dvh; overflow-y: auto; z-index: 60;
+    flex-direction: column; align-items: stretch; gap: 4px; font-size: 14px;
+    padding: 10px 14px; padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  body.more-open #more-sheet-head { display: flex; align-items: center; justify-content: space-between; color: var(--dim); margin-bottom: 4px; }
+  #more-sheet-head button {
+    background: var(--bar); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+    font-family: inherit; font-size: 13px; padding: 8px 12px; min-height: 40px; cursor: pointer;
+  }
+  body.more-open #status-bar > * { white-space: normal; flex-shrink: 1; }
+  body.more-open #status-bar .bar-link, body.more-open #status-bar .sponsor-offer { margin-left: 0; padding: 11px 4px; }
+  body.more-open #status-bar #active-file { padding: 11px 4px; }
+  body.more-open #status-bar .touch-actions { display: none; }
+  body.more-open #status-bar .signout { align-self: flex-start; }
   #status-bar > * { white-space: normal; }
   #status-bar .help { order: 10; flex-basis: 100%; white-space: normal; overflow: visible; text-overflow: unset; }
   #status-bar .bar-link, #status-bar .sponsor-offer { margin-left: 0; }
@@ -4440,7 +4460,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
   #auth-screen { padding: 16px; overflow: auto; }
   #auth-screen > div { width: min(400px, 100%); box-sizing: border-box; }
   #auth-screen .auth-banner { height: 96px; }
-  #editor textarea { padding: 12px 14px; }
+  #editor textarea { padding: 10px 12px; }
   #search-results .hit .hit-coord,
   #phext-list .hit .hit-coord { min-width: 0; }
   .auth-btn { display: flex; align-items: center; justify-content: center; }
@@ -4521,6 +4541,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
 </main>
 
 <div id="status-bar" role="region" aria-label="Editor status">
+  <div id="more-sheet-head"><span>≡ More</span><button type="button" onclick="toggleMoreSheet()">✕ Close</button></div>
   <span class="mode lattice" id="mode-label">LATTICE</span>
   <button type="button" id="active-file" style="color:var(--dim);cursor:pointer" onclick="openPhextPicker()" title="Click to switch phext"></button>
   <span class="touch-actions"><button type="button" onclick="enterEdit()" title="Edit the current scroll (key: e)">✎ Edit</button><button type="button" onclick="openSearch()" title="Search scrolls (key: /)">⌕ Search</button><button type="button" onclick="openGoto()" title="Go to a coordinate (key: g)">⌖ Goto</button></span>
@@ -4707,7 +4728,7 @@ $('panel-tabs').addEventListener('keydown', (e) => {
   showPanel(tabs[next]);
   $('tab-' + tabs[next]).focus();
 });
-window.matchMedia('(max-width: 760px)').addEventListener('change', () => setDrawer(false));
+window.matchMedia('(max-width: 760px)').addEventListener('change', () => { setDrawer(false); document.body.classList.remove('more-open'); });
 setDrawer(false);
 
 async function api(method, path, body) {
@@ -5001,6 +5022,7 @@ async function gotoCoord(coord) { render(await api('POST', '/api/goto', coord));
 // ── Edit ──
 function enterEdit() {
   if (!lastNav || !lastNav.scroll) return;
+  document.body.classList.remove('more-open');
   setMode('edit');
   $('edit-coord').textContent = lastNav.position.coordinate;
   $('edit-textarea').value = lastNav.scroll.content || '';
@@ -5077,10 +5099,12 @@ function jumpToHit(coord) { closeOverlays(); gotoCoord(coord); }
 
 // ── Overlays ──
 function openSearch() {
+  document.body.classList.remove('more-open');
   mode = 'search'; $('search-overlay').className = 'overlay visible';
   $('search-input').value = ''; $('search-results').innerHTML = ''; $('search-input').focus();
 }
 function openGoto() {
+  document.body.classList.remove('more-open');
   mode = 'goto'; $('goto-overlay').className = 'overlay visible';
   $('goto-input').value = ''; $('goto-input').focus();
 }
