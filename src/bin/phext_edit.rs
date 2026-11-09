@@ -4400,9 +4400,12 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
   #mobile-actions #btn-search { flex-grow: 1.15; }
   #mobile-actions #btn-more { flex-grow: 0.85; }
   #main { position: relative; }
+  /* The drawer is a full-width sheet on phones: Sentron and Nav
+     get the entire screen, so nothing in them is squeezed into a
+     desktop-width sidebar (the truncation Will photographed). */
   #left-panel {
     position: absolute; top: 0; bottom: 0; left: 0; z-index: 20;
-    width: min(320px, calc(100% - 48px)); max-width: 100%;
+    width: 100%; max-width: 100%;
     transform: translateX(-105%); pointer-events: none;
     box-shadow: 8px 0 24px #00000099;
   }
@@ -4412,6 +4415,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
     background: #00000066; border: 0; padding: 0; cursor: pointer;
   }
   #panel-tabs { height: auto; }
+  #sheet-close { display: flex; align-items: center; justify-content: center; width: 48px; flex-shrink: 0; background: transparent; border: 0; cursor: pointer; color: var(--dim); font-size: 15px; font-family: inherit; }
   #panel-tabs button.tab, button.axon, button.nt-group, button.nt-scroll, .hit,
   #status-bar button.signout, #status-bar button#active-file,
   #editor .editor-toolbar button, .auth-btn { min-height: 44px; }
@@ -4497,6 +4501,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
     <div id="panel-tabs" role="tablist" aria-label="Lattice panels">
       <button type="button" class="tab active" id="tab-sentron" role="tab" aria-selected="true" aria-controls="sentron-panel" tabindex="0" onclick="showPanel('sentron')">◉ Sentron</button>
       <button type="button" class="tab" id="tab-navtree" role="tab" aria-selected="false" aria-controls="navtree-panel" tabindex="-1" onclick="showPanel('navtree')">🌳 Nav</button>
+      <button type="button" id="sheet-close" aria-label="Close panel" onclick="closeDrawer()">✕</button>
     </div>
     <div id="sentron-panel" role="tabpanel" aria-labelledby="tab-sentron"></div>
     <div id="navtree-panel" role="tabpanel" aria-labelledby="tab-navtree"></div>
@@ -4635,6 +4640,7 @@ function showPanel(name) {
   $('tab-sentron').tabIndex = sentron ? 0 : -1;
   $('tab-navtree').tabIndex = sentron ? -1 : 0;
   if (name === 'navtree' && !treeData) loadTree();
+  document.body.classList.remove('more-open');
   if (window.matchMedia('(max-width: 760px)').matches) setDrawer(true);
 }
 
@@ -4827,6 +4833,9 @@ function render(nav, skipHash) {
   renderSentron(nav);
   renderContent(nav);
   setScrollTitle(nav.scroll && nav.scroll.content);
+  // A navigation lands back on the scroll: on phones, dismiss the
+  // More sheet so the destination is what fills the screen.
+  if (drawerNarrow()) document.body.classList.remove('more-open');
   if (activePanel === 'navtree' && treeData) highlightTreeNode(p.coordinate);
 }
 
