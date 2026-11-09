@@ -3394,6 +3394,13 @@ body {
   transition: background var(--trans-fast), color var(--trans-fast);
 }
 #status-bar .signout:hover { background: var(--coord); color: #000; }
+#status-bar .touch-actions { display: flex; gap: 6px; }
+#status-bar .touch-actions button {
+  background: var(--bar); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 10px; font-family: inherit; font-size: 13px;
+  cursor: pointer; white-space: nowrap; transition: border-color var(--trans-fast), color var(--trans-fast);
+}
+#status-bar .touch-actions button:hover { border-color: var(--coord); color: var(--coord); }
 #status-bar .bar-link {
   margin-left: 14px; color: var(--dim); text-decoration: none; white-space: nowrap;
 }
@@ -3488,6 +3495,7 @@ body {
 <div id="status-bar">
   <span class="mode lattice" id="mode-label">LATTICE</span>
   <span id="active-file" style="color:var(--dim);cursor:pointer" onclick="openPhextPicker()" title="Click to switch phext"></span>
+  <span class="touch-actions"><button type="button" onclick="enterEdit()" title="Edit the current scroll (key: e)">✎ Edit</button><button type="button" onclick="openSearch()" title="Search scrolls (key: /)">⌕ Search</button><button type="button" onclick="openGoto()" title="Go to a coordinate (key: g)">⌖ Goto</button></span>
   <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  u:UG5  t:tree  /:search  g:goto  Home:BASE</span>
   <span class="msg" id="status-msg"></span>
   <a class="bar-link first" href="submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
