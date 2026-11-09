@@ -1677,6 +1677,47 @@ mod tests {
         assert_eq!(code, 400);
     }
 
+    /// Will's report: edit a scroll, insert a new one, save. The disk save
+    /// must succeed and both scrolls must be readable after the file is reopened.
+    #[test]
+    fn save_after_edit_and_insert_scroll() {
+        let (port, dir) = serve(true);
+        let edit = r#"{"coordinate":"1.1.1/1.1.1/1.1.1","content":"edited note"}"#;
+        let (code, body) = http_body(
+            port,
+            "POST",
+            "/api/update",
+            &format!("Content-Type: application/json\r\nContent-Length: {}\r\n", edit.len()),
+            edit,
+        );
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"ok\":true"), "{body}");
+
+        let insert = r#"{"coordinate":"1.1.1/1.1.1/1.1.2","content":"brand new scroll"}"#;
+        let (code, body) = http_body(
+            port,
+            "POST",
+            "/api/update",
+            &format!("Content-Type: application/json\r\nContent-Length: {}\r\n", insert.len()),
+            insert,
+        );
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"ok\":true"), "{body}");
+
+        let (code, body) = http(port, "POST", "/api/save", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(
+            body.contains("\"ok\":true") && body.contains("\"message\":\"saved\""),
+            "disk save failed: {body}"
+        );
+
+        let reloaded = MappedLattice::open(dir.path().join("note.phext")).unwrap();
+        let edited = libphext::phext::to_coordinate("1.1.1/1.1.1/1.1.1");
+        let inserted = libphext::phext::to_coordinate("1.1.1/1.1.1/1.1.2");
+        assert_eq!(reloaded.read_scroll(&edited).as_deref(), Some("edited note"));
+        assert_eq!(reloaded.read_scroll(&inserted).as_deref(), Some("brand new scroll"));
+    }
+
     /// A session cookie for the scripted Google identity (an editor in
     /// these tests), minted by driving the gate's sign-in flow directly.
     fn google_session_cookie(gate: &Gate) -> String {
