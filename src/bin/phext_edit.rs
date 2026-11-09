@@ -3459,6 +3459,20 @@ body {
   #auth-screen > div { width: 100%; padding: 0 16px; }
   .axon { padding: 5px 4px; }
 }
+
+/* ── Landscape phones (701–1100px wide) ──
+   Too wide for the small-screen rules above, too narrow for the
+   desktop status bar: that bar is a single nowrap row measuring
+   ~1487px of content, so at 844/915px its tail — Preview, Mutable
+   OS, Claim dashboard, sign out — was clipped off-screen with no way
+   to scroll to it. Give this band the same wrap treatment as the
+   small-screen rules so every item stays reachable. Portrait and
+   full desktop widths are untouched. */
+@media (min-width: 701px) and (max-width: 1100px) {
+  #status-bar { height: auto; min-height: 52px; flex-wrap: wrap; padding: 8px 12px; gap: 8px 14px; }
+  #status-bar .help { order: 10; flex-basis: 100%; white-space: normal; overflow: visible; text-overflow: clip; }
+  #status-bar .bar-link { margin-left: 0; }
+}
 </style>
 </head>
 <body>
