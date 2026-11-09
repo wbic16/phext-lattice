@@ -692,7 +692,7 @@ fn main() {
     };
 
     let lattice = MappedLattice::open(&file_path).unwrap_or_else(|e| {
-        eprintln!("Failed to open {}: {}", file_path, e);
+        eprintln!("error: {e}");
         std::process::exit(1);
     });
 

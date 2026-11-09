@@ -42,12 +42,20 @@ enum ScrollOverlay {
     Inserted(String),
 }
 
+/// Attach the operation and full path to an I/O failure.
+///
+/// `err`'s Display (for example `The system cannot find the file specified. (os error 2)`)
+/// is kept, and the path is never dropped.
+fn io_at(op: &str, path: &Path, err: io::Error) -> io::Error {
+    io::Error::new(err.kind(), format!("{op} {}: {err}", path.display()))
+}
+
 impl MappedLattice {
     /// Open a phext file and build the lattice index.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<MappedLattice> {
         let path = path.as_ref().to_path_buf();
-        let file = std::fs::File::open(&path)?;
-        let mmap = unsafe { Mmap::map(&file)? };
+        let file = std::fs::File::open(&path).map_err(|err| io_at("open", &path, err))?;
+        let mmap = unsafe { Mmap::map(&file) }.map_err(|err| io_at("memory-map", &path, err))?;
         let index = LatticeIndex::build(&mmap);
 
         Ok(MappedLattice {
@@ -60,23 +68,14 @@ impl MappedLattice {
     }
 
     /// Create a MappedLattice from raw bytes (for testing or in-memory use).
+    ///
+    /// The bytes are written under `std::env::temp_dir()` (never a hard-coded
+    /// `/tmp`) and mapped from that same file handle. The temp directory is
+    /// created if it is missing.
     pub fn from_bytes(bytes: &[u8]) -> MappedLattice {
-        // For non-file-backed use, we still build the index.
-        // We create a temporary file-backed mmap for API consistency,
-        // but for testing we'll use a different approach.
-        let index = LatticeIndex::build(bytes);
-        // We need a valid Mmap — create a temp file to back it.
-        // The file must remain on disk while the mmap is alive.
-        let tmp = tempfile_from_bytes(bytes);
-        let file = std::fs::File::open(&tmp).unwrap();
-        let mmap = unsafe { Mmap::map(&file).unwrap() };
-
-        MappedLattice {
-            mmap,
-            path: PathBuf::new(),
-            index,
-            overlay: HashMap::new(),
-            _temp_file: Some(tmp),
+        match mapped_from_bytes(bytes) {
+            Ok(lattice) => lattice,
+            Err(err) => panic!("MappedLattice::from_bytes: {err}"),
         }
     }
 
@@ -170,25 +169,31 @@ impl MappedLattice {
     /// Uses atomic rename via NamedTempFile to prevent partial-write corruption.
     pub fn save(&mut self) -> io::Result<()> {
         if self.path.as_os_str().is_empty() {
-            return Err(io::Error::new(io::ErrorKind::Other, "No backing file path"));
+            return Err(io::Error::new(io::ErrorKind::Other, "save: no backing file path"));
         }
+        let dest = self.path.clone();
         let content = self.to_phext_bytes();
 
         // Write to a temp file in the same directory, then atomically rename.
         // This ensures no partial-write state is ever visible on disk.
-        let parent = self.path.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+        let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+        let mut tmp = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|err| io_at("create temp file in", parent, err))?;
         {
             use std::io::Write;
-            tmp.write_all(&content)?;
+            let write_result = tmp.write_all(&content);
+            if let Err(err) = write_result {
+                return Err(io_at("write", tmp.path(), err));
+            }
         }
-        tmp.as_file().sync_all()?;
-        tmp.persist(&self.path)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        tmp.as_file().sync_all().map_err(|err| io_at("sync", tmp.path(), err))?;
+        tmp.persist(&dest).map_err(|err| {
+            io_at("replace", &dest, io::Error::new(io::ErrorKind::Other, err.to_string()))
+        })?;
 
         // Re-map the file and rebuild index
-        let file = std::fs::File::open(&self.path)?;
-        self.mmap = unsafe { Mmap::map(&file)? };
+        let file = std::fs::File::open(&dest).map_err(|err| io_at("open", &dest, err))?;
+        self.mmap = unsafe { Mmap::map(&file) }.map_err(|err| io_at("memory-map", &dest, err))?;
         self.index = LatticeIndex::build(&self.mmap);
         self.overlay.clear();
 
@@ -297,18 +302,42 @@ impl Drop for MappedLattice {
     }
 }
 
-/// Helper: write bytes to a temp file and return the path.
-fn tempfile_from_bytes(bytes: &[u8]) -> PathBuf {
+fn mapped_from_bytes(bytes: &[u8]) -> io::Result<MappedLattice> {
+    let index = LatticeIndex::build(bytes);
+    // Map the handle we just wrote. Re-opening by path is a separate lookup
+    // and, on Windows, fails with "The system cannot find the file specified.
+    // (os error 2)" when the temp path does not resolve.
+    let (tmp, file) = tempfile_from_bytes(bytes)?;
+    let mmap = unsafe { Mmap::map(&file) }.map_err(|err| io_at("memory-map", &tmp, err))?;
+    Ok(MappedLattice {
+        mmap,
+        path: PathBuf::new(),
+        index,
+        overlay: HashMap::new(),
+        _temp_file: Some(tmp),
+    })
+}
+
+/// Write bytes under `std::env::temp_dir` and return the path plus the open file.
+fn tempfile_from_bytes(bytes: &[u8]) -> io::Result<(PathBuf, std::fs::File)> {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "phext-lattice-{}-{}", std::process::id(), id
-    ));
-    let mut f = std::fs::File::create(&path).unwrap();
-    f.write_all(bytes).unwrap();
-    path
+    let dir = std::env::temp_dir();
+    std::fs::create_dir_all(&dir).map_err(|err| io_at("create directory", &dir, err))?;
+    let path = dir.join(format!("phext-lattice-{}-{id}", std::process::id()));
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .map_err(|err| io_at("create", &path, err))?;
+    file.write_all(bytes).map_err(|err| io_at("write", &path, err))?;
+    file.flush().map_err(|err| io_at("flush", &path, err))?;
+    file.sync_all().map_err(|err| io_at("sync", &path, err))?;
+    Ok((path, file))
 }
 
 #[cfg(test)]
@@ -405,5 +434,36 @@ mod tests {
         let c1 = to_coordinate("1.1.1/1.1.1/1.1.1");
         lattice.delete_scroll(c1);
         assert_eq!(lattice.scroll_count(), original_count); // +1 -1 = same
+    }
+
+    #[test]
+    fn open_missing_file_names_the_operation_and_full_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no such file.phext");
+        let err = match MappedLattice::open(&path) {
+            Err(err) => err,
+            Ok(_) => panic!("opened missing file {}", path.display()),
+        };
+        let msg = err.to_string();
+        let full = path.display().to_string();
+        assert!(msg.contains("open "), "{msg}");
+        assert!(msg.contains(&full), "{msg} missing {full}");
+        assert!(msg.contains("os error") || msg.contains("No such file") || msg.contains("cannot find"), "{msg}");
+    }
+
+    #[test]
+    fn from_bytes_temp_file_is_under_std_temp_dir() {
+        let lattice = MappedLattice::from_bytes(b"temp backed");
+        let tmp = lattice._temp_file.as_ref().expect("temp path recorded");
+        let temp_root = std::env::temp_dir();
+        assert!(
+            tmp.starts_with(&temp_root),
+            "{} is not under {}",
+            tmp.display(),
+            temp_root.display()
+        );
+        assert!(tmp.is_file(), "missing {}", tmp.display());
+        // The backing file is created with Path::join, not a hard-coded "/tmp/..." string.
+        assert_eq!(tmp.parent().unwrap(), temp_root.as_path());
     }
 }

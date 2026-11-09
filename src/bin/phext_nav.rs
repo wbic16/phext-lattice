@@ -196,7 +196,7 @@ fn main() -> io::Result<()> {
 
     let file_path = args[1].clone();
     let lattice = MappedLattice::open(&file_path).map_err(|e| {
-        eprintln!("Failed to open {}: {}", file_path, e);
+        eprintln!("error: {e}");
         e
     })?;
 
