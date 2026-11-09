@@ -4000,6 +4000,7 @@ const ROBOTS_TXT: &str = "\
 User-agent: *\n\
 Disallow: /api\n\
 Allow: /\n\
+Allow: /?demo\n\
 Allow: /index.html\n\
 Allow: /about\n\
 Allow: /privacy\n\
@@ -4011,6 +4012,7 @@ Sitemap: https://edit.phext.io/sitemap.xml\n\
 const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://edit.phext.io/</loc></url>
+  <url><loc>https://edit.phext.io/?demo</loc></url>
   <url><loc>https://edit.phext.io/about</loc></url>
   <url><loc>https://edit.phext.io/privacy</loc></url>
   <url><loc>https://edit.phext.io/terms</loc></url>
