@@ -3565,8 +3565,14 @@ function setMode(m) {
 
 function showPanel(name) {
   activePanel = name;
-  $('sentron-panel').style.display = (name === 'sentron') ? '' : 'none';
-  $('navtree-panel').style.display = (name === 'navtree') ? '' : 'none';
+  // Explicit values, never '': the stylesheet hides #navtree-panel
+  // (display: none) until first use, and an empty inline style does
+  // not override a stylesheet rule — with '' the Nav panel could
+  // never be shown. 'block' is the panels' natural display (they are
+  // block-level flex items of the column #left-panel; flex: 1 still
+  // sizes them), and an inline value always wins over the stylesheet.
+  $('sentron-panel').style.display = (name === 'sentron') ? 'block' : 'none';
+  $('navtree-panel').style.display = (name === 'navtree') ? 'block' : 'none';
   $('tab-sentron').className = 'tab' + (name === 'sentron' ? ' active' : '');
   $('tab-navtree').className = 'tab' + (name === 'navtree' ? ' active' : '');
   if (name === 'navtree' && !treeData) loadTree();
