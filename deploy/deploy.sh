@@ -495,19 +495,36 @@ main() {
     printf 'Keeping %s/oauth.env\n' "$CONF_DIR"
   else
     install_secret "${CONF_DIR}/oauth.env" <<EOF
-# GitHub/Google sign-in for phext-edit. Leave a client line blank to keep
+# GitHub/Google/X sign-in for phext-edit. Leave a client line blank to keep
 # that provider off. Restart after editing: sudo systemctl restart phext-edit
 PHEXT_PUBLIC_URL=https://${DOMAIN}
 PHEXT_SESSION_SECRET=$(random_hex)
 PHEXT_COOKIE_SECURE=1
 # Sign-in is the only way in (access-token sign-in was retired).
-# Empty: any GitHub/Google account gets in.
-# To restrict, list github:<numeric id>, google:<sub>, or email, comma-separated.
+# Empty: any GitHub/Google/X account gets in.
+# To restrict, list github:<numeric id>, google:<sub>, x:<id>, or a verified
+# email, comma-separated.
 PHEXT_EDITORS=
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+X_CLIENT_ID=
+X_CLIENT_SECRET=
+# Optional: live editors file. Unset: <data dir>/admitted-editors.txt.
+#PHEXT_EDITORS_FILE=
+# Optional. Claim mode, and the shared-secret SSO handoffs to Mutable,
+# Exocortexia, and Wishnode, plus the desktop (Phext Notepad) audience
+# (deploy/deploy.md has the deploy order).
+# PHEXT_SSO_SECRET is a dedicated key — never reuse the session secret.
+#PHEXT_CLAIM_ENABLED=1
+#PHEXT_SSO_SECRET=
+#PHEXT_SSO_MUTABLE_URL=https://mutable.phext.io
+#PHEXT_SSO_EXOCORTEXIA_URL=
+#PHEXT_SSO_WISHNODE_URL=
+# Arming flag only — the desktop audience has no origin to configure;
+# the return is the app's per-attempt loopback listener.
+#PHEXT_SSO_DESKTOP=1
 EOF
     printf 'Wrote %s/oauth.env (session secret not printed). Fill in the client lines (and PHEXT_EDITORS to restrict who gets in).\n' "$CONF_DIR"
   fi
