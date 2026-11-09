@@ -4366,6 +4366,12 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
 #search-overlay { width: min(500px, calc(100vw - 16px)); }
 #goto-overlay { width: min(360px, calc(100vw - 16px)); }
 #phext-overlay { width: min(500px, calc(100vw - 16px)); }
+/* Mobile top-bar actions, the message strip, and the sheet
+   furniture (panel close, More-sheet header): present in the
+   markup, display:none everywhere except inside the small-screen
+   rules below, where the phone layout switches them on. */
+#mobile-actions, #msg-strip, #sheet-close, #more-sheet-head { display: none; }
+
 @media (max-width: 760px) {
   #panel-toggle {
     display: inline-flex; align-items: center; justify-content: center;
@@ -4375,6 +4381,24 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
   }
   #coord-bar { height: auto; min-height: 44px; flex-wrap: wrap; padding: 4px 8px; row-gap: 4px; }
   #coord-text { min-width: 0; }
+  /* The compact top bar (Will's direction, 2026-11-08): the
+     coordinate address and one row of action buttons; nothing else
+     competes for the top of the screen. The scroll count leaves
+     the bar, and feedback messages are mirrored into a transient
+     strip in the bar, since the status bar is a sheet (below). */
+  #coord-bar .scrolls { display: none; }
+  #coord-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #msg-strip.has-msg { display: block; flex-basis: 100%; color: var(--active); font-size: 12px; font-weight: normal; }
+  #mobile-actions { display: flex; flex-basis: 100%; gap: 6px; }
+  #mobile-actions button {
+    flex: 1; min-height: 44px; padding: 6px 2px; background: var(--bar); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; font-family: inherit; font-size: 11px;
+    cursor: pointer; white-space: nowrap; overflow: hidden;
+  }
+  #mobile-actions button:active { border-color: var(--coord); color: var(--coord); }
+  #mobile-actions #btn-sentron { flex-grow: 1.3; }
+  #mobile-actions #btn-search { flex-grow: 1.15; }
+  #mobile-actions #btn-more { flex-grow: 0.85; }
   #main { position: relative; }
   #left-panel {
     position: absolute; top: 0; bottom: 0; left: 0; z-index: 20;
@@ -4456,6 +4480,15 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
   <span id="coord-text">loading...</span>
   <span class="scrolls" id="scroll-count"></span>
   <span class="dirty" id="dirty-flag"></span>
+  <span id="msg-strip" role="status"></span>
+  <div id="mobile-actions">
+    <button type="button" id="btn-sentron" onclick="showPanel('sentron')" title="Sentron — the lattice around this scroll">◉ Sentron</button>
+    <button type="button" id="btn-nav" onclick="showPanel('navtree')" title="Nav — the scroll tree">🌳 Nav</button>
+    <button type="button" id="btn-edit" onclick="enterEdit()" title="Edit the current scroll (key: e)">✎ Edit</button>
+    <button type="button" id="btn-search" onclick="openSearch()" title="Search scrolls (key: /)">⌕ Search</button>
+    <button type="button" id="btn-goto" onclick="openGoto()" title="Go to a coordinate (key: g)">⌖ Goto</button>
+    <button type="button" id="btn-more" onclick="toggleMoreSheet()" title="More — file, links, sign out">≡ More</button>
+  </div>
 </header>
 
 <main id="main">
@@ -4555,6 +4588,17 @@ function showMsg(msg) {
   $('status-msg').textContent = msg;
   clearTimeout(statusTimeout);
   statusTimeout = setTimeout(() => $('status-msg').textContent = '', 2000);
+  // Mirror into the top bar's message strip: on phones the status
+  // bar is a sheet (closed by default), so its .msg span is out of
+  // sight when feedback fires. The strip is display:none on desktop
+  // and whenever it carries no message.
+  const ms = $('msg-strip');
+  if (ms) {
+    ms.textContent = msg;
+    ms.classList.toggle('has-msg', !!msg);
+    clearTimeout(ms._t);
+    if (msg) ms._t = setTimeout(() => { ms.classList.remove('has-msg'); ms.textContent = ''; }, 2000);
+  }
 }
 
 function setMode(m) {
@@ -4631,6 +4675,17 @@ function closeDrawer() {
   setDrawer(false);
   const toggle = $('panel-toggle');
   if (toggle && drawerNarrow()) toggle.focus();
+}
+
+// ── Mobile More sheet ──
+// On small screens the status bar is not permanent furniture: it
+// opens as a bottom sheet from the top bar's More button. The class
+// toggled here only has CSS inside the small-screen media query, so
+// this helper is inert on desktop.
+function toggleMoreSheet() {
+  const opening = !document.body.classList.contains('more-open');
+  if (opening) setDrawer(false);
+  document.body.classList.toggle('more-open', opening);
 }
 
 $('panel-tabs').addEventListener('keydown', (e) => {
