@@ -2206,6 +2206,7 @@ mod local_mode_tests {
         assert_eq!(code, 200, "{body}");
         assert!(body.contains("data-open=\"1\""), "signed-out intro stays up without --local");
         assert!(body.contains("Try the demo"));
+        assert!(body.contains("Content-Security-Policy"));
         let (code, body) = http(port, "GET", "/?demo", "");
         assert_eq!(code, 200, "{body}");
         assert!(body.contains("const wantDemo"));
@@ -2239,6 +2240,7 @@ mod local_mode_tests {
         assert_eq!(code, 200, "{body}");
         assert!(body.contains("data-open=\"0\""), "--local opens the editor");
         assert!(!body.contains("data-open=\"1\""));
+        assert!(body.contains("Content-Security-Policy"));
         let (code, body) = http(port, "GET", "/?demo", "");
         assert_eq!(code, 200, "{body}");
         assert!(body.contains("const wantDemo"));
