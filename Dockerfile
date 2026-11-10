@@ -18,6 +18,14 @@ FROM rust:1.94.0-bookworm AS build
 WORKDIR /src
 COPY . .
 
+# The build stamp the page footers report. The Docker context has no
+# .git, so a container build takes its stamp from this arg; leave it
+# empty and build.rs falls back to the crate version with an unknown
+# commit. Host builds ignore it — build.rs reads the checkout's own
+# `git describe` there.
+ARG PHEXT_LATTICE_BUILD=""
+ENV PHEXT_LATTICE_BUILD=${PHEXT_LATTICE_BUILD}
+
 # The same build deploy/deploy.sh runs on the host.
 RUN cargo build --release --bin phext-edit \
     && strip target/release/phext-edit
