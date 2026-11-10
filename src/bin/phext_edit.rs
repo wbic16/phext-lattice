@@ -1162,6 +1162,7 @@ fn public_document(path: &str) -> Option<PublicDocument> {
         "/learn-you-phext.phext" => ("text/plain; charset=utf-8", LEARN_YOU_PHEXT),
         "/singular.html" => ("text/html; charset=utf-8", SINGULAR_HTML),
         "/phext-previewer.html" => ("text/html; charset=utf-8", PREVIEWER_HTML),
+        "/zeros" => ("text/html; charset=utf-8", ZERO_INDEX_HTML),
         "/phext-tts.js" => ("text/javascript; charset=utf-8", PHEXT_TTS_JS),
         "/robots.txt" => ("text/plain; charset=utf-8", ROBOTS_TXT),
         "/sitemap.xml" => ("application/xml; charset=utf-8", SITEMAP_XML),
@@ -7283,6 +7284,10 @@ with those files from a browser:</p>
   <li><a href="explore">Explore the wavefront</a>: every placement in the
   nine-dimensional address space — rotate the triple projection, slice it by any
   two axes, click a point to read its entry.</li>
+  <li><a href="zeros">The Zero Index</a>: the 1,636 products that launched on
+  Product Hunt on Tuesday Nov 10, 2026 — Phext Edit's own launch day — and still
+  had zero upvotes when the snapshot was taken. No ranking: the list shuffles on
+  every load, so every zero gets the same daylight.</li>
 </ul>
 
 <h2>Why it asks you to sign in</h2>
@@ -7509,6 +7514,15 @@ const WAVEFRONT_EXPLORER_JSON: &str = include_str!("../../web/wavefront-explorer
 // no server route beyond this one.
 const PREVIEWER_HTML: &str = include_str!("../../web/phext-previewer.html");
 
+// The Zero Index likewise lives as a file under web/ and is compiled
+// in: every Product Hunt launch of Tuesday Nov 10, 2026 that still had
+// zero upvotes when the snapshot was taken (07:21 CST) — 1,636
+// products, Phext Edit among them. The list shuffles on every load:
+// there is no ranking of the zeros, and the page makes no requests of
+// its own. (The page is a dated snapshot, not a live feed; edit the
+// file under web/, not this constant.)
+const ZERO_INDEX_HTML: &str = include_str!("../../web/zero-index.html");
+
 // The shell's artwork likewise lives under web/ and is compiled in: the
 // CYOA banner (the Flame at the root of the lattice, light running out
 // along the filaments to a wall of scrolls) that tops the sign-in
@@ -7550,6 +7564,7 @@ const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>https://edit.phext.io/submit</loc></url>
   <url><loc>https://edit.phext.io/claim</loc></url>
   <url><loc>https://edit.phext.io/explore</loc></url>
+  <url><loc>https://edit.phext.io/zeros</loc></url>
 </urlset>
 "#;
 
@@ -8162,7 +8177,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
     <p class="explain">Nine numbers name a scroll: library, shelf, series, collection, volume, book, chapter, section, scroll. The scroll is a page of lines and columns, which makes eleven. The file stays plain text.</p>
     <p class="hint">Sign in to save and edit your own files. The demo is a sample you can walk through; nothing in it is saved.</p>
     <p class="links"><a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · <a href="mailto:will+support@phext.io">Contact</a><br>
-      No sign-in needed: <a href="/up-goer-five.html">Up Goer Five</a> · <a href="/tts-demo.html">Coordinate TTS demo</a> · <a href="/learn-you-phext.html">Learn You Phext</a> · <a href="/singular.html">Singular</a> · <a href="/phext-previewer.html">Phext Previewer</a> · <a href="/wiki/">Example wiki</a><br>
+      No sign-in needed: <a href="/up-goer-five.html">Up Goer Five</a> · <a href="/tts-demo.html">Coordinate TTS demo</a> · <a href="/learn-you-phext.html">Learn You Phext</a> · <a href="/singular.html">Singular</a> · <a href="/phext-previewer.html">Phext Previewer</a> · <a href="/wiki/">Example wiki</a> · <a href="/zeros">The Zero Index</a><br>
       Have a phext of your own? <a href="/submit">Upload it for review</a> — if an editor accepts it, you become an editor too. Signing in with X makes you an editor at once.<br>
       Placed in the wavefront map? <a href="/claim">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="/explore">explore the map</a> first. No ads, ever.<!--phext-sponsor--><br>
       Running build: <!--phext-build--></p>
@@ -9206,7 +9221,7 @@ mod public_route_tests {
         CLAIM_HTML, EXPLORE_HTML, INDEX_HTML,
         LEARN_YOU_PHEXT_HTML, NOT_FOUND_HTML, PREVIEWER_HTML, PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE,
         SINGULAR_HTML, SITEMAP_XML, STATIC_CACHE, SUBMIT_HTML, TERMS_HTML, TTS_DEMO_HTML,
-        UP_GOER_FIVE_HTML, DEFAULT_COORD,
+        UP_GOER_FIVE_HTML, ZERO_INDEX_HTML, DEFAULT_COORD,
     };
     use phext_lattice::oauth::{Editors, Gate, Oauth};
     use phext_lattice::sponsor::{self, SponsorOffer};
@@ -9675,6 +9690,35 @@ mod public_route_tests {
         assert!(UP_GOER_FIVE_HTML.contains("href=\"/phext-previewer.html\""), "up goer five cross-link");
         assert!(TTS_DEMO_HTML.contains("href=\"/phext-previewer.html\""), "tts demo cross-link");
         assert!(LEARN_YOU_PHEXT_HTML.contains("href=\"/phext-previewer.html\""), "learn you phext cross-link");
+    }
+
+    #[test]
+    fn zero_index_page_is_public_and_linked() {
+        let gate = locked_gate();
+        let page = get(&gate, "/zeros");
+        assert_eq!(page.status, 200);
+        assert!(page.content_type.contains("text/html"), "{}", page.content_type);
+        assert!(page.body.contains("The Zero Index"), "{}", page.body);
+        // The snapshot's count is the page's reason to exist: all 1,636
+        // of the day's zero-upvote launches, named in the header.
+        assert!(page.body.contains("1,636"), "the zero count is stated");
+        // Phext Edit launched that day and is itself one of the zeros.
+        assert!(page.body.contains("products/phext-edit"), "the day's own launch is listed");
+        // No ranking: the list shuffles on load, and a name search is
+        // the only ordering a visitor can impose.
+        assert!(page.body.contains("Fisher"), "the shuffle rides in the page");
+        assert!(page.body.contains("Search the zeros by name"), "name search");
+        // The page asks nothing of the server: its whole dataset rides
+        // inline, and the public-document bytes are the compiled file.
+        assert_eq!(public_document("/zeros").unwrap().body, ZERO_INDEX_HTML);
+
+        // Discoverability: the surfaces a visitor actually lands on link
+        // it — the editor shell's sign-in screen and the About page's
+        // utility list — plus the sitemap.
+        assert!(INDEX_HTML.contains("href=\"/zeros\""), "shell sign-in link");
+        assert!(INDEX_HTML.contains("The Zero Index</a>"), "shell link label");
+        assert!(ABOUT_HTML.contains("href=\"zeros\""), "about link");
+        assert!(SITEMAP_XML.contains("https://edit.phext.io/zeros</loc>"), "sitemap entry");
     }
 
     #[test]
