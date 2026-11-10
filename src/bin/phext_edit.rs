@@ -55,6 +55,18 @@ struct ApiScroll {
     coordinate: String,
     content: String,
     bytes: usize,
+    /// "text", "image", or "binary". A binary scroll's stored form
+    /// (header + base64) is never exposed through this API: `content`
+    /// stays empty for kind != "text" and the fields below describe it.
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    media_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -121,6 +133,18 @@ struct ApiTree {
     total_scrolls: usize,
     /// All populated coordinates as sorted strings
     coordinates: Vec<String>,
+    /// The populated binary scrolls among them, labelled so the tree can
+    /// show an image's name, type, and size instead of a bare coordinate.
+    binary_scrolls: Vec<ApiBinaryScroll>,
+}
+
+#[derive(Serialize)]
+struct ApiBinaryScroll {
+    coordinate: String,
+    kind: String,
+    content_type: Option<String>,
+    name: Option<String>,
+    payload_bytes: usize,
 }
 
 #[derive(Serialize)]
@@ -185,7 +209,7 @@ impl AppState {
     }
 
     fn nav_json(&self) -> ApiNav {
-        nav_view(&self.lattice, &self.nav, self.overview.total_scrolls, &self.file_path)
+        nav_view(&self.lattice, &self.nav, self.overview.total_scrolls, &self.file_path, "/api/media")
     }
 
     fn list_phexts(&self) -> Vec<PhextFile> {
@@ -291,9 +315,7 @@ impl AppState {
         }
         let mut entries: Vec<ApiZoomEntry> = groups.into_iter().map(|(key, scrolls)| {
             let first = scrolls[0];
-            let preview = self.lattice.read_scroll(&first)
-                .map(|s| s.chars().take(80).collect::<String>())
-                .unwrap_or_default();
+            let preview = scroll_preview(&self.lattice, &first);
             ApiZoomEntry { label: key.clone(), coordinate: format!("{}/1.1.1/1.1.1", key), scroll_count: scrolls.len(), preview }
         }).collect();
         entries.sort_by(|a, b| a.label.cmp(&b.label));
@@ -313,9 +335,7 @@ impl AppState {
         }
         let mut entries: Vec<ApiZoomEntry> = groups.into_iter().map(|(key, scrolls)| {
             let first = scrolls[0];
-            let preview = self.lattice.read_scroll(&first)
-                .map(|s| s.chars().take(80).collect::<String>())
-                .unwrap_or_default();
+            let preview = scroll_preview(&self.lattice, &first);
             ApiZoomEntry { label: key.clone(), coordinate: format!("{}/{}/1.1.1", z_str, key), scroll_count: scrolls.len(), preview }
         }).collect();
         entries.sort_by(|a, b| a.label.cmp(&b.label));
@@ -334,9 +354,7 @@ impl AppState {
             c.y.collection == y_parts[0] && c.y.volume == y_parts[1] && c.y.book == y_parts[2]
         }).map(|c| {
             let key = format!("{}.{}.{}", c.x.chapter, c.x.section, c.x.scroll);
-            let preview = self.lattice.read_scroll(c)
-                .map(|s| s.chars().take(80).collect::<String>())
-                .unwrap_or_default();
+            let preview = scroll_preview(&self.lattice, c);
             ApiZoomEntry { label: key, coordinate: format!("{}", c), scroll_count: 1, preview }
         }).collect();
         entries.sort_by(|a, b| a.label.cmp(&b.label));
@@ -346,11 +364,86 @@ impl AppState {
 
 // ── HTTP Server ────────────────────────────────────────────────────────
 
+/// The metadata an upload recorded for the media scroll at `coord`:
+/// the (name, content_type) from the JSON text scroll beside the payload
+/// (see phext_lattice::media for the convention). Either field is None
+/// when no metadata scroll exists or it does not parse — serving then
+/// relies on magic-byte sniffing alone.
+fn media_metadata(
+    lattice: &MappedLattice,
+    coord: &libphext::phext::Coordinate,
+) -> (Option<String>, Option<String>) {
+    let Some(slot) = phext_lattice::media::media_slot_of(coord) else {
+        return (None, None);
+    };
+    let meta_coord = phext_lattice::media::media_metadata_coord(slot);
+    let Some(text) = lattice.read_scroll(&meta_coord) else {
+        return (None, None);
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return (None, None);
+    };
+    let get = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_string);
+    (get("name"), get("content_type"))
+}
+
+/// The scroll payload the API serves for one coordinate. Text scrolls
+/// pass through untouched. A well-formed binary scroll is NEVER exposed
+/// as its stored form (header + base64): it is reported as an image (or
+/// opaque binary) with its payload size, sniffed content type, recorded
+/// name, and the media URL that serves the decoded bytes.
+fn scroll_view(
+    lattice: &MappedLattice,
+    coord: &libphext::phext::Coordinate,
+    media_base: &str,
+) -> ApiScroll {
+    let stored = lattice.read_scroll(coord).unwrap_or_default();
+    let coordinate = format!("{}", coord);
+    if phext_lattice::media::is_well_formed_binary_scroll(&stored) {
+        let payload = libphext::binary::decode_scroll(&stored).unwrap_or_default();
+        let sniffed = phext_lattice::media::sniff_image(&payload);
+        let (name, _recorded_type) = media_metadata(lattice, coord);
+        let media_url = format!("{media_base}/{coordinate}");
+        return ApiScroll {
+            coordinate,
+            content: String::new(),
+            bytes: stored.len(),
+            kind: if sniffed.is_some() { "image" } else { "binary" }.into(),
+            content_type: sniffed.map(|k| k.content_type.to_string()),
+            name,
+            payload_bytes: Some(payload.len()),
+            media_url: Some(media_url),
+        };
+    }
+    ApiScroll {
+        coordinate,
+        bytes: stored.len(),
+        content: stored,
+        kind: "text".into(),
+        content_type: None,
+        name: None,
+        payload_bytes: None,
+        media_url: None,
+    }
+}
+
+/// The short preview zoom views show for one scroll. A binary scroll's
+/// preview names it as media — never the base64 of its stored form.
+fn scroll_preview(lattice: &MappedLattice, coord: &libphext::phext::Coordinate) -> String {
+    let stored = lattice.read_scroll(coord).unwrap_or_default();
+    if phext_lattice::media::is_well_formed_binary_scroll(&stored) {
+        let payload = libphext::binary::decode_scroll(&stored).unwrap_or_default();
+        return match phext_lattice::media::sniff_image(&payload) {
+            Some(kind) => format!("🖼 image · {} · {} bytes", kind.content_type, payload.len()),
+            None => format!("⛁ binary scroll · {} bytes", payload.len()),
+        };
+    }
+    stored.chars().take(80).collect()
+}
+
 /// The same nav payload the signed-in editor renders, for any lattice.
-fn nav_view(lattice: &MappedLattice, nav: &Navigator, total_scrolls: usize, file: &str) -> ApiNav {
+fn nav_view(lattice: &MappedLattice, nav: &Navigator, total_scrolls: usize, file: &str, media_base: &str) -> ApiNav {
     let pos = nav.position();
-    let content = lattice.read_scroll(&pos).unwrap_or_default();
-    let bytes = content.len();
     let sentron = Sentron::build(&pos, lattice.index());
     let mut axons = Vec::new();
     for axon in sentron.structural_axons() {
@@ -397,7 +490,7 @@ fn nav_view(lattice: &MappedLattice, nav: &Navigator, total_scrolls: usize, file
             sequential_reach: sentron.sequential_reach,
             axons,
         },
-        scroll: ApiScroll { coordinate: format!("{}", pos), content, bytes },
+        scroll: scroll_view(lattice, &pos, media_base),
         densities: (1..=9u8).map(|i| {
             let dim = Dimension::from_index(i).unwrap();
             let d = DimensionDensity::build(dim, lattice.index());
@@ -415,9 +508,26 @@ fn nav_view(lattice: &MappedLattice, nav: &Navigator, total_scrolls: usize, file
 fn tree_view(lattice: &MappedLattice) -> ApiTree {
     let mut coords = lattice.populated_coordinates();
     coords.sort();
+    let binary_scrolls = coords
+        .iter()
+        .filter_map(|c| {
+            let view = scroll_view(lattice, c, "/api/media");
+            if view.kind == "text" {
+                return None;
+            }
+            Some(ApiBinaryScroll {
+                coordinate: view.coordinate,
+                kind: view.kind,
+                content_type: view.content_type,
+                name: view.name,
+                payload_bytes: view.payload_bytes.unwrap_or(0),
+            })
+        })
+        .collect();
     ApiTree {
         total_scrolls: coords.len(),
         coordinates: coords.iter().map(|c| format!("{}", c)).collect(),
+        binary_scrolls,
     }
 }
 
@@ -438,6 +548,7 @@ const DEMO_SCROLLS: &[(&str, &str)] = &[
     ("1.2.1/1.1.1/1.1.1", "Shelf, dimension 8.\n\nShelves hold series. You are on shelf 2 of library 1. The coordinate bar should start with 1.2.1. One file can hold many shelves; they are just another number in the address."),
     ("2.1.1/1.1.1/1.1.1", "Library, dimension 9.\n\nLibraries are the outermost dimension. This is library 2, a second building in the same file. Press 9 and the left panel marks Library. j and k still walk every scroll that has text, in file order, ignoring the empty space between them."),
     ("2.1.1/1.1.1/1.1.2", "Your own files.\n\nThis sample is read-only. Edits stay in this browser tab and are thrown away when you leave. Signing in enables the editor: you can change scrolls and save them into the phext files on the server. There is no private format and no lock-in. A phext is plain text, and you can take the file with you.\n\nFollow 1.1.1/1.1.1/1.1.1 to return to the welcome scroll."),
+    ("1.1.1/1.1.1/1.1.3", "Media, kept inside the file.\n\n![pixel.gif](/api/demo/media/9.9.9/9.9.9/1.1.1)\n\nThat picture is a scroll like any other. Its bytes live at 9.9.9/9.9.9/1.1.1, stored as a binary scroll — a header line and base64 — with its name and type in the metadata scroll beside it. No side files, no media library outside the phext. Images an editor adds live under 9.9.9/9.9.9: the picture at 1.1.n, its metadata at 1.2.n. Open the Nav tab: in the tree the image scroll is labelled with its type and size, never dumped as base64."),
 ];
 
 struct DemoCatalog {
@@ -450,8 +561,20 @@ impl DemoCatalog {
     fn load() -> Self {
         let raw = demo_bytes();
         let bytes = raw.len();
-        let lattice = MappedLattice::from_bytes(&raw);
-        let scrolls = lattice.index().scroll_count();
+        let mut lattice = MappedLattice::from_bytes(&raw);
+        // One media scroll, so the signed-out demo exercises the image
+        // path end to end: a 1x1 GIF as a canonical binary scroll at
+        // media slot 1, with its metadata scroll beside it.
+        lattice.write_scroll_raw(
+            phext_lattice::media::media_payload_coord(1),
+            "phext-binary:1:base64\nR0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="
+                .to_string(),
+        );
+        let _ = lattice.write_scroll(
+            phext_lattice::media::media_metadata_coord(1),
+            "{\"name\":\"pixel.gif\",\"content_type\":\"image/gif\",\"bytes\":43}".to_string(),
+        );
+        let scrolls = lattice.scroll_count();
         Self { lattice, scrolls, bytes }
     }
 
@@ -488,7 +611,7 @@ impl DemoCatalog {
             "base" => { nav.goto(origin); }
             _ => {}
         }
-        nav_view(&self.lattice, &nav, self.scrolls, "demo.phext")
+        nav_view(&self.lattice, &nav, self.scrolls, "demo.phext", "/api/demo/media")
     }
 
     fn tree(&self) -> ApiTree {
@@ -590,6 +713,10 @@ fn serve_demo(
     }
     let (route, query) = path.split_once('?').unwrap_or((path, ""));
     let q = query_pairs(query);
+    if let Some(coord_str) = route.strip_prefix("/api/demo/media/") {
+        serve_media(stream, headers, &demo.lattice, coord_str, method == "HEAD");
+        return;
+    }
     let body = match route {
         "/api/demo/nav" => {
             let dim = q.get("dim").and_then(|d| d.parse().ok()).unwrap_or(1);
@@ -1138,6 +1265,17 @@ fn handle_request(
         }
         ("GET", "/api/tree") => { json_response(stream, &headers, &state.tree_json()); }
 
+        // ── Images (binary scrolls) ──
+        ("POST", "/api/images") => {
+            upload_image(stream, &mut reader, &headers, &mut state);
+        }
+        ("GET", p) if p.starts_with("/api/media/") => {
+            serve_media(stream, &headers, &state.lattice, &p["/api/media/".len()..], false);
+        }
+        ("HEAD", p) if p.starts_with("/api/media/") => {
+            serve_media(stream, &headers, &state.lattice, &p["/api/media/".len()..], true);
+        }
+
         // Navigation
         ("POST", "/api/dim") => {
             let body = read_body(&mut reader, &headers);
@@ -1179,7 +1317,10 @@ fn handle_request(
                 let coord_str = val.get("coordinate").and_then(|v| v.as_str()).unwrap_or("");
                 let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("");
                 if let Some(coord) = parse_coordinate(coord_str) {
-                    state.lattice.write_scroll(coord, content.to_string());
+                    if !state.lattice.write_scroll(coord, content.to_string()) {
+                        json_response(stream, &headers, &ApiOk { ok: false, message: "that scroll holds an image (a binary scroll); images cannot be edited as text".into() });
+                        return;
+                    }
                     state.dirty = true;
                     state.rebuild_overview();
                     json_response(stream, &headers, &ApiOk { ok: true, message: "scroll updated".into() });
@@ -1229,9 +1370,7 @@ fn handle_request(
         ("GET", p) if p.starts_with("/api/scroll/") => {
             let coord_str = &p["/api/scroll/".len()..];
             if let Some(coord) = parse_coordinate(coord_str) {
-                let content = state.lattice.read_scroll(&coord).unwrap_or_default();
-                let bytes = content.len();
-                json_response(stream, &headers, &ApiScroll { coordinate: format!("{}", coord), content, bytes });
+                json_response(stream, &headers, &scroll_view(&state.lattice, &coord, "/api/media"));
             } else {
                 send_response(stream, 400, "text/plain", b"invalid coordinate", CacheClass::NoStore, &headers, false);
             }
@@ -1557,7 +1696,7 @@ fn mcp_tools() -> serde_json::Value {
         },
         {
             "name": "read_scroll",
-            "description": "Read the text of one scroll at a coordinate in a hosted phext.",
+            "description": "Read the text of one scroll at a coordinate in a hosted phext. For a binary (image) scroll this returns its stored form — the phext-binary header line plus base64 — not the decoded bytes.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "phext": phext_arg, "coordinate": coord_arg },
@@ -1578,7 +1717,7 @@ fn mcp_tools() -> serde_json::Value {
         },
         {
             "name": "write_scroll",
-            "description": "Replace one scroll's text in a hosted phext and save the file. Refuses while the web editor holds unsaved changes to that same file.",
+            "description": "Replace one scroll's text in a hosted phext and save the file. Refuses while the web editor holds unsaved changes to that same file, and refuses to overwrite a binary (image) scroll.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3831,6 +3970,17 @@ fn mcp_run_tool(
                 .ok_or_else(|| "missing argument: content".to_string())?
                 .to_string();
             let (bytes, _) = mcp_with_lattice(state, &phext, true, |lattice| {
+                // Binary-scroll guard: a text write must not silently
+                // corrupt an image scroll. (MappedLattice::write_scroll
+                // refuses too; this check gives the caller the reason.)
+                if let Some(existing) = lattice.read_scroll(&coord) {
+                    if phext_lattice::media::is_well_formed_binary_scroll(&existing) {
+                        return Err(format!(
+                            "coordinate {coord} holds a binary scroll (an image); \
+                             write_scroll cannot replace it"
+                        ));
+                    }
+                }
                 lattice.write_scroll(coord, content.clone());
                 Ok(content.len())
             })?;
@@ -4087,6 +4237,166 @@ fn handle_claim(
 }
 
 // ── Submissions ────────────────────────────────────────────────────────
+
+/// Largest single image an editor may add (8 MiB). The server's payload
+/// posture is set by MAX_SUBMISSION_BYTES (10 MiB, refused with a 413);
+/// images sit under it and are refused the same way.
+const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+
+/// read_body's byte twin: the exact request body, uninterpreted. The text
+/// path's lossy String conversion would corrupt an image payload, so the
+/// upload path reads bytes. A declared length above the server's payload
+/// posture is not read at all (the upload handler has already answered
+/// 413 from the same header).
+fn read_body_bytes(
+    reader: &mut BufReader<std::net::TcpStream>,
+    headers: &HashMap<String, String>,
+) -> Vec<u8> {
+    let len: usize = headers
+        .get("content-length")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    if len == 0 || len > MAX_SUBMISSION_BYTES {
+        return Vec::new();
+    }
+    let mut buf = vec![0u8; len];
+    let _ = reader.read_exact(&mut buf);
+    buf
+}
+
+/// The stored name for an upload: the client's file name reduced to a
+/// bare name with control and markdown-breaking characters removed, and
+/// its extension forced to the sniffed type — the name never gets to
+/// claim a type the bytes do not have.
+fn sanitize_image_name(raw: &str, kind: &phext_lattice::media::ImageKind) -> String {
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = base
+        .chars()
+        .filter(|c| !c.is_control() && !matches!(c, '"' | '[' | ']' | '(' | ')' | '<' | '>' | '|' | '`'))
+        .collect();
+    let stem = cleaned.trim().trim_end_matches('.');
+    let stem = match stem.rfind('.') {
+        Some(dot) if dot > 0 => &stem[..dot],
+        _ => stem,
+    };
+    let stem: String = stem.trim().chars().take(100).collect();
+    let stem = if stem.is_empty() { "image".to_string() } else { stem };
+    format!("{}.{}", stem, kind.extension)
+}
+
+/// Serve one binary scroll's decoded bytes as an image. 404 for a
+/// missing coordinate, a non-binary scroll, or a payload that does not
+/// sniff as an image — and when a metadata scroll records a different
+/// content type than the payload sniffs as, the scroll is not served at
+/// all rather than served under a wrong type. SVG is never served: it is
+/// not in the sniff set, by design (a scriptable document is not an
+/// image for this endpoint).
+fn serve_media(
+    stream: &mut std::net::TcpStream,
+    headers: &HashMap<String, String>,
+    lattice: &MappedLattice,
+    coord_str: &str,
+    head_only: bool,
+) {
+    let not_found = |stream: &mut std::net::TcpStream| {
+        send_response(stream, 404, "text/plain; charset=utf-8", b"not found", CacheClass::NoStore, headers, head_only);
+    };
+    let coord_str = coord_str.split('?').next().unwrap_or("");
+    let Some(coord) = parse_coordinate(coord_str) else {
+        not_found(stream);
+        return;
+    };
+    let stored = lattice.read_scroll(&coord).unwrap_or_default();
+    let Some(payload) = libphext::binary::decode_scroll(&stored) else {
+        not_found(stream);
+        return;
+    };
+    let Some(kind) = phext_lattice::media::sniff_image(&payload) else {
+        not_found(stream);
+        return;
+    };
+    let (_name, recorded_type) = media_metadata(lattice, &coord);
+    if let Some(recorded) = recorded_type {
+        if recorded != kind.content_type {
+            not_found(stream);
+            return;
+        }
+    }
+    send_response(stream, 200, kind.content_type, &payload, CacheClass::Static, headers, head_only);
+}
+
+/// POST /api/images: store one image in the open phext as a binary
+/// scroll (see phext_lattice::media for the coordinate convention) and
+/// answer with the reference the editor inserts into the current text
+/// scroll. Runs behind Gate::admit, so only signed-in editors reach it,
+/// with the session CSRF check applied to the POST like every write.
+/// Only the sniffed type is trusted; the client's claimed type and file
+/// extension are never consulted.
+fn upload_image(
+    stream: &mut std::net::TcpStream,
+    reader: &mut BufReader<std::net::TcpStream>,
+    headers: &HashMap<String, String>,
+    state: &mut AppState,
+) {
+    if let Some(len) = headers
+        .get("content-length")
+        .and_then(|v| v.trim().parse::<usize>().ok())
+    {
+        if len > MAX_IMAGE_BYTES {
+            json_error(stream, headers, 413, "that image is larger than 8 MiB");
+            return;
+        }
+    }
+    let body = read_body_bytes(reader, headers);
+    if body.is_empty() {
+        json_error(stream, headers, 400, "the image is empty");
+        return;
+    }
+    if body.len() > MAX_IMAGE_BYTES {
+        json_error(stream, headers, 413, "that image is larger than 8 MiB");
+        return;
+    }
+    let Some(kind) = phext_lattice::media::sniff_image(&body) else {
+        json_error(stream, headers, 415, "only PNG, JPEG, GIF, WebP, or AVIF images can be added");
+        return;
+    };
+    let name = sanitize_image_name(
+        headers.get("x-filename").map(String::as_str).unwrap_or(""),
+        &kind,
+    );
+    // The smallest slot whose payload and metadata coordinates are both
+    // unpopulated — deterministic for the file's current state, and the
+    // AppState mutex makes the check-and-write atomic.
+    let mut slot = 1usize;
+    loop {
+        let payload_coord = phext_lattice::media::media_payload_coord(slot);
+        let metadata_coord = phext_lattice::media::media_metadata_coord(slot);
+        if !state.lattice.has_scroll(&payload_coord) && !state.lattice.has_scroll(&metadata_coord) {
+            state.lattice.write_binary(payload_coord, &body);
+            let metadata = serde_json::json!({
+                "name": name,
+                "content_type": kind.content_type,
+                "bytes": body.len(),
+            });
+            let _ = state.lattice.write_scroll(metadata_coord, metadata.to_string());
+            break;
+        }
+        slot += 1;
+    }
+    state.dirty = true;
+    state.rebuild_overview();
+    let coord = phext_lattice::media::media_payload_coord(slot);
+    let url = format!("/api/media/{}", coord);
+    json_status(stream, headers, 200, serde_json::json!({
+        "ok": true,
+        "coordinate": format!("{}", coord),
+        "content_type": kind.content_type,
+        "bytes": body.len(),
+        "name": name,
+        "url": url,
+        "reference": format!("![{}]({})", name, url),
+    }));
+}
 
 /// Largest phext a visitor may upload for review (10 MiB).
 const MAX_SUBMISSION_BYTES: usize = 10 * 1024 * 1024;
@@ -6854,6 +7164,8 @@ body {
   border-bottom: 1px dotted var(--coord); transition: color var(--trans-fast);
 }
 #content a.coord-link:hover { color: var(--active); border-bottom-color: var(--active); }
+#content img.scroll-img { max-width: 100%; height: auto; display: block; margin: 10px 0; border-radius: 4px; }
+#content .media-meta { color: var(--dim); font-size: 12px; white-space: normal; }
 
 #editor { display: none; flex: 1; overflow: hidden; flex-direction: column; }
 #editor textarea {
@@ -7206,6 +7518,8 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
         <button type="button" class="save-btn" onclick="saveScroll()">Save (Ctrl+S)</button>
         <button type="button" onclick="cancelEdit()">Cancel (Esc)</button>
         <button type="button" onclick="openUG5()" title="Open this scroll in the Up Goer Five editor">UG5</button>
+        <button type="button" onclick="pickImage()" title="Add an image to this phext and reference it at the cursor">🖼 Image</button>
+        <input type="file" id="image-file" accept="image/png,image/jpeg,image/gif,image/webp,image/avif" style="display:none">
       </div>
       <textarea id="edit-textarea" aria-label="Scroll text" spellcheck="false"></textarea>
     </div>
@@ -7577,10 +7891,31 @@ function renderSentron(nav) {
   $('sentron-panel').innerHTML = html;
 }
 
+function renderRichText(text) {
+  // Markdown image references to served media render inline. The <img>
+  // tags are staged as placeholders before coordinate linkification —
+  // a media URL contains a coordinate, and the linkifier must not wrap
+  // it inside the src attribute.
+  const imgs = [];
+  const staged = escHtml(text).replace(/!\[([^\]]*)\]\((\/api\/(?:demo\/)?media\/[0-9][0-9.\/]*)\)/g, (m, alt, url) => {
+    imgs.push(`<img class="scroll-img" src="${url}" alt="${alt}">`);
+    return `\u0001${imgs.length - 1}\u0001`;
+  });
+  return linkifyCoordinates(staged).replace(/\u0001(\d+)\u0001/g, (m, i) => imgs[Number(i)]);
+}
+
 function renderContent(nav) {
   const el = $('content');
-  if (nav.scroll.content) {
-    el.innerHTML = linkifyCoordinates(escHtml(nav.scroll.content));
+  const s = nav.scroll;
+  if (s && s.kind === 'image') {
+    el.innerHTML = `<img class="scroll-img" src="${escAttr(s.media_url || '')}" alt="${escHtml(s.name || 'image')}">` +
+      `<div class="media-meta">🖼 ${escHtml(s.name || 'image')} · ${escHtml(s.content_type || '')} · ${s.payload_bytes} bytes — an image stored as a binary scroll at ${escHtml(s.coordinate)}. It has no text form.</div>`;
+    el.className = '';
+  } else if (s && s.kind === 'binary') {
+    el.textContent = `⛁ binary scroll — ${s.payload_bytes} bytes of binary data (not an image). It has no text view.`;
+    el.className = 'empty';
+  } else if (nav.scroll.content) {
+    el.innerHTML = renderRichText(nav.scroll.content);
     el.className = '';
   } else {
     el.textContent = '○ empty coordinate';
@@ -7593,8 +7928,11 @@ function renderContent(nav) {
 // Structure: Z groups → Y groups → X scrolls
 // Dimensional subspace: 11D = full, 7D = within Z, 4D = within Z/Y, 1D = single scroll
 
+let treeBinary = {};
 async function loadTree() {
   treeData = await api('GET', '/api/tree');
+  treeBinary = {};
+  for (const b of (treeData.binary_scrolls || [])) treeBinary[b.coordinate] = b;
   renderTree();
 }
 
@@ -7649,8 +7987,9 @@ function renderTree() {
           html += `<div class="subspace-header d4"><span class="sh-dim">4D</span><span class="sh-desc">Y=${yk} · ${scrolls.length} scrolls</span></div>`;
           for (const s of scrolls) {
             const isCur = s.full === curCoord ? ' current' : '';
+            const binfo = treeBinary[s.full];
             html += `<button type="button" class="nt-scroll${isCur}" onclick="treeNav('${escAttr(s.full)}')">
-              <span class="nt-coord">${s.x}</span></button>`;
+              <span class="nt-coord">${s.x}</span>${binfo ? `<span class="nt-preview">🖼 ${escHtml(binfo.name || 'image')} · ${escHtml((binfo.content_type || '').replace('image/', ''))} · ${binfo.payload_bytes} B</span>` : ''}</button>`;
           }
         }
         html += '</div>';
@@ -7700,6 +8039,10 @@ async function gotoCoord(coord) { render(await api('POST', '/api/goto', coord));
 // ── Edit ──
 function enterEdit() {
   if (!lastNav || !lastNav.scroll) return;
+  if (lastNav.scroll.kind && lastNav.scroll.kind !== 'text') {
+    showMsg('That scroll is an image — it has no text to edit.');
+    return;
+  }
   document.body.classList.remove('more-open');
   setMode('edit');
   $('edit-coord').textContent = lastNav.position.coordinate;
@@ -7761,6 +8104,53 @@ function cancelEdit() {
   if (lastNav && lastNav.scroll) setScrollTitle(lastNav.scroll.content);
 }
 $('edit-textarea').addEventListener('input', () => setScrollTitle($('edit-textarea').value));
+
+function pickImage() { $('image-file').click(); }
+
+// Upload one image file to the open phext (POST /api/images stores it as
+// a binary scroll) and insert the returned markdown reference at the
+// cursor. The reference is unsaved text like any other edit: Save keeps
+// it, Cancel drops it (the stored image scroll stays in the phext).
+async function uploadImage(file) {
+  if (demoMode) { showMsg('Sign in to add images to your own files.'); return; }
+  let data = null;
+  try {
+    const res = await fetch('/api/images', {
+      method: 'POST',
+      headers: { 'x-filename': file.name, 'x-csrf-token': session.csrf },
+      body: file,
+    });
+    data = await res.json().catch(() => null);
+    if (!res.ok || !data || !data.ok) {
+      showMsg('image upload failed: ' + ((data && data.error) || ('HTTP ' + res.status)));
+      return;
+    }
+  } catch (e) {
+    showMsg('image upload failed: ' + e.message);
+    return;
+  }
+  const ta = $('edit-textarea');
+  const at = (ta.selectionStart != null) ? ta.selectionStart : ta.value.length;
+  ta.value = ta.value.slice(0, at) + data.reference + ta.value.slice(at);
+  ta.focus();
+  showMsg('image stored at ' + data.coordinate + ' — save the scroll to keep the reference');
+  if (treeData) loadTree();
+}
+$('image-file').addEventListener('change', (e) => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (f) uploadImage(f);
+});
+$('edit-textarea').addEventListener('paste', (e) => {
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  for (const item of items) {
+    if (item.type && item.type.startsWith('image/')) {
+      const f = item.getAsFile();
+      if (f) { e.preventDefault(); uploadImage(f); }
+      break;
+    }
+  }
+});
 
 // ── Search ──
 async function doSearch(query) {
@@ -11172,5 +11562,322 @@ mod mcp_tests {
         };
         store.issue_code(&gate, "expired-code", code).unwrap();
         assert!(store.take_code(&gate, "expired-code").is_none());
+    }
+}
+// HTTP-level tests for image support, appended to phext_edit.rs as a
+// new #[cfg(test)] module (see the image-support build record).
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    use phext_lattice::oauth::{Editors, Oauth, TEST_CSRF};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR-round-trip-payload\x00\xff";
+    const GIF_BYTES: &[u8] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\xff\xff\xff!\xf9\x04\x01\x0a\x00\x01\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02L\x01\x00;";
+
+    /// A locked server (sign-in required) whose editor list holds the
+    /// test session's account, over a one-scroll phext.
+    fn serve() -> (u16, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.phext");
+        std::fs::write(&path, b"first scroll\n").unwrap();
+        let lattice = MappedLattice::open(&path).unwrap();
+        let mut app = AppState::new(lattice, path.to_string_lossy().to_string());
+        app.phext_dir = Some(dir.path().to_string_lossy().to_string());
+        let state = Arc::new(Mutex::new(app));
+        let gate = Arc::new(Gate::new(Oauth::test_ready(), Editors::parse("github:100")));
+        let demo = Arc::new(DemoCatalog::load());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for incoming in listener.incoming() {
+                let Ok(mut stream) = incoming else { break };
+                let state = Arc::clone(&state);
+                let gate = Arc::clone(&gate);
+                let demo = Arc::clone(&demo);
+                std::thread::spawn(move || handle_request(&mut stream, &state, &gate, &demo));
+            }
+        });
+        (port, dir)
+    }
+
+    fn exchange_bytes(port: u16, request: &[u8]) -> (u16, Vec<(String, String)>, Vec<u8>) {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream.write_all(request).unwrap();
+        let mut raw = Vec::new();
+        let _ = stream.read_to_end(&mut raw);
+        let split = raw
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|i| i + 4)
+            .unwrap_or(raw.len());
+        let head = String::from_utf8_lossy(&raw[..split]).into_owned();
+        let status: u16 = head
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or(0);
+        let headers = head
+            .lines()
+            .skip(1)
+            .filter_map(|l| l.split_once(':'))
+            .map(|(k, v)| (k.trim().to_lowercase(), v.trim().to_string()))
+            .collect();
+        (status, headers, raw[split.min(raw.len())..].to_vec())
+    }
+
+    fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+        headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+    }
+
+    fn editor_cookie() -> String {
+        format!("phext_session={}", Oauth::test_session_cookie())
+    }
+
+    fn upload(port: u16, name: &str, bytes: &[u8], auth: bool, csrf: bool) -> (u16, Vec<u8>) {
+        let mut req = format!(
+            "POST /api/images HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Filename: {name}\r\nContent-Length: {}\r\nConnection: close\r\n",
+            bytes.len()
+        );
+        if auth {
+            req += &format!("Cookie: {}\r\n", editor_cookie());
+        }
+        if csrf {
+            req += &format!("x-csrf-token: {TEST_CSRF}\r\n");
+        }
+        req += "\r\n";
+        let mut raw = req.into_bytes();
+        raw.extend_from_slice(bytes);
+        let (status, _headers, body) = exchange_bytes(port, &raw);
+        (status, body)
+    }
+
+    fn get(port: u16, path: &str, auth: bool) -> (u16, Vec<(String, String)>, Vec<u8>) {
+        let cookie = if auth { format!("Cookie: {}\r\n", editor_cookie()) } else { String::new() };
+        let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{cookie}Connection: close\r\n\r\n");
+        exchange_bytes(port, req.as_bytes())
+    }
+
+    fn post_json(port: u16, path: &str, body: &str) -> (u16, Vec<u8>) {
+        let req = format!(
+            "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {}\r\nx-csrf-token: {TEST_CSRF}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            editor_cookie(),
+            body.len()
+        );
+        let (status, _headers, body) = exchange_bytes(port, req.as_bytes());
+        (status, body)
+    }
+
+    #[test]
+    fn upload_then_serve_is_byte_identical() {
+        let (port, _dir) = serve();
+
+        // Upload a PNG: stored at media slot 1, reference handed back.
+        let (status, body) = upload(port, "pic.png", PNG_BYTES, true, true);
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+        let body = String::from_utf8_lossy(&body).into_owned();
+        assert!(body.contains("\"coordinate\":\"9.9.9/9.9.9/1.1.1\""), "{body}");
+        assert!(body.contains("\"content_type\":\"image/png\""), "{body}");
+        assert!(
+            body.contains("![pic.png](/api/media/9.9.9/9.9.9/1.1.1)"),
+            "{body}"
+        );
+
+        // Serve: byte-identical payload, sniffed content type.
+        let (status, headers, served) = get(port, "/api/media/9.9.9/9.9.9/1.1.1", true);
+        assert_eq!(status, 200);
+        assert_eq!(header(&headers, "content-type"), Some("image/png"));
+        assert_eq!(served, PNG_BYTES);
+
+        // The scroll API describes the image and never leaks base64.
+        let (status, _h, body) = get(port, "/api/scroll/9.9.9/9.9.9/1.1.1", true);
+        assert_eq!(status, 200);
+        let body = String::from_utf8_lossy(&body).into_owned();
+        assert!(body.contains("\"kind\":\"image\""), "{body}");
+        assert!(body.contains("\"name\":\"pic.png\""), "{body}");
+        assert!(!body.contains("phext-binary"), "{body}");
+        assert!(!body.contains("iVBOR"), "{body}");
+
+        // The tree labels it too.
+        let (status, _h, body) = get(port, "/api/tree", true);
+        assert_eq!(status, 200);
+        let body = String::from_utf8_lossy(&body).into_owned();
+        assert!(body.contains("\"binary_scrolls\""), "{body}");
+        assert!(body.contains("pic.png"), "{body}");
+
+        // A text write over the image scroll is refused, and the served
+        // bytes do not move.
+        let (status, body) = post_json(
+            port,
+            "/api/update",
+            "{\"coordinate\":\"9.9.9/9.9.9/1.1.1\",\"content\":\"overwritten\"}",
+        );
+        assert_eq!(status, 200);
+        let body = String::from_utf8_lossy(&body).into_owned();
+        assert!(body.contains("\"ok\":false"), "{body}");
+        let (_s, _h, served) = get(port, "/api/media/9.9.9/9.9.9/1.1.1", true);
+        assert_eq!(served, PNG_BYTES);
+
+        // A second upload takes the next slot, and its stored name takes
+        // the sniffed type even when the file name claims another.
+        let (status, body) = upload(port, "anim.png", GIF_BYTES, true, true);
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+        let body = String::from_utf8_lossy(&body).into_owned();
+        assert!(body.contains("\"coordinate\":\"9.9.9/9.9.9/1.1.2\""), "{body}");
+        assert!(body.contains("\"name\":\"anim.gif\""), "{body}");
+        let (status, headers, served) = get(port, "/api/media/9.9.9/9.9.9/1.1.2", true);
+        assert_eq!(status, 200);
+        assert_eq!(header(&headers, "content-type"), Some("image/gif"));
+        assert_eq!(served, GIF_BYTES);
+
+        // The reference lives in a text scroll like any other text: put
+        // it in the first scroll, and the nav payload carries it for the
+        // reading view's inline rendering (the shell's renderRichText,
+        // asserted in the shell test below).
+        let reference = "look:\\n\\n![pic.png](/api/media/9.9.9/9.9.9/1.1.1)";
+        let update = format!(
+            "{{\"coordinate\":\"1.1.1/1.1.1/1.1.1\",\"content\":\"{}\"}}",
+            reference
+        );
+        let (status, body) = post_json(port, "/api/update", &update);
+        assert_eq!(status, 200);
+        assert!(String::from_utf8_lossy(&body).contains("\"ok\":true"));
+        let (status, _h, body) = get(port, "/api/nav", true);
+        assert_eq!(status, 200);
+        assert!(
+            String::from_utf8_lossy(&body)
+                .contains("![pic.png](/api/media/9.9.9/9.9.9/1.1.1)"),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    #[test]
+    fn upload_refusals_and_media_404s() {
+        let (port, _dir) = serve();
+
+        // Anonymous upload: the gate answers before the handler.
+        let (status, _body) = upload(port, "pic.png", PNG_BYTES, false, false);
+        assert_eq!(status, 401);
+        // A session without its CSRF token is refused on the write.
+        let (status, _body) = upload(port, "pic.png", PNG_BYTES, true, false);
+        assert_eq!(status, 403);
+        // Non-image bytes, however they are named.
+        let (status, body) = upload(port, "pic.png", b"definitely not an image", true, true);
+        assert_eq!(status, 415, "{}", String::from_utf8_lossy(&body));
+        // SVG is refused outright: it is never an image here.
+        let (status, _body) = upload(
+            port,
+            "x.svg",
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>",
+            true,
+            true,
+        );
+        assert_eq!(status, 415);
+        // Oversize is refused from the declared length, 413 like the
+        // server's other payload refusals.
+        let mut req = format!(
+            "POST /api/images HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {}\r\nx-csrf-token: {TEST_CSRF}\r\nX-Filename: big.png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            editor_cookie(),
+            8 * 1024 * 1024 + 1
+        );
+        req.push_str("tiny body");
+        let (status, _h, _b) = exchange_bytes(port, req.as_bytes());
+        assert_eq!(status, 413);
+
+        // Media 404s: an empty media slot, a text scroll's coordinate,
+        // an unparsable coordinate, and no sign-in at all.
+        let (status, _h, _b) = get(port, "/api/media/9.9.9/9.9.9/1.1.9", true);
+        assert_eq!(status, 404);
+        let (status, _h, _b) = get(port, "/api/media/1.1.1/1.1.1/1.1.1", true);
+        assert_eq!(status, 404);
+        let (status, _h, _b) = get(port, "/api/media/nope", true);
+        assert_eq!(status, 404);
+        let (status, _h, _b) = get(port, "/api/media/9.9.9/9.9.9/1.1.1", false);
+        assert_eq!(status, 401);
+    }
+
+    #[test]
+    fn demo_media_is_public_and_labelled() {
+        let (port, _dir) = serve();
+
+        // The demo's picture serves signed-out, as demo text does.
+        let (status, headers, body) = get(port, "/api/demo/media/9.9.9/9.9.9/1.1.1", false);
+        assert_eq!(status, 200);
+        assert_eq!(header(&headers, "content-type"), Some("image/gif"));
+        assert_eq!(body.len(), 43);
+        assert!(body.starts_with(b"GIF89a"));
+
+        // Its nav payload calls it an image and exposes no base64.
+        let (status, _h, body) = get(port, "/api/demo/nav?at=9.9.9%2F9.9.9%2F1.1.1", false);
+        assert_eq!(status, 200);
+        let body = String::from_utf8_lossy(&body).into_owned();
+        assert!(body.contains("\"kind\":\"image\""), "{body}");
+        assert!(body.contains("pixel.gif"), "{body}");
+        assert!(!body.contains("R0lGOD"), "{body}");
+
+        // The demo tree labels it, and the media text scroll references it.
+        let (status, _h, body) = get(port, "/api/demo/tree", false);
+        assert_eq!(status, 200);
+        assert!(String::from_utf8_lossy(&body).contains("pixel.gif"));
+        let (status, _h, body) = get(port, "/api/demo/nav?at=1.1.1%2F1.1.1%2F1.1.3", false);
+        assert_eq!(status, 200);
+        assert!(
+            String::from_utf8_lossy(&body)
+                .contains("![pixel.gif](/api/demo/media/9.9.9/9.9.9/1.1.1)"),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+
+        // The served shell (INDEX_HTML is the document the shell routes
+        // send) carries the inline-rendering code path.
+        assert!(INDEX_HTML.contains("renderRichText"), "shell renders image references");
+        assert!(INDEX_HTML.contains("scroll-img"), "shell styles inline images");
+    }
+
+    #[test]
+    fn mcp_write_scroll_refuses_binary_scrolls() {
+        let (port, dir) = serve();
+        // Seed a second phext on disk holding one binary scroll, built
+        // through the lattice's own byte path.
+        let mut seed = MappedLattice::from_bytes(b"seed\n");
+        seed.write_binary(phext_lattice::media::media_payload_coord(1), PNG_BYTES);
+        std::fs::write(dir.path().join("other.phext"), seed.to_phext_bytes()).unwrap();
+
+        // write_scroll over the binary scroll is refused with the reason.
+        let (status, body) = post_json(
+            port,
+            "/mcp",
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"write_scroll\",\"arguments\":{\"phext\":\"other\",\"coordinate\":\"9.9.9/9.9.9/1.1.1\",\"content\":\"overwritten\"}}}",
+        );
+        assert_eq!(status, 200);
+        let body = String::from_utf8_lossy(&body).into_owned();
+        assert!(body.contains("\"isError\":true"), "{body}");
+        assert!(body.contains("binary scroll"), "{body}");
+
+        // The scroll is untouched on disk afterward.
+        let on_disk = MappedLattice::open(dir.path().join("other.phext")).unwrap();
+        assert_eq!(
+            on_disk.fetch_binary(&phext_lattice::media::media_payload_coord(1)),
+            PNG_BYTES
+        );
+
+        // read_scroll on a binary scroll returns its stored form — the
+        // documented behaviour (header + base64 text), pinned here so
+        // the PR note cannot drift from the code.
+        let (status, body) = post_json(
+            port,
+            "/mcp",
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"read_scroll\",\"arguments\":{\"phext\":\"other\",\"coordinate\":\"9.9.9/9.9.9/1.1.1\"}}}",
+        );
+        assert_eq!(status, 200);
+        let body = String::from_utf8_lossy(&body).into_owned();
+        assert!(body.contains("phext-binary:1:base64"), "{body}");
     }
 }
