@@ -173,6 +173,10 @@ struct AppState {
     dirty: bool,
     /// Directory of phext files available
     phext_dir: Option<String>,
+    /// The example wiki's public read-only catalog, built at startup
+    /// from the hosted `wiki.phext` (see `EXAMPLE_WIKI_NAME`). `None`
+    /// when no wiki is hosted; the /api/wiki routes then answer 404.
+    example_wiki: Option<Arc<DemoCatalog>>,
     /// Landing file after sign-in / on a fresh load (--home or PHEXT_HOME)
     home_file: Option<String>,
     /// Landing coordinate within the home file (--home-coord or PHEXT_HOME_COORD)
@@ -203,7 +207,7 @@ impl AppState {
             .map(|dir| dir.join("mcp-oauth.json"))
             .unwrap_or_else(|| PathBuf::from("mcp-oauth.json"));
         let mcp_oauth = Arc::new(McpOAuthStore::new(mcp_oauth_path));
-        AppState { lattice, nav, overview, default_file: file_path.clone(), file_path, dirty: false, phext_dir: None, home_file: None, home_coord: None, mcp_oauth, mcp_lattice_cache: Vec::new() }
+        AppState { lattice, nav, overview, default_file: file_path.clone(), file_path, dirty: false, phext_dir: None, example_wiki: None, home_file: None, home_coord: None, mcp_oauth, mcp_lattice_cache: Vec::new() }
     }
 
     fn rebuild_overview(&mut self) {
@@ -554,10 +558,22 @@ const DEMO_SCROLLS: &[(&str, &str)] = &[
     ("1.1.1/1.1.1/1.1.3", "Media, kept inside the file.\n\n![pixel.gif](/api/demo/media/9.9.9/9.9.9/1.1.1)\n\nThat picture is a scroll like any other. Its bytes live at 9.9.9/9.9.9/1.1.1, stored as a binary scroll — a header line and base64 — with its name and type in the metadata scroll beside it. No side files, no media library outside the phext. Images an editor adds live under 9.9.9/9.9.9: the picture at 1.1.n, its metadata at 1.2.n. Open the Nav tab: in the tree the image scroll is labelled with its type and size, never dumped as base64."),
 ];
 
+/// The hosted phext a signed-out visitor may read: the example wiki
+/// at /wiki/. Every other hosted phext stays behind the sign-in gate;
+/// this one name is the whole public exception.
+const EXAMPLE_WIKI_NAME: &str = "wiki";
+
+/// A read-only catalog served to signed-out visitors: the built-in
+/// demo (under /api/demo) and the example wiki (under /api/wiki) are
+/// the same shape over different bytes. `file_name` is the label the
+/// shell shows, and `media_base` is the prefix this catalog's media
+/// scrolls are served under — each catalog only ever serves its own.
 struct DemoCatalog {
     lattice: MappedLattice,
     scrolls: usize,
     bytes: usize,
+    file_name: &'static str,
+    media_base: &'static str,
 }
 
 impl DemoCatalog {
@@ -578,7 +594,17 @@ impl DemoCatalog {
             "{\"name\":\"pixel.gif\",\"content_type\":\"image/gif\",\"bytes\":43}".to_string(),
         );
         let scrolls = lattice.scroll_count();
-        Self { lattice, scrolls, bytes }
+        Self { lattice, scrolls, bytes, file_name: "demo.phext", media_base: "/api/demo/media" }
+    }
+
+    /// The example wiki, built from the hosted wiki.phext's bytes.
+    /// Unlike the demo, nothing is injected or rewritten: the wiki's
+    /// own scrolls are served exactly as hosted.
+    fn load_example_wiki(raw: Vec<u8>) -> Self {
+        let bytes = raw.len();
+        let lattice = MappedLattice::from_bytes(&raw);
+        let scrolls = lattice.scroll_count();
+        Self { lattice, scrolls, bytes, file_name: "wiki.phext", media_base: "/api/wiki/media" }
     }
 
     /// Apply one navigation step without keeping the cursor. `at` is where the
@@ -614,7 +640,7 @@ impl DemoCatalog {
             "base" => { nav.goto(origin); }
             _ => {}
         }
-        nav_view(&self.lattice, &nav, self.scrolls, "demo.phext", "/api/demo/media")
+        nav_view(&self.lattice, &nav, self.scrolls, self.file_name, self.media_base)
     }
 
     fn tree(&self) -> ApiTree {
@@ -625,8 +651,8 @@ impl DemoCatalog {
         ApiStatus {
             scrolls: self.scrolls,
             bytes: self.bytes,
-            file: "demo.phext".into(),
-            default_file: "demo.phext".into(),
+            file: self.file_name.into(),
+            default_file: self.file_name.into(),
             dirty: false,
         }
     }
@@ -710,20 +736,50 @@ fn serve_demo(
     headers: &HashMap<String, String>,
     demo: &DemoCatalog,
 ) {
+    serve_catalog(stream, method, path, headers, demo, "/api/demo", "demo is read-only");
+}
+
+/// The example wiki's public read-only routes: the same catalog
+/// serving as the demo, under /api/wiki. The catalog behind it was
+/// built from the hosted wiki.phext alone, and the routes name no
+/// file, so no other phext is reachable through them.
+fn serve_wiki(
+    stream: &mut std::net::TcpStream,
+    method: &str,
+    path: &str,
+    headers: &HashMap<String, String>,
+    wiki: &DemoCatalog,
+) {
+    serve_catalog(stream, method, path, headers, wiki, "/api/wiki", "the example wiki is read-only");
+}
+
+fn serve_catalog(
+    stream: &mut std::net::TcpStream,
+    method: &str,
+    path: &str,
+    headers: &HashMap<String, String>,
+    catalog: &DemoCatalog,
+    base: &str,
+    readonly_note: &str,
+) {
     if method != "GET" && method != "HEAD" {
-        send_response(stream, 405, "text/plain; charset=utf-8", b"demo is read-only", CacheClass::NoStore, headers, false);
+        send_response(stream, 405, "text/plain; charset=utf-8", readonly_note.as_bytes(), CacheClass::NoStore, headers, false);
         return;
     }
     let (route, query) = path.split_once('?').unwrap_or((path, ""));
     let q = query_pairs(query);
-    if let Some(coord_str) = route.strip_prefix("/api/demo/media/") {
-        serve_media(stream, headers, &demo.lattice, coord_str, method == "HEAD");
+    let Some(sub) = route.strip_prefix(base) else {
+        send_response(stream, 404, "text/plain; charset=utf-8", b"not found", CacheClass::NoStore, headers, false);
+        return;
+    };
+    if let Some(coord_str) = sub.strip_prefix("/media/") {
+        serve_media(stream, headers, &catalog.lattice, coord_str, method == "HEAD");
         return;
     }
-    let body = match route {
-        "/api/demo/nav" => {
+    let body = match sub {
+        "/nav" => {
             let dim = q.get("dim").and_then(|d| d.parse().ok()).unwrap_or(1);
-            let nav = demo.navigate(
+            let nav = catalog.navigate(
                 q.get("at").map(String::as_str).unwrap_or(""),
                 dim,
                 q.get("op").map(String::as_str).unwrap_or("stay"),
@@ -731,10 +787,10 @@ fn serve_demo(
             );
             serde_json::to_string(&nav).unwrap_or_else(|_| "{}".into())
         }
-        "/api/demo/tree" => serde_json::to_string(&demo.tree()).unwrap_or_else(|_| "{}".into()),
-        "/api/demo/status" => serde_json::to_string(&demo.status()).unwrap_or_else(|_| "{}".into()),
-        "/api/demo/search" => {
-            let hits = demo.search(q.get("q").map(String::as_str).unwrap_or(""));
+        "/tree" => serde_json::to_string(&catalog.tree()).unwrap_or_else(|_| "{}".into()),
+        "/status" => serde_json::to_string(&catalog.status()).unwrap_or_else(|_| "{}".into()),
+        "/search" => {
+            let hits = catalog.search(q.get("q").map(String::as_str).unwrap_or(""));
             serde_json::to_string(&hits).unwrap_or_else(|_| "[]".into())
         }
         _ => {
@@ -1203,7 +1259,9 @@ fn handle_request(
     // `/<name>/` is the same editor shell as `/`, aimed at `<name>.phext`.
     // The shell HTML has no scroll text. Bytes still go through `/api/*`,
     // which `admit` gates the same way as every other file. Signed-out
-    // visitors therefore get the sign-in shell, not the phext.
+    // visitors therefore get the sign-in shell, not the phext — except
+    // the example wiki, whose shell reads its bytes from the public
+    // `/api/wiki` catalog answered below.
     if let Some(link) = phext_link(&path) {
         let hosted = state.lock().unwrap().hosted_phext(&link.name).is_some();
         if !hosted {
@@ -1276,6 +1334,20 @@ fn handle_request(
     }
     if route.starts_with("/api/demo") {
         serve_demo(stream, &method, &path, &headers, demo);
+        return;
+    }
+    // The example wiki is the one hosted phext a signed-out visitor
+    // may read, so its catalog is answered here, beside the demo,
+    // before admit(). The catalog was built at startup from the
+    // hosted wiki.phext alone and the routes name no file, so no
+    // other phext is in reach through them; every other /api route
+    // still goes through the gate below.
+    if route.starts_with("/api/wiki") {
+        let wiki = state.lock().unwrap().example_wiki.clone();
+        match wiki {
+            Some(catalog) => serve_wiki(stream, &method, &path, &headers, &catalog),
+            None => send_response(stream, 404, "application/json", API_NOT_FOUND, CacheClass::NoStore, &headers, false),
+        }
         return;
     }
     // Claims sit with submissions, between sign-in and the editor gate:
@@ -6299,6 +6371,23 @@ fn main() {
 
     let mut app_state = AppState::new(lattice, file_path.clone());
     app_state.phext_dir = dir.clone();
+    // The example wiki: when a wiki.phext is hosted, build its public
+    // read-only catalog now, resolved through the same hosted-file
+    // check the /wiki/ shell route uses — so the bytes a signed-out
+    // visitor can read are exactly that one file, and no other.
+    if let Some(wiki_path) = app_state.hosted_phext(EXAMPLE_WIKI_NAME) {
+        match std::fs::read(&wiki_path) {
+            Ok(bytes) => {
+                let catalog = DemoCatalog::load_example_wiki(bytes);
+                println!(
+                    "   example wiki: {} scrolls, read-only, http://localhost:{}/wiki/",
+                    catalog.scrolls, port
+                );
+                app_state.example_wiki = Some(Arc::new(catalog));
+            }
+            Err(e) => eprintln!("example wiki: {} unreadable: {e}", wiki_path.display()),
+        }
+    }
     app_state.home_file = home_file.clone();
     app_state.home_coord = home_coord;
     if let Err(e) = app_state.go_home() { eprintln!("home: {}", e); }
@@ -7483,7 +7572,13 @@ body {
 #editor .editor-toolbar button.save-btn:hover { background: #8ddf8d; }
 #editor .editor-toolbar .coord-label { color: var(--coord); }
 
-/* ── Status bar ── */
+/* ── Status bar ──
+   The bar wraps at every width. Its content — mode pill, file
+   button, touch actions, help, links, the MCP endpoint, the sponsor
+   slot, the build stamp — measures wider than a laptop window, and
+   as a single nowrap row that tail ran off the right edge of the
+   page, unreachable. Wrapping grows the bar downward instead; the
+   phone band below still hides it behind the More sheet. */
 #status-bar {
   min-height: 68px; background: #101010; border-top: 1px solid var(--border);
   display: flex; align-items: center; padding: 6px 18px; font-size: 15px; flex-shrink: 0; gap: 8px 18px; flex-wrap: wrap;
@@ -7496,6 +7591,7 @@ body {
 #status-bar .mode.edit { background: var(--x-color); }
 #status-bar > * { white-space: nowrap; flex-shrink: 0; }
 #status-bar .help { color: var(--dim); flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#status-bar button#active-file { min-width: 0; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; }
 #status-bar .msg { color: var(--active); }
 #status-bar .signout {
   padding: 8px 16px; border: 1px solid var(--coord); border-radius: 6px;
@@ -7577,11 +7673,11 @@ body {
 .welcome .links { margin-top:14px; font-size:12px; }
 .welcome .links a { color:var(--coord); }
 #auth-providers { display:flex; flex-direction:column; gap:8px; }
-#demo-banner {
+#demo-banner, #wiki-banner {
   align-items:center; gap:14px; height:32px; padding:0 16px; flex-shrink:0;
   background:#241e10; color:var(--coord); font-size:12px; border-bottom:1px solid var(--border);
 }
-#demo-banner a { color:var(--coord); }
+#demo-banner a, #wiki-banner a { color:var(--coord); }
 
 /* ── Auth screen artwork ──
    The sign-in screen is the shell's front door, so it wears the art:
@@ -7761,9 +7857,9 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
    desktop status bar: that bar is a single nowrap row measuring
    ~1487px of content, so at 844/915px its tail — Preview, the MCP
    endpoint, Claim dashboard, sign out — was clipped off-screen with no way
-   to scroll to it. Give this band the same wrap treatment as the
-   small-screen rules so every item stays reachable. Portrait and
-   full desktop widths are untouched. */
+   to scroll to it. The base rule now wraps at every width; this band
+   keeps the help-to-the-next-line ordering and margin resets the
+   wrap first landed with, so the middle widths lay out the same. */
 @media (min-width: 701px) and (max-width: 1100px) {
   #status-bar { min-height: 52px; padding: 8px 12px; gap: 8px 14px; }
   #status-bar .help { order: 10; flex-basis: 100%; white-space: normal; overflow: visible; text-overflow: clip; }
@@ -7781,6 +7877,16 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
     <a href="/api/auth/github?next=%2F">GitHub</a>
   </span>
   <a id="demo-leave" href="/" style="display:none">Your files</a>
+</div>
+
+<div id="wiki-banner" style="display:none">
+  <span>Example wiki. Read it freely — nothing here is saved.</span>
+  <span id="wiki-signin">
+    Sign in to edit your own files:
+    <a href="/api/auth/google?next=%2Fwiki%2F">Google</a>
+    <a href="/api/auth/github?next=%2Fwiki%2F">GitHub</a>
+    <a href="/api/auth/x?next=%2Fwiki%2F">X</a>
+  </span>
 </div>
 
 <header id="coord-bar">
@@ -7875,7 +7981,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
     <p class="explain">Nine numbers name a scroll: library, shelf, series, collection, volume, book, chapter, section, scroll. The scroll is a page of lines and columns, which makes eleven. The file stays plain text.</p>
     <p class="hint">Sign in to save and edit your own files. The demo is a sample you can walk through; nothing in it is saved.</p>
     <p class="links"><a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · <a href="mailto:will+support@phext.io">Contact</a><br>
-      No sign-in needed: <a href="/up-goer-five.html">Up Goer Five</a> · <a href="/tts-demo.html">Coordinate TTS demo</a> · <a href="/learn-you-phext.html">Learn You Phext</a> · <a href="/singular.html">Singular</a> · <a href="/phext-previewer.html">Phext Previewer</a><br>
+      No sign-in needed: <a href="/up-goer-five.html">Up Goer Five</a> · <a href="/tts-demo.html">Coordinate TTS demo</a> · <a href="/learn-you-phext.html">Learn You Phext</a> · <a href="/singular.html">Singular</a> · <a href="/phext-previewer.html">Phext Previewer</a> · <a href="/wiki/">Example wiki</a><br>
       Have a phext of your own? <a href="/submit">Upload it for review</a> — if an editor accepts it, you become an editor too. Signing in with X makes you an editor at once.<br>
       Placed in the wavefront map? <a href="/claim">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="/explore">explore the map</a> first. No ads, ever.<!--phext-sponsor--><br>
       Running build: <!--phext-build--></p>
@@ -7900,6 +8006,9 @@ let session = null;
 let demoMode = false;
 let demoAt = '1.1.1/1.1.1/1.1.1';
 let demoDim = 1;
+let wikiMode = false;
+let wikiAt = '1.1.1/1.1.1/1.1.1';
+let wikiDim = 1;
 const demoEdits = new Map();
 const wantDemo = new URLSearchParams(location.search).has('demo');
 
@@ -8026,6 +8135,7 @@ setDrawer(false);
 
 async function api(method, path, body) {
   if (demoMode) return demoApi(method, path, body);
+  if (wikiMode) return wikiApi(method, path, body);
   if (path.charAt(0) !== '/') path = '/' + path;
   const opts = { method, headers: {} };
   if (csrf && method !== 'GET') opts.headers['x-csrf-token'] = csrf;
@@ -8413,7 +8523,7 @@ function pickImage() { $('image-file').click(); }
 // cursor. The reference is unsaved text like any other edit: Save keeps
 // it, Cancel drops it (the stored image scroll stays in the phext).
 async function uploadImage(file) {
-  if (demoMode) { showMsg('Sign in to add images to your own files.'); return; }
+  if (demoMode || wikiMode) { showMsg('Sign in to add images to your own files.'); return; }
   let data = null;
   try {
     const res = await fetch('/api/images', {
@@ -8781,6 +8891,41 @@ async function demoApi(method, path, body) {
   }
   return nav;
 }
+// The example wiki is the demo's public shape aimed at a real
+// hosted file: the same read-only rerouting, against /api/wiki.
+// Browse, jump, and search work signed out; saving still needs a
+// signed-in account, exactly as it does everywhere else here.
+async function wikiGet(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('example wiki unavailable');
+  return res.json();
+}
+async function wikiApi(method, path, body) {
+  if (path === '/api/tree') return wikiGet('/api/wiki/tree');
+  if (path === '/api/status') return wikiGet('/api/wiki/status');
+  if (path === '/api/phexts') return [{ name: 'wiki.phext', path: 'wiki.phext', bytes: 0 }];
+  if (path === '/api/open') return { ok: true, message: 'opened wiki.phext' };
+  if (path === '/api/update' || path === '/api/save')
+    return { ok: false, message: 'Sign in to save your own files.' };
+  if (path === '/api/search') {
+    const q = encodeURIComponent(body == null ? '' : String(body));
+    return wikiGet('/api/wiki/search?q=' + q);
+  }
+  const op = DEMO_OPS[path] || 'stay';
+  const to = (op === 'goto' || op === 'dim') && body != null ? String(body) : '';
+  const url = '/api/wiki/nav?at=' + encodeURIComponent(wikiAt)
+    + '&dim=' + encodeURIComponent(String(wikiDim))
+    + '&op=' + op
+    + (to ? '&to=' + encodeURIComponent(to) : '');
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('example wiki unavailable');
+  const nav = await res.json();
+  if (nav.position) {
+    wikiAt = nav.position.coordinate;
+    wikiDim = nav.position.dimension_index;
+  }
+  return nav;
+}
 function coordHash() {
   const hash = location.hash.replace(/^#/, '');
   return /^\d+\.\d+\.\d+\/\d+\.\d+\.\d+\/\d+\.\d+\.\d+$/.test(hash) ? hash : '';
@@ -8809,6 +8954,25 @@ async function startDemo() {
     if (!needsAuth) console.error(e);
   }
 }
+async function startWiki() {
+  if (wikiMode) return;
+  wikiMode = true;
+  $('auth-screen').style.display = 'none';
+  $('wiki-banner').style.display = 'flex';
+  try {
+    const start = coordHash() || '1.1.1/1.1.1/1.1.1';
+    wikiAt = start;
+    wikiDim = 1;
+    render(await api('POST', '/api/goto', start));
+    initApp();
+  } catch (e) {
+    wikiMode = false;
+    $('wiki-banner').style.display = 'none';
+    $('auth-screen').style.display = 'flex';
+    $('auth-error').textContent = 'The example wiki did not load. You can still sign in.';
+    if (!needsAuth) console.error(e);
+  }
+}
 function bootEditor() {
   $('auth-screen').style.display = 'none';
   $('demo-banner').style.display = 'none';
@@ -8820,6 +8984,7 @@ function bootEditor() {
 // Initial load. Signed-out visitors stay on the intro and do not call the editor API.
 window.addEventListener('popstate', () => {
   if (demoMode && !new URLSearchParams(location.search).has('demo')) location.reload();
+  if (wikiMode && phextNameFromLocation() !== 'wiki') location.reload();
 });
 $('try-demo').addEventListener('click', (e) => {
   e.preventDefault();
@@ -8838,6 +9003,9 @@ $('try-demo').addEventListener('click', (e) => {
       await showAuthScreen('', true);
       return;
     }
+    // Signed out at /wiki/: the example wiki reads without an
+    // account. Signed-in visitors took the editor branches above.
+    if (phextNameFromLocation() === 'wiki') { await startWiki(); return; }
     paintProviders();
   } catch (e) {
     if (!needsAuth) console.error(e);
@@ -9373,6 +9541,30 @@ mod public_route_tests {
             INDEX_HTML.contains("#status-bar .mcp-endpoint code { color: var(--active); overflow-wrap: anywhere; }"),
             "the MCP URL may break rather than widen the bar"
         );
+    }
+
+    #[test]
+    fn status_bar_file_button_shrinks_instead_of_pushing_the_bar_wide() {
+        // Residue of the footer fix that the base-rule wrap (PR #49)
+        // does not cover: the bar's children are nowrap with
+        // flex-shrink: 0 (`#status-bar > *`), so the current-file
+        // button — whose label is a user-chosen file name, unbounded
+        // in length — could still force its row wide. The button
+        // alone may shrink and ellipsize, like .help already does.
+        assert!(
+            INDEX_HTML.contains("#status-bar button#active-file { min-width: 0; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; }"),
+            "the file button can shrink instead of pushing the row wide"
+        );
+    }
+
+    #[test]
+    fn shell_links_the_example_wiki_from_the_sign_in_screen() {
+        // Discoverability: the wiki is public, so the surface a
+        // signed-out visitor actually lands on names it, and the
+        // shell carries the banner wiki mode raises.
+        assert!(INDEX_HTML.contains("href=\"/wiki/\""), "wiki link");
+        assert!(INDEX_HTML.contains("Example wiki</a>"), "wiki link text");
+        assert!(INDEX_HTML.contains("id=\"wiki-banner\""), "wiki mode banner");
     }
 
     #[test]
@@ -10726,6 +10918,114 @@ mod demo_tests {
         );
         assert_eq!(status, 200, "{body}");
         assert!(body.contains("2.1.1/1.1.1/1.1.1"));
+    }
+
+    #[test]
+    fn signed_out_example_wiki_is_public_and_other_files_stay_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("real.phext"), b"hello-real-file-marker").unwrap();
+        // A two-scroll example wiki beside the real file.
+        let mut fixture = MappedLattice::from_bytes(b"example wiki home scroll");
+        let second = parse_coordinate("1.1.1/1.1.1/1.1.2").expect("coord parses");
+        let _ = fixture.write_scroll(second, "second scroll about oak trees".to_string());
+        std::fs::write(dir.path().join("wiki.phext"), fixture.to_phext_bytes()).unwrap();
+
+        let phext = dir.path().join("real.phext");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let lattice = MappedLattice::open(&phext).unwrap();
+        let mut app = AppState::new(lattice, phext.to_string_lossy().to_string());
+        app.phext_dir = Some(dir.path().to_string_lossy().to_string());
+        // The catalog is built the way main() builds it: from the
+        // hosted wiki.phext alone, through the hosted-file check.
+        let hosted = app.hosted_phext(EXAMPLE_WIKI_NAME).expect("wiki is hosted");
+        let bytes = std::fs::read(&hosted).unwrap();
+        app.example_wiki = Some(Arc::new(DemoCatalog::load_example_wiki(bytes)));
+        let state = Arc::new(Mutex::new(app));
+        let gate = Arc::new(locked_gate());
+        let demo = Arc::new(DemoCatalog::load());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().take(12).flatten() {
+                handle_request(&mut stream, &state, &gate, &demo);
+            }
+        });
+
+        // The /wiki/ shell itself: public, and carrying no scroll text.
+        let (status, body) = exchange(port, "GET /wiki/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("startWiki"), "shell carries the wiki boot");
+        assert!(!body.contains("example wiki home scroll"));
+        assert!(!body.contains("hello-real-file-marker"));
+
+        // Status names the wiki and only the wiki.
+        let (status, body) = exchange(port, "GET /api/wiki/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("\"file\":\"wiki.phext\""), "{body}");
+        assert!(body.contains("\"scrolls\":2"), "{body}");
+        assert!(!body.contains("hello-real-file-marker"));
+
+        // Browse: the home scroll, then a coordinate jump.
+        let (status, body) = exchange(port, "GET /api/wiki/nav HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("example wiki home scroll"));
+        assert!(!body.contains("hello-real-file-marker"));
+
+        let (status, body) = exchange(
+            port,
+            "GET /api/wiki/nav?at=1.1.1%2F1.1.1%2F1.1.1&dim=1&op=goto&to=1.1.1%2F1.1.1%2F1.1.2 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("second scroll about oak trees"));
+
+        // Search and tree answer too.
+        let (status, body) = exchange(
+            port,
+            "GET /api/wiki/search?q=oak HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("1.1.1/1.1.1/1.1.2"));
+
+        let (status, _body) = exchange(port, "GET /api/wiki/tree HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 200);
+
+        // The catalog is read-only, like the demo.
+        let (status, body) = exchange(port, "POST /api/wiki/nav HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 405, "{body}");
+        assert!(body.contains("read-only"));
+
+        // The real file and the file list stay behind the gate: the
+        // public routes expose the example wiki and nothing else.
+        let (status, body) = exchange(port, "GET /api/nav HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 401, "{body}");
+        assert!(!body.contains("hello-real-file-marker"));
+
+        let (status, _body) = exchange(port, "GET /api/phexts HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 401);
+    }
+
+    #[test]
+    fn example_wiki_routes_404_when_no_wiki_is_hosted() {
+        let dir = tempfile::tempdir().unwrap();
+        let phext = dir.path().join("real.phext");
+        std::fs::write(&phext, b"hello-real-file-marker").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let lattice = MappedLattice::open(&phext).unwrap();
+        let mut app = AppState::new(lattice, phext.to_string_lossy().to_string());
+        app.phext_dir = Some(dir.path().to_string_lossy().to_string());
+        let state = Arc::new(Mutex::new(app));
+        let gate = Arc::new(locked_gate());
+        let demo = Arc::new(DemoCatalog::load());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().take(4).flatten() {
+                handle_request(&mut stream, &state, &gate, &demo);
+            }
+        });
+
+        let (status, _body) = exchange(port, "GET /api/wiki/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 404);
+        let (status, _body) = exchange(port, "GET /wiki/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 404);
     }
 }
 
