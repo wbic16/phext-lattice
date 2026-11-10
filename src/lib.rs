@@ -20,6 +20,7 @@ pub mod coordinate_ext;
 pub mod cursor;
 pub mod editor;
 pub mod index;
+pub mod media;
 pub mod mmap;
 pub mod modes;
 pub mod names;
