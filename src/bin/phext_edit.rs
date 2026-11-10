@@ -10323,6 +10323,7 @@ mod link_tests {
     }
 }
 
+#[cfg(test)]
 mod a11y {
     use super::{ABOUT_HTML, INDEX_HTML, PRIVACY_HTML, TERMS_HTML};
 
