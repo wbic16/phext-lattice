@@ -7859,14 +7859,15 @@ body {
   background:#241e10; color:var(--coord); font-size:12px; border-bottom:1px solid var(--border);
 }
 #demo-banner a, #wiki-banner a { color:var(--coord); }
-#wiki-start {
-  align-items:center; gap:6px 16px; flex-wrap:wrap; padding:7px 16px; flex-shrink:0;
-  background:#1d1809; color:var(--text); font-size:12.5px; line-height:1.55;
-  border-bottom:1px solid var(--border);
+/* Start-here strips: plain-language orientation for a first-time
+   visitor, one per public surface. Each strip shows only in its own
+   mode (startDemo/startWiki raise it; the signed-in editor never
+   does), and wraps under the banner instead of competing with it. */
+#demo-start, #wiki-start {
+  padding:8px 16px; flex-shrink:0; line-height:1.55;
+  background:#1a1608; color:var(--text); font-size:13px; border-bottom:1px solid var(--border);
 }
-#wiki-start .start-label { color:var(--coord); font-weight:600; }
-#wiki-start a { color:var(--coord); }
-#wiki-start .start-more { color:var(--dim); }
+#demo-start a, #wiki-start a { color:var(--coord); }
 
 /* ── Auth screen artwork ──
    The sign-in screen is the shell's front door, so it wears the art:
@@ -8067,6 +8068,9 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
   </span>
   <a id="demo-leave" href="/" style="display:none">Your files</a>
 </div>
+<div id="demo-start" style="display:none">
+  New here? You&rsquo;re inside one plain-text file arranged as a lattice of scrolls &mdash; each scroll has a 9-number address. Click the tree to browse, press j for the next scroll, / to search, g to jump to an address. Edits here aren&rsquo;t saved.
+</div>
 
 <div id="wiki-banner" style="display:none">
   <span>Example wiki. Read it freely — nothing here is saved.</span>
@@ -8077,14 +8081,9 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
     <a href="/api/auth/x?next=%2Fwiki%2F">X</a>
   </span>
 </div>
-
 <div id="wiki-start" style="display:none">
-  <span><span class="start-label">Start here.</span> New here?
-    ① Pick any article in the tree on the left.
-    ② Jump straight to a coordinate — try <a href="#" onclick="event.preventDefault();gotoCoord('1.1.1/2.1.2/2.1.1')">1.1.1/2.1.2/2.1.1</a>, the Oak article.
-    ③ Search the whole box — press / or tap ⌕ Search.
-    Nothing here is saved; you can't break it.</span>
-  <span class="start-more">Want the whole story? The <a href="/">full editor</a> is one sign-in away — or explore the <a href="/about">public utilities</a>, no account needed.</span>
+  <strong>Start here.</strong> New here? This whole encyclopedia is one plain-text file: every article is a scroll at a 9-number address. ① Pick any article in the tree. ② Jump straight to a coordinate — try <a href="#1.1.1/2.1.2/2.1.1">1.1.1/2.1.2/2.1.1</a>, a full article. ③ Search the whole box — press / or tap ⌕ Search. Nothing here is saved; you can&rsquo;t break it.<br>
+  Want the whole story? The full editor is one sign-in away — or explore the <a href="/about">public utilities</a>, no account needed.
 </div>
 
 <header id="coord-bar">
@@ -8153,7 +8152,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
   <div id="search-results" aria-live="polite"></div>
 </div>
 <div class="overlay" id="goto-overlay" role="dialog" aria-label="Go to coordinate">
-  <input id="goto-input" aria-label="Go to coordinate" placeholder="z.z.z/y.y.y/x.x.x" autocomplete="off" />
+  <input id="goto-input" aria-label="Go to coordinate" placeholder="1.1.1/1.1.1/1.1.1" autocomplete="off" />
 </div>
 <div class="overlay" id="phext-overlay" role="dialog" aria-label="Switch phext" style="max-height:500px">
   <div style="color:var(--dim);font-size:11px;margin-bottom:6px">Select a phext file:</div>
@@ -9133,6 +9132,7 @@ async function startDemo() {
   demoMode = true;
   $('auth-screen').style.display = 'none';
   $('demo-banner').style.display = 'flex';
+  $('demo-start').style.display = 'block';
   if (session && session.editor) {
     const sign = $('demo-signin');
     if (sign) sign.style.display = 'none';
@@ -9147,22 +9147,27 @@ async function startDemo() {
   } catch (e) {
     demoMode = false;
     $('demo-banner').style.display = 'none';
+    $('demo-start').style.display = 'none';
     $('auth-screen').style.display = 'flex';
     $('auth-error').textContent = 'The demo did not load. You can still sign in.';
     if (!needsAuth) console.error(e);
   }
+}
+/// Read the wiki at `coord` once wiki mode is live (the start
+/// strip's coordinate link lands here through the hashchange hook).
+async function startWikiAt(coord) {
+  wikiAt = coord;
+  wikiDim = 1;
+  render(await api('POST', '/api/goto', coord));
 }
 async function startWiki() {
   if (wikiMode) return;
   wikiMode = true;
   $('auth-screen').style.display = 'none';
   $('wiki-banner').style.display = 'flex';
-  $('wiki-start').style.display = 'flex';
+  $('wiki-start').style.display = 'block';
   try {
-    const start = coordHash() || '1.1.1/1.1.1/1.1.1';
-    wikiAt = start;
-    wikiDim = 1;
-    render(await api('POST', '/api/goto', start));
+    await startWikiAt(coordHash() || '1.1.1/1.1.1/1.1.1');
     initApp();
   } catch (e) {
     wikiMode = false;
@@ -9176,6 +9181,8 @@ async function startWiki() {
 function bootEditor() {
   $('auth-screen').style.display = 'none';
   $('demo-banner').style.display = 'none';
+  $('demo-start').style.display = 'none';
+  $('wiki-start').style.display = 'none';
   const hash = coordHash();
   const load = hash ? api('POST', '/api/goto', hash) : api('POST', '/api/home');
   return load.then(nav => { render(nav); initApp(); });
@@ -9185,6 +9192,14 @@ function bootEditor() {
 window.addEventListener('popstate', () => {
   if (demoMode && !new URLSearchParams(location.search).has('demo')) location.reload();
   if (wikiMode && phextNameFromLocation() !== 'wiki') location.reload();
+});
+window.addEventListener('hashchange', () => {
+  // The start strip's step-② link is an in-page coordinate link:
+  // wiki mode only boots on load, so a click while already reading
+  // the wiki must navigate, not just move the hash. Same-hash
+  // re-clicks fire no hashchange and stay inert, as the shell's
+  // other coordinate links do.
+  if (wikiMode && coordHash()) startWikiAt(coordHash());
 });
 $('try-demo').addEventListener('click', (e) => {
   e.preventDefault();
@@ -9769,6 +9784,60 @@ mod public_route_tests {
         assert!(INDEX_HTML.contains("href=\"/wiki/\""), "wiki link");
         assert!(INDEX_HTML.contains("Example wiki</a>"), "wiki link text");
         assert!(INDEX_HTML.contains("id=\"wiki-banner\""), "wiki mode banner");
+    }
+
+    #[test]
+    fn example_wiki_carries_a_start_here_strip_for_first_time_visitors() {
+        // Will, 2026-11-10: "the demo page has no instructions." The
+        // wiki's banner labels the page but teaches nothing, and the
+        // home scroll's only try-it line is a terminal command. The
+        // strip lives in the visitor chrome beside the banner.
+        assert!(INDEX_HTML.contains("id=\"wiki-start\""), "start strip");
+        assert!(INDEX_HTML.contains("<strong>Start here.</strong>"), "strip leads with its name");
+        // The three actions a stranger can take in the page.
+        assert!(INDEX_HTML.contains("Pick any article in the tree"), "action 1: browse the tree");
+        assert!(INDEX_HTML.contains("Jump straight to a coordinate"), "action 2: jump by coordinate");
+        assert!(INDEX_HTML.contains("Search the whole box"), "action 3: search");
+        // The suggested first click is a real article in the hosted
+        // wiki (the Oak article), offered as an in-page link.
+        assert!(
+            INDEX_HTML.contains("href=\"#1.1.1/2.1.2/2.1.1\">1.1.1/2.1.2/2.1.1</a>"),
+            "first click: the Oak article, linked by coordinate"
+        );
+        // The reassurance and the way onward ride along.
+        assert!(INDEX_HTML.contains("you can&rsquo;t break it"), "nothing saved, nothing breakable");
+        assert!(INDEX_HTML.contains(">public utilities</a>"), "onward to the utilities");
+        // The strip and the wiki boot move together: wiki mode raises
+        // the strip beside its banner, and in-page coordinate links
+        // navigate (the shell's coordinate hashes otherwise sit idle
+        // until a reload).
+        assert!(INDEX_HTML.contains("$('wiki-start').style.display = 'block';"), "startWiki raises the strip");
+        assert!(INDEX_HTML.contains("window.addEventListener('hashchange'"), "coordinate links navigate in wiki mode");
+    }
+
+    #[test]
+    fn demo_editor_carries_a_plain_language_orientation_strip() {
+        // The ?demo link is the Show HN candidate; a first-time
+        // visitor met only key hints there. The orientation strip is
+        // raised by startDemo alone — the signed-in editor, which
+        // shares this shell, never shows it.
+        assert!(INDEX_HTML.contains("id=\"demo-start\""), "orientation strip");
+        assert!(INDEX_HTML.contains("New here? You&rsquo;re inside one plain-text file"), "plain-language opener");
+        assert!(INDEX_HTML.contains("Click the tree to browse"), "browse");
+        assert!(INDEX_HTML.contains("press j for the next scroll"), "next scroll");
+        assert!(INDEX_HTML.contains("/ to search"), "search");
+        assert!(INDEX_HTML.contains("g to jump to an address"), "goto");
+        assert!(INDEX_HTML.contains("Edits here aren&rsquo;t saved"), "edits are not saved");
+        assert!(INDEX_HTML.contains("$('demo-start').style.display = 'block';"), "startDemo raises the strip");
+        assert!(
+            INDEX_HTML.contains("function bootEditor() {\n  $('auth-screen').style.display = 'none';\n  $('demo-banner').style.display = 'none';\n  $('demo-start').style.display = 'none';"),
+            "the signed-in editor drops the strip"
+        );
+        // The Goto dialog's placeholder is a coordinate a visitor can
+        // actually type, in the product's printed format — not the
+        // axis letters z.z.z/y.y.y/x.x.x, which never parse.
+        assert!(INDEX_HTML.contains("id=\"goto-input\" aria-label=\"Go to coordinate\" placeholder=\"1.1.1/1.1.1/1.1.1\""), "goto placeholder");
+        assert!(!INDEX_HTML.contains("z.z.z/y.y.y/x.x.x"), "no axis-letter placeholder");
     }
 
     #[test]
@@ -11158,18 +11227,7 @@ mod demo_tests {
         let (status, body) = exchange(port, "GET /wiki/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
         assert_eq!(status, 200, "{body}");
         assert!(body.contains("startWiki"), "shell carries the wiki boot");
-        // The Start here strip rides in the shell chrome (never in the
-        // wiki's own scrolls): the three things a first-time visitor
-        // can do in the box, and the way onward to the full editor and
-        // the public utilities. Wiki mode raises it with the banner.
-        assert!(body.contains("id=\"wiki-start\""), "start-here strip");
-        assert!(body.contains("Start here"), "start-here label");
-        assert!(body.contains("Pick any article in the tree"), "tree action");
-        assert!(body.contains("gotoCoord('1.1.1/2.1.2/2.1.1')"), "coordinate action");
-        assert!(body.contains("Search the whole box"), "search action");
-        assert!(body.contains("you can't break it"), "nothing-to-break reassurance");
-        assert!(body.contains("public utilities"), "utilities pointer");
-        assert!(body.contains("$('wiki-start').style.display = 'flex'"), "strip raised with wiki mode");
+        assert!(body.contains("Start here.</strong>"), "shell carries the start strip");
         assert!(!body.contains("example wiki home scroll"));
         assert!(!body.contains("hello-real-file-marker"));
 
