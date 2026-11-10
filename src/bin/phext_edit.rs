@@ -21,7 +21,7 @@ use phext_lattice::{
 };
 use phext_lattice::claims::{self, Tier};
 use phext_lattice::joins;
-use phext_lattice::oauth::{forwarded_https, security_header_block, status_text, Gate, Reply, Session};
+use phext_lattice::oauth::{forwarded_https, security_header_block, security_header_block_csp, status_text, Gate, Reply, Session};
 use phext_lattice::sponsor::{self, SponsorOffer};
 use phext_lattice::submissions::{self, Submission, SubmissionStatus};
 use phext_lattice::wavefront;
@@ -904,6 +904,18 @@ fn response_bytes(
     req_headers: &HashMap<String, String>,
     head_only: bool,
 ) -> Vec<u8> {
+    response_bytes_with_csp(status, content_type, body, class, req_headers, head_only, None)
+}
+
+fn response_bytes_with_csp(
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    class: CacheClass,
+    req_headers: &HashMap<String, String>,
+    head_only: bool,
+    csp_override: Option<&str>,
+) -> Vec<u8> {
     let https = forwarded_https(req_headers);
     let etag = match class {
         CacheClass::NoStore => None,
@@ -919,7 +931,7 @@ fn response_bytes(
                 let head = format!(
                     "HTTP/1.1 304 Not Modified\r\nETag: {tag}\r\nCache-Control: {}\r\nContent-Length: 0\r\n{vary}Connection: close\r\n{}\r\n",
                     cache_control(class),
-                    security_header_block(https)
+                    security_header_block_csp(https, csp_override)
                 );
                 return head.into_bytes();
             }
@@ -936,7 +948,7 @@ fn response_bytes(
         status_text(status),
         body.len(),
         cache_control(class),
-        security_header_block(https)
+        security_header_block_csp(https, csp_override)
     )
     .into_bytes();
     if !head_only {
@@ -1055,6 +1067,30 @@ fn send_html(
 ) {
     let rendered = render_page(template);
     send_response(stream, status, HTML, rendered.as_bytes(), class, headers, head_only);
+}
+
+/// `send_html` with a caller-supplied Content-Security-Policy replacing
+/// the site-wide default for this one response. The MCP consent page is
+/// the only caller: its form POST is answered with a 302 to the OAuth
+/// client's own origin, and Chrome/WebKit evaluate `form-action`
+/// against that redirect target as well as the form's action — the
+/// site-wide `form-action 'self'` therefore vetoed every consent
+/// approval in those engines (the POST arrived and was processed; the
+/// browser then refused to leave the page, telling the user only that
+/// "nothing happened" and naming the form's own URL in the console).
+fn send_html_csp(
+    stream: &mut std::net::TcpStream,
+    status: u16,
+    template: &str,
+    class: CacheClass,
+    headers: &HashMap<String, String>,
+    head_only: bool,
+    csp: &str,
+) {
+    let rendered = render_page(template);
+    let bytes = response_bytes_with_csp(status, HTML, rendered.as_bytes(), class, headers, head_only, Some(csp));
+    let _ = stream.write_all(&bytes);
+    let _ = stream.flush();
 }
 
 /// Pages and crawler files a signed-out visitor can read. Exact paths only.
@@ -2467,6 +2503,28 @@ fn send_oauth_json(
     let _ = stream.flush();
 }
 
+/// `send_redirect` with a caller-supplied Content-Security-Policy.
+/// Redirects inherit the policy of the document that submitted the
+/// form being answered, so this is belt-and-braces for authorize-route
+/// answers; see `send_html_csp` for the veto it guards against.
+fn send_redirect_csp(
+    stream: &mut std::net::TcpStream,
+    location: &str,
+    headers: &HashMap<String, String>,
+    csp: &str,
+) {
+    let https = forwarded_https(headers);
+    let body = format!("Redirecting to {location}\n");
+    let head = format!(
+        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n{}\r\n",
+        body.len(),
+        security_header_block_csp(https, Some(csp))
+    );
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(body.as_bytes());
+    let _ = stream.flush();
+}
+
 fn send_oauth_error(
     stream: &mut std::net::TcpStream,
     headers: &HashMap<String, String>,
@@ -2814,13 +2872,17 @@ fn oauth_append_query(base: &str, pairs: &[(&str, String)]) -> String {
     out
 }
 
-fn oauth_redirect_error(
+/// The authorize route's redirect answers under the consent policy:
+/// an error redirect is still the tail of a form submission, so the
+/// browser evaluates it against the consent page's `form-action`.
+fn oauth_redirect_error_with_policy(
     stream: &mut std::net::TcpStream,
     headers: &HashMap<String, String>,
     redirect_uri: &str,
     error: &McpOAuthError,
     state: Option<&str>,
     issuer: &str,
+    csp: Option<&str>,
 ) {
     let mut pairs = vec![
         ("error", error.error.to_string()),
@@ -2830,7 +2892,10 @@ fn oauth_redirect_error(
     if let Some(state) = state {
         pairs.push(("state", state.to_string()));
     }
-    send_redirect(stream, &oauth_append_query(redirect_uri, &pairs), headers);
+    match csp {
+        Some(policy) => send_redirect_csp(stream, &oauth_append_query(redirect_uri, &pairs), headers, policy),
+        None => send_redirect(stream, &oauth_append_query(redirect_uri, &pairs), headers),
+    }
 }
 
 struct McpAuthorizeRequest {
@@ -2942,7 +3007,19 @@ button:hover { border-color: #d4a855; } \
 :focus-visible { outline: 2px solid #e8c547; outline-offset: 3px; } \
 @media (max-width: 760px) { main { margin: 16px; } }";
 
+/// The consent page's Content-Security-Policy: the site-wide policy
+/// with `form-action` widened so the approval form's 302 — which lands
+/// on the OAuth client's own origin (claude.ai, chatgpt.com, a Cursor
+/// or localhost callback, ...) — is not vetoed by Chrome/WebKit's
+/// redirect-target evaluation of `form-action`. The client's
+/// redirect_uri was validated against its registered/CIMD metadata
+/// before this page rendered, so the widening exposes nothing the
+/// authorization request did not already name. Every other directive,
+/// and every other page on the site, keeps the strict policy.
+const MCP_CONSENT_CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self'; form-action 'self' https:; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; frame-src 'none'";
+
 fn oauth_handle_authorize(
+    csp: &str,
     stream: &mut std::net::TcpStream,
     reader: &mut BufReader<std::net::TcpStream>,
     method: &str,
@@ -2969,13 +3046,14 @@ fn oauth_handle_authorize(
         Ok(request) => request,
         Err(failure) => {
             if let Some(redirect_uri) = failure.redirect_uri {
-                oauth_redirect_error(
+                oauth_redirect_error_with_policy(
                     stream,
                     headers,
                     &redirect_uri,
                     &failure.error,
                     params.get("state").map(String::as_str),
                     &issuer,
+                    Some(csp),
                 );
             } else {
                 send_oauth_error(stream, headers, &failure.error);
@@ -3051,7 +3129,7 @@ fn oauth_handle_authorize(
             scope_items,
             html_escape(&request.redirect_uri),
         );
-        send_html(stream, 200, &page, CacheClass::NoStore, headers, false);
+        send_html_csp(stream, 200, &page, CacheClass::NoStore, headers, false, csp);
         return;
     }
     if method != "POST" {
@@ -3071,26 +3149,28 @@ fn oauth_handle_authorize(
         return;
     }
     if params.get("decision").map(String::as_str) != Some("approve") {
-        oauth_redirect_error(
+        oauth_redirect_error_with_policy(
             stream,
             headers,
             &request.redirect_uri,
             &McpOAuthError::new(403, "access_denied", "The editor denied this authorization request."),
             request.state.as_deref(),
             &issuer,
+            Some(csp),
         );
         return;
     }
     let raw_code = match oauth_random("phext_code_", 32) {
         Ok(code) => code,
         Err(message) => {
-            oauth_redirect_error(
+            oauth_redirect_error_with_policy(
                 stream,
                 headers,
                 &request.redirect_uri,
                 &McpOAuthError::new(500, "server_error", message),
                 request.state.as_deref(),
                 &issuer,
+                Some(csp),
             );
             return;
         }
@@ -3115,13 +3195,14 @@ fn oauth_handle_authorize(
         used: false,
     };
     if let Err(message) = store.issue_code(gate, &raw_code, code) {
-        oauth_redirect_error(
+        oauth_redirect_error_with_policy(
             stream,
             headers,
             &request.redirect_uri,
             &McpOAuthError::new(500, "server_error", message),
             request.state.as_deref(),
             &issuer,
+            Some(csp),
         );
         return;
     }
@@ -3129,7 +3210,7 @@ fn oauth_handle_authorize(
     if let Some(state_value) = request.state.clone() {
         pairs.push(("state", state_value));
     }
-    send_redirect(stream, &oauth_append_query(&request.redirect_uri, &pairs), headers);
+    send_redirect_csp(stream, &oauth_append_query(&request.redirect_uri, &pairs), headers, csp);
 }
 
 /// Fetch a client's JWKS document from its `jwks_uri`, with the same
@@ -3899,7 +3980,7 @@ fn handle_mcp_oauth(
                 send_oauth_error(stream, headers, &McpOAuthError::new(405, "invalid_request", "GET or POST is required"));
                 return true;
             }
-            oauth_handle_authorize(stream, reader, method, path, headers, state, gate);
+            oauth_handle_authorize(MCP_CONSENT_CSP, stream, reader, method, path, headers, state, gate);
             true
         }
         "/oauth/token" => {
@@ -11680,6 +11761,22 @@ mod mcp_tests {
         let body = response_body(&raw);
         assert!(body.contains("class=\"approve\""), "{body}");
         assert!(body.contains("Test MCP Client"), "{body}");
+
+        // The consent page's own policy must let its form's POST be
+        // answered with the 302 to the client's origin: Chrome and
+        // WebKit evaluate `form-action` against the redirect target
+        // too, and the site-wide `form-action 'self'` vetoed every
+        // approval in production (the POST was processed, the browser
+        // refused to follow the redirect, and the user saw "nothing
+        // happened"). The rest of the policy stays strict.
+        let head = raw.split("\r\n\r\n").next().unwrap_or("");
+        let csp_line = head
+            .lines()
+            .find(|line| line.to_ascii_lowercase().starts_with("content-security-policy:"))
+            .expect("consent response carries a CSP");
+        assert!(csp_line.contains("form-action 'self' https:"), "{csp_line}");
+        assert!(csp_line.contains("frame-ancestors 'none'"), "{csp_line}");
+        assert!(csp_line.contains("object-src 'none'"), "{csp_line}");
 
         // Deny: a redirect back to the client carrying access_denied,
         // the client's state, and this issuer (RFC 9207).
