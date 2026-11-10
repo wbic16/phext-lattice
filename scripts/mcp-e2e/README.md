@@ -18,7 +18,8 @@ when the `cryptography`/`pyjwt` Python packages are unavailable.
 
 - **Discovery conformance** — PRM and AS metadata at the plain and
   `/mcp`-suffixed well-known URLs, `WWW-Authenticate` challenge shape,
-  the trailing-slash endpoint spelling answering 401 instead of 404.
+  unauthenticated GET and POST both returning the OAuth challenge,
+  and the trailing-slash endpoint spelling answering 401 instead of 404.
 - **Client dialects, replayed byte-for-byte from production logs** —
   Cursor's DCR request (including the extra `jwt-bearer` grant type
   that strict registration used to reject), Claude's CIMD flow with its
