@@ -366,6 +366,59 @@ in another file, deploy.sh restores the previous site file and stops. A zone
 name may be defined once. The duplicate has to be removed from that other file
 and `deploy.sh` rerun; the script will not leave the failed file in place.
 
+## Preview deployment (preview.phext.io)
+
+A second, independent instance of the editor runs the next version
+before production does. It shares nothing writable with production.
+
+deploy.sh deploys the production instance only (its unit name and env
+path are fixed); the preview instance is maintained by mirroring it:
+
+- Source: the current exo tip, built on aletheia-core
+  (`cargo build --release -p phext-lattice --features web --bin phext-edit`),
+  with the binary copied to the host the same way production's is.
+- Service: a systemd **user** service, `phext-edit-preview` (user
+  wbic16, linger on), mirroring `phext-edit.service` and bound to
+  127.0.0.1:8081. A user service is used because the system-unit path
+  needs root the automation does not hold; restart-on-failure and
+  start-at-boot behaviour match production.
+- Data: its own directory — a snapshot copy of the production phext
+  directory (without `.git`). Production's live files are never opened
+  by the preview instance.
+- Environment: its own env file. A root step carries the provider
+  pairs and the editor list over from production's oauth.env, rewrites
+  `PHEXT_PUBLIC_URL` to the preview origin, generates a fresh session
+  secret, and strips the SSO and claim variables (preview is not an
+  SSO audience). The GitHub pair stays empty until a preview-specific
+  GitHub OAuth app exists: a GitHub OAuth app has exactly one callback
+  URL, and production's app points at production.
+- nginx: its own server block for preview.phext.io, proxying to
+  127.0.0.1:8081 with `proxy_http_version 1.1`, rendered from
+  deploy/nginx-edit.phext.io.conf the way deploy.sh renders it. Do not
+  re-declare the `limit_req` zones in the preview file — the
+  production site file on this host already defines them, and a
+  duplicate zone fails `nginx -t` for both sites.
+
+Order matters: complete the environment (OAuth providers armed)
+before the nginx block makes the instance public. With sign-in not
+configured, the editor runs open; on loopback that is box-local only,
+but it must never be the public state of the instance.
+
+Steps that need a person (DNS and root), as first deployed 2026-11-09:
+
+1. GoDaddy: add the A record `preview` -> `44.248.235.76`.
+2. Provider consoles: add
+   `https://preview.phext.io/api/auth/google/callback` (Google) and
+   `https://preview.phext.io/api/auth/x/callback` (X) to the existing
+   apps; GitHub needs its own OAuth app for preview.
+3. On the host, run `~/preview-nginx/install-preview-env.sh`, then
+   `~/preview-nginx/install-preview-nginx.sh` (bootstrap site,
+   certbot, then the rendered TLS site).
+
+Rollback: `systemctl --user disable --now phext-edit-preview` stops
+the instance; removing its nginx site files and its directories
+removes it. Production is untouched by any of these steps.
+
 ## Historical: mirrorborn.us/editor
 
 The steps below describe the previous layout, where the editor was a path on
