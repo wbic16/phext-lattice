@@ -157,6 +157,9 @@ struct AppState {
     /// authorization codes, and hashed access/refresh tokens). The store
     /// owns its own lock and file, beside the hosted phext.
     mcp_oauth: Arc<McpOAuthStore>,
+    /// Hosted phexts opened for MCP tool calls, cached across calls —
+    /// see `McpLatticeCacheEntry`. Most-recently-used is last.
+    mcp_lattice_cache: Vec<McpLatticeCacheEntry>,
 }
 
 impl AppState {
@@ -176,7 +179,7 @@ impl AppState {
             .map(|dir| dir.join("mcp-oauth.json"))
             .unwrap_or_else(|| PathBuf::from("mcp-oauth.json"));
         let mcp_oauth = Arc::new(McpOAuthStore::new(mcp_oauth_path));
-        AppState { lattice, nav, overview, default_file: file_path.clone(), file_path, dirty: false, phext_dir: None, home_file: None, home_coord: None, mcp_oauth }
+        AppState { lattice, nav, overview, default_file: file_path.clone(), file_path, dirty: false, phext_dir: None, home_file: None, home_coord: None, mcp_oauth, mcp_lattice_cache: Vec::new() }
     }
 
     fn rebuild_overview(&mut self) {
@@ -1026,7 +1029,11 @@ fn handle_request(
     // The MCP endpoint answers here, before the phext-link route can read
     // "/mcp" as a phext named "mcp": handle_mcp runs the same gate as the
     // editor API, so an MCP client is admitted exactly as a browser is.
-    if path_route(&path) == "/mcp" {
+    // The trailing-slash spelling answers too: clients configured by hand
+    // often carry it, and a bare 404 there — with no WWW-Authenticate to
+    // start discovery from — reads as "server has no MCP" and gives the
+    // user nothing to diagnose.
+    if matches!(path_route(&path), "/mcp" | "/mcp/") {
         handle_mcp(stream, &mut reader, &method, &headers, state, gate);
         return;
     }
@@ -1467,6 +1474,20 @@ fn handle_mcp(
         send_json(stream, headers, 415, r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"unsupported media type: application/json required"}}"#);
         return;
     }
+    // MCP-Protocol-Version, when a client sends one, names the version
+    // negotiated at initialize. The transport spec (2025-06-18) says a
+    // version the server does not support MUST be refused with 400
+    // rather than silently honored, so a client pinned to a version this
+    // server does not speak cannot talk past it unnoticed. Every
+    // published version is accepted; only unrecognizable values refuse.
+    if let Some(version) = headers.get("mcp-protocol-version") {
+        const MCP_KNOWN_PROTOCOL_VERSIONS: [&str; 4] =
+            ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
+        if !MCP_KNOWN_PROTOCOL_VERSIONS.contains(&version.trim()) {
+            send_json(stream, headers, 400, r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"unsupported MCP protocol version"}}"#);
+            return;
+        }
+    }
     let body = read_body(reader, headers);
     let value: serde_json::Value = match serde_json::from_str(&body) {
         Ok(v) => v,
@@ -1587,10 +1608,14 @@ fn mcp_tools() -> serde_json::Value {
         },
         {
             "name": "phext_toc",
-            "description": "Table of contents for one phext: every populated scroll coordinate, sorted.",
+            "description": "Table of contents for one phext: populated scroll coordinates, sorted, in pages (default 10000 per page; pass offset = next_offset to continue). The full list for a large phext is megabytes, so page through it.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "phext": phext_arg },
+                "properties": {
+                    "phext": phext_arg,
+                    "offset": { "type": "integer", "minimum": 0, "description": "Coordinates to skip; use the previous page's next_offset." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100000, "description": "Page size (default 10000)." },
+                },
                 "required": ["phext"],
             },
         },
@@ -3750,16 +3775,64 @@ fn handle_mcp_oauth(
     }
 }
 
+/// One hosted phext opened for MCP tool calls, cached across calls.
+/// `MappedLattice::open` rescans the whole file to build its index and
+/// `to_phext_bytes` re-serializes it, so opening per call made every MCP
+/// call against a large hosted phext pay the full scan (~0.7 s for the
+/// 58 MB ultra.phext on the production host) even when nothing changed.
+/// The entry is revalidated against the file's (length, mtime) on every
+/// use: a file changed outside MCP is re-opened, never served stale.
+struct McpLatticeCacheEntry {
+    path: PathBuf,
+    len: u64,
+    modified: std::time::SystemTime,
+    lattice: MappedLattice,
+    /// Serialized phext bytes for search, kept only for files up to
+    /// `MCP_LATTICE_BYTES_CACHE_MAX`; cleared whenever the file changes.
+    bytes: Option<Vec<u8>>,
+}
+
+/// Hosted phexts kept open for MCP at once (least-recently-used evicted).
+const MCP_LATTICE_CACHE_MAX: usize = 4;
+/// Largest phext whose serialized bytes search may cache (ultra.phext,
+/// the production pain point, is 58 MB).
+const MCP_LATTICE_BYTES_CACHE_MAX: u64 = 64 * 1024 * 1024;
+
+/// Default and maximum page sizes for `phext_toc`. The full coordinate
+/// list of a large phext is megabytes of JSON (ultra.phext: ~321k
+/// coordinates, ~9 MB pretty-printed) — clients timed out downloading
+/// it, so the tool pages and reports where to continue.
+const MCP_TOC_LIMIT_DEFAULT: usize = 10_000;
+const MCP_TOC_LIMIT_MAX: usize = 100_000;
+
+fn mcp_file_stamp(path: &Path) -> Option<(u64, std::time::SystemTime)> {
+    let md = std::fs::metadata(path).ok()?;
+    Some((md.len(), md.modified().ok()?))
+}
+
 /// Run `f` against one hosted phext's lattice, under the same mutex the
 /// editor API holds, and report whether that file is the editor's open
 /// file with unsaved changes. The open file is served from the editor's
-/// own lattice; any other hosted file is opened directly from disk, and
-/// a write is saved before `f`'s result returns.
+/// own lattice; any other hosted file is served from the MCP lattice
+/// cache, and a write is saved before `f`'s result returns.
 fn mcp_with_lattice<T>(
     state: &Arc<Mutex<AppState>>,
     name: &str,
     write: bool,
     f: impl FnOnce(&mut MappedLattice) -> Result<T, String>,
+) -> Result<(T, bool), String> {
+    mcp_with_lattice_entry(state, name, write, |lattice, _bytes| f(lattice))
+}
+
+/// `mcp_with_lattice`, with the file's serialized-bytes cache slot
+/// exposed for search (see `McpLatticeCacheEntry::bytes`). For the
+/// editor's open file the slot is a throwaway: search serializes fresh,
+/// exactly as before.
+fn mcp_with_lattice_entry<T>(
+    state: &Arc<Mutex<AppState>>,
+    name: &str,
+    write: bool,
+    f: impl FnOnce(&mut MappedLattice, &mut Option<Vec<u8>>) -> Result<T, String>,
 ) -> Result<(T, bool), String> {
     let bare = name.strip_suffix(".phext").unwrap_or(name);
     if !phext_name_ok(bare) {
@@ -3776,19 +3849,89 @@ fn mcp_with_lattice<T>(
                         save or discard them there before writing through MCP"
                 .into());
         }
-        let out = f(&mut state.lattice)?;
+        let mut slot = None;
+        let out = f(&mut state.lattice, &mut slot)?;
         if write {
             state.lattice.save().map_err(|e| format!("save failed: {e}"))?;
             state.rebuild_overview();
         }
         return Ok((out, dirty));
     }
-    let mut lattice = MappedLattice::open(&target).map_err(|e| format!("open failed: {e}"))?;
-    let out = f(&mut lattice)?;
-    if write {
-        lattice.save().map_err(|e| format!("save failed: {e}"))?;
+    let stamp = mcp_file_stamp(&target);
+    let cached = stamp.and_then(|(len, modified)| {
+        state
+            .mcp_lattice_cache
+            .iter()
+            .position(|e| e.path == target && e.len == len && e.modified == modified)
+    });
+    match cached {
+        Some(pos) => {
+            // Cache hit: run against the opened lattice, then put the
+            // entry back as most-recently-used.
+            let mut entry = state.mcp_lattice_cache.remove(pos);
+            match f(&mut entry.lattice, &mut entry.bytes) {
+                Ok(out) => {
+                    if write {
+                        entry.lattice.save().map_err(|e| format!("save failed: {e}"))?;
+                        entry.bytes = None;
+                        match mcp_file_stamp(&target) {
+                            Some((len, modified)) => {
+                                entry.len = len;
+                                entry.modified = modified;
+                                state.mcp_lattice_cache.push(entry);
+                            }
+                            // The file vanished under the save; the
+                            // result stands, the entry does not.
+                            None => {}
+                        }
+                    } else {
+                        state.mcp_lattice_cache.push(entry);
+                    }
+                    Ok((out, false))
+                }
+                Err(e) => {
+                    // A failed write may have left the lattice in an
+                    // unknown state; only reads keep their entry.
+                    if !write {
+                        state.mcp_lattice_cache.push(entry);
+                    }
+                    Err(e)
+                }
+            }
+        }
+        None => {
+            // First use, or the file changed on disk: drop any stale
+            // entry for this path and open fresh.
+            state.mcp_lattice_cache.retain(|e| e.path != target);
+            let mut entry = McpLatticeCacheEntry {
+                path: target.clone(),
+                len: 0,
+                modified: std::time::SystemTime::UNIX_EPOCH,
+                lattice: MappedLattice::open(&target).map_err(|e| format!("open failed: {e}"))?,
+                bytes: None,
+            };
+            let out = f(&mut entry.lattice, &mut entry.bytes)?;
+            if write {
+                entry.lattice.save().map_err(|e| format!("save failed: {e}"))?;
+                entry.bytes = None;
+            }
+            // Cache only when the stamp after the call still describes
+            // the bytes the lattice was opened from (for a write, the
+            // save just made them). A file that moved underneath the
+            // call is served this once and re-opened next time.
+            if let Some((len, modified)) = mcp_file_stamp(&target) {
+                if write || stamp == Some((len, modified)) {
+                    entry.len = len;
+                    entry.modified = modified;
+                    state.mcp_lattice_cache.push(entry);
+                    while state.mcp_lattice_cache.len() > MCP_LATTICE_CACHE_MAX {
+                        state.mcp_lattice_cache.remove(0);
+                    }
+                }
+            }
+            Ok((out, false))
+        }
     }
-    Ok((out, false))
 }
 
 fn mcp_run_tool(
@@ -3819,11 +3962,28 @@ fn mcp_run_tool(
         }
         "phext_toc" => {
             let phext = mcp_arg_str(args, "phext")?.to_string();
+            let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .map(|v| (v as usize).clamp(1, MCP_TOC_LIMIT_MAX))
+                .unwrap_or(MCP_TOC_LIMIT_DEFAULT);
             let (tree, _) = mcp_with_lattice(state, &phext, false, |lattice| Ok(tree_view(lattice)))?;
+            let total = tree.coordinates.len();
+            let page: Vec<&String> = tree.coordinates.iter().skip(offset).take(limit).collect();
+            let returned = page.len();
+            let next_offset = if offset + returned < total {
+                serde_json::json!(offset + returned)
+            } else {
+                serde_json::Value::Null
+            };
             Ok(serde_json::json!({
                 "phext": phext,
                 "total_scrolls": tree.total_scrolls,
-                "coordinates": tree.coordinates,
+                "coordinates": page,
+                "offset": offset,
+                "returned": returned,
+                "next_offset": next_offset,
             }))
         }
         "read_scroll" => {
@@ -3845,9 +4005,20 @@ fn mcp_run_tool(
         "search_scrolls" => {
             let phext = mcp_arg_str(args, "phext")?.to_string();
             let query = mcp_arg_str(args, "query")?.to_string();
-            let (hits, _) = mcp_with_lattice(state, &phext, false, |lattice| {
-                let buf = lattice.to_phext_bytes();
-                let hits = phext_lattice::search_lattice_auto(&buf, lattice.index(), &query, false, 50);
+            let (hits, _) = mcp_with_lattice_entry(state, &phext, false, |lattice, slot| {
+                // Serialize once per file version, not once per search:
+                // re-serializing a large phext cost as much as the scan.
+                let owned;
+                let buf: &[u8] = if (lattice.index().buffer_len() as u64) <= MCP_LATTICE_BYTES_CACHE_MAX {
+                    if slot.is_none() {
+                        *slot = Some(lattice.to_phext_bytes());
+                    }
+                    slot.as_ref().unwrap()
+                } else {
+                    owned = lattice.to_phext_bytes();
+                    &owned
+                };
+                let hits = phext_lattice::search_lattice_auto(buf, lattice.index(), &query, false, 50);
                 Ok(hits
                     .into_iter()
                     .map(|h| {
@@ -10258,6 +10429,118 @@ mod mcp_tests {
         );
         assert_eq!(result["isError"], true);
         assert!(tool_text(&result).contains("phext not found"), "{}", tool_text(&result));
+    }
+
+    #[test]
+    fn mcp_toc_pages_large_tables_of_contents() {
+        let (port, _dir) = serve(Editors::default());
+        let headers = session_headers();
+        for (coord, text) in [
+            ("1.1.1/1.1.1/1.1.2", "page one"),
+            ("1.1.1/1.1.1/1.1.3", "page two"),
+            ("1.1.1/1.1.1/1.1.4", "page three"),
+        ] {
+            let result = call_tool(
+                port,
+                &headers,
+                "write_scroll",
+                serde_json::json!({"phext": "other", "coordinate": coord, "content": text}),
+            );
+            assert_eq!(result["isError"], false, "{}", tool_text(&result));
+        }
+        // other.phext now holds its original scroll plus the three above.
+        let result = call_tool(
+            port,
+            &headers,
+            "phext_toc",
+            serde_json::json!({"phext": "other", "limit": 2}),
+        );
+        let value: serde_json::Value = serde_json::from_str(&tool_text(&result)).unwrap();
+        assert_eq!(value["returned"], 2);
+        assert_eq!(value["next_offset"], 2);
+        let result = call_tool(
+            port,
+            &headers,
+            "phext_toc",
+            serde_json::json!({"phext": "other", "offset": 2, "limit": 2}),
+        );
+        let value: serde_json::Value = serde_json::from_str(&tool_text(&result)).unwrap();
+        assert_eq!(value["returned"], 2);
+        assert_eq!(value["next_offset"], serde_json::Value::Null);
+        // No paging arguments: everything fits under the default page.
+        let result = call_tool(port, &headers, "phext_toc", serde_json::json!({"phext": "other"}));
+        let value: serde_json::Value = serde_json::from_str(&tool_text(&result)).unwrap();
+        assert_eq!(value["returned"], 4);
+        assert_eq!(value["coordinates"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn mcp_cache_never_serves_a_file_changed_on_disk() {
+        let (port, dir) = serve(Editors::default());
+        let headers = session_headers();
+        // Warm the cache for the file the editor does not have open.
+        let result = call_tool(
+            port,
+            &headers,
+            "read_scroll",
+            serde_json::json!({"phext": "other", "coordinate": "1.1.1/1.1.1/1.1.1"}),
+        );
+        assert!(tool_text(&result).contains("other text"), "{}", tool_text(&result));
+        // Replace the file on disk, as an external edit would; the
+        // changed (length, mtime) stamp must invalidate the cache entry.
+        std::fs::write(dir.path().join("other.phext"), b"external edit, longer than before\n")
+            .unwrap();
+        let result = call_tool(
+            port,
+            &headers,
+            "read_scroll",
+            serde_json::json!({"phext": "other", "coordinate": "1.1.1/1.1.1/1.1.1"}),
+        );
+        let text = tool_text(&result);
+        assert!(text.contains("external edit"), "{text}");
+        // A write through MCP still lands on the fresh content.
+        let result = call_tool(
+            port,
+            &headers,
+            "write_scroll",
+            serde_json::json!({"phext": "other", "coordinate": "1.1.1/1.1.1/1.1.2", "content": "after external"}),
+        );
+        assert_eq!(result["isError"], false, "{}", tool_text(&result));
+        let on_disk = std::fs::read_to_string(dir.path().join("other.phext")).unwrap();
+        assert!(on_disk.contains("external edit") && on_disk.contains("after external"), "{on_disk}");
+    }
+
+    #[test]
+    fn mcp_trailing_slash_spelling_answers() {
+        let (port, _dir) = serve(Editors::default());
+        let headers = session_headers();
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
+        let (code, raw) = http_request(port, "POST", "/mcp/", &headers, body, Some("application/json"));
+        assert_eq!(code, 200, "{raw}");
+        assert!(raw.contains("list_phexts"), "{raw}");
+        // Anonymous callers get the OAuth challenge at the slash spelling
+        // too, so discovery can start from either URL.
+        let (code, raw) = http_request(port, "POST", "/mcp/", "", body, Some("application/json"));
+        assert_eq!(code, 401, "{raw}");
+        assert!(raw.to_lowercase().contains("www-authenticate"), "{raw}");
+    }
+
+    #[test]
+    fn mcp_protocol_version_header_validation() {
+        let (port, _dir) = serve(Editors::default());
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
+        // A published version in the header is accepted, including the
+        // newest one (a client that negotiated down still gets served).
+        for version in ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"] {
+            let headers = format!("{}MCP-Protocol-Version: {version}\r\n", session_headers());
+            let (code, raw) = http_request(port, "POST", "/mcp", &headers, body, Some("application/json"));
+            assert_eq!(code, 200, "{version}: {raw}");
+        }
+        // An unrecognizable value is refused 400 rather than ignored.
+        let headers = format!("{}MCP-Protocol-Version: not-a-version\r\n", session_headers());
+        let (code, raw) = http_request(port, "POST", "/mcp", &headers, body, Some("application/json"));
+        assert_eq!(code, 400, "{raw}");
+        assert!(raw.contains("unsupported MCP protocol version"), "{raw}");
     }
 
     // ── OAuth 2.1 ────────────────────────────────────────────────────
