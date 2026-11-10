@@ -7404,8 +7404,8 @@ body {
 
 /* ── Status bar ── */
 #status-bar {
-  height: 68px; background: #101010; border-top: 1px solid var(--border);
-  display: flex; align-items: center; padding: 0 18px; font-size: 15px; flex-shrink: 0; gap: 18px;
+  min-height: 68px; background: #101010; border-top: 1px solid var(--border);
+  display: flex; align-items: center; padding: 6px 18px; font-size: 15px; flex-shrink: 0; gap: 8px 18px; flex-wrap: wrap;
 }
 #status-bar .mode {
   padding: 6px 14px; border-radius: 4px; font-weight: bold; color: #000;
@@ -7435,7 +7435,7 @@ body {
 #status-bar .bar-link.first { margin-left: auto; }
 #status-bar .bar-link:hover { color: var(--coord); text-decoration: underline; }
 #status-bar .mcp-endpoint { margin-left: 14px; color: var(--coord); white-space: nowrap; }
-#status-bar .mcp-endpoint code { color: var(--active); }
+#status-bar .mcp-endpoint code { color: var(--active); overflow-wrap: anywhere; }
 .welcome .mcp-callout { border: 1px solid var(--coord); background: var(--panel); border-radius: 8px; padding: 12px 14px; margin-top: 18px; text-align: left; }
 .welcome .mcp-callout h2 { color: var(--coord); font-size: 15px; margin: 0 0 6px; }
 .welcome .mcp-callout p { font-size: 13px; line-height: 1.55; margin: 0; }
@@ -7684,7 +7684,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
    small-screen rules so every item stays reachable. Portrait and
    full desktop widths are untouched. */
 @media (min-width: 701px) and (max-width: 1100px) {
-  #status-bar { height: auto; min-height: 52px; flex-wrap: wrap; padding: 8px 12px; gap: 8px 14px; }
+  #status-bar { min-height: 52px; padding: 8px 12px; gap: 8px 14px; }
   #status-bar .help { order: 10; flex-basis: 100%; white-space: normal; overflow: visible; text-overflow: clip; }
   #status-bar .bar-link, #status-bar .sponsor-offer { margin-left: 0; }
 }
@@ -9253,6 +9253,45 @@ mod public_route_tests {
         assert!(INDEX_HTML.contains("drawer-open"), "panel is a drawer on phones");
         assert!(PREVIEWER_HTML.contains("@media (max-width: 700px)"), "previewer small-screen rules");
         assert!(ABOUT_HTML.contains("@media (max-width: 760px)"), "public pages small-screen rules");
+    }
+
+    #[test]
+    fn status_bar_wraps_instead_of_running_off_the_page() {
+        // Launch-eve report (2026-11-09): the footer "runs off the
+        // page". The status bar is a single flex row of nowrap,
+        // flex-shrink: 0 items — mode pill, file button, touch
+        // actions, four links, the MCP endpoint, the donation slot,
+        // the build stamp, the claim dashboard, sign out — whose
+        // min-content width in the signed-in editor state measures
+        // ~2,200px of CSS accounting (help ellipsized to zero).
+        // The bar lives inside overflow-x: clip ancestors (body ->
+        // #main -> #content-wrap) with no scroll container for the
+        // row, so every item past the viewport edge is painted
+        // off-page and unreachable: at widths above the 1100px wrap
+        // band the row clipped, and under it the band's own
+        // height: auto was overridden by the base height: 68px
+        // (equal specificity, earlier position), so wrapped items
+        // spilled vertically out of the fixed-height bar. The bar
+        // must wrap at every width: flex-wrap on the base rule and
+        // a min-height the wrapped rows can grow past, never a
+        // fixed height. The MCP endpoint's code is the longest
+        // unbreakable run in the bar; it may break anywhere rather
+        // than push the row wide on a narrow screen.
+        let bar_rule = INDEX_HTML
+            .split("#status-bar {")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .expect("status bar rule");
+        assert!(bar_rule.contains("flex-wrap: wrap"), "status bar must wrap: {bar_rule}");
+        assert!(bar_rule.contains("min-height: 68px"), "status bar grows with wrapped rows: {bar_rule}");
+        assert!(
+            !bar_rule.replace("min-height: 68px", "").contains("height: 68px"),
+            "a fixed height clips wrapped rows: {bar_rule}"
+        );
+        assert!(
+            INDEX_HTML.contains("#status-bar .mcp-endpoint code { color: var(--active); overflow-wrap: anywhere; }"),
+            "the MCP URL may break rather than widen the bar"
+        );
     }
 
     #[test]
