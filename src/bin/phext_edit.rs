@@ -2754,8 +2754,13 @@ fn oauth_handle_authorize(
     let params = if method == "POST" {
         oauth_form_pairs(&read_body(reader, headers))
     } else {
+        // Authorize queries are form-encoded: clients encode the scope
+        // separator space as '+', which the editor API's percent-only
+        // query parser leaves as a literal '+' inside the scope value
+        // (one unsupported scope "phext:read+phext:write"). Parse the
+        // query with the form parser, exactly like the POST body.
         let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
-        query_pairs(query)
+        oauth_form_pairs(query)
     };
     let request = match oauth_validate_authorize(&store, &params, &resource) {
         Ok(request) => request,
@@ -10540,6 +10545,92 @@ mod mcp_tests {
             r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
         );
         assert_eq!(code, 401);
+    }
+
+    #[test]
+    fn oauth_registration_intersects_grant_types() {
+        let (port, _dir) = serve(Editors::default());
+        let register = |grant_types: serde_json::Value| {
+            let registration = serde_json::json!({
+                "client_name": "Grant Matrix Client",
+                "redirect_uris": [OAUTH_REDIRECT],
+                "grant_types": grant_types,
+                "response_types": ["code"],
+                "token_endpoint_auth_method": "none",
+            })
+            .to_string();
+            let (code, raw) = http_request(
+                port,
+                "POST",
+                "/oauth/register",
+                "",
+                &registration,
+                Some("application/json"),
+            );
+            let reply: serde_json::Value = serde_json::from_str(response_body(&raw)).unwrap();
+            (code, reply)
+        };
+
+        // Real MCP clients register grants this server does not implement
+        // alongside the supported ones (this exact superset shape was
+        // refused by production with invalid_client_metadata). The
+        // registration must succeed and record only the supported
+        // intersection.
+        let (code, reply) = register(serde_json::json!([
+            "authorization_code",
+            "refresh_token",
+            "client_credentials"
+        ]));
+        assert_eq!(code, 201, "{reply}");
+        assert_eq!(
+            reply["grant_types"],
+            serde_json::json!(["authorization_code", "refresh_token"])
+        );
+        let (code, reply) = register(serde_json::json!([
+            "authorization_code",
+            "urn:ietf:params:oauth:grant-type:device_code"
+        ]));
+        assert_eq!(code, 201, "{reply}");
+        assert_eq!(
+            reply["grant_types"],
+            serde_json::json!(["authorization_code"])
+        );
+
+        // authorization_code remains mandatory: no way in, no registration.
+        let (code, reply) = register(serde_json::json!(["refresh_token"]));
+        assert_eq!(code, 400, "{reply}");
+        assert_eq!(reply["error"], "invalid_client_metadata");
+        let (code, _reply) = register(serde_json::json!([]));
+        assert_eq!(code, 400);
+    }
+
+    #[test]
+    fn oauth_authorize_accepts_plus_encoded_scope() {
+        let (port, _dir) = serve(Editors::default());
+        let (client_id, _secret) = register_oauth_client(port, "phext:read phext:write", "none");
+        let challenge = oauth_pkce_challenge(OAUTH_VERIFIER);
+        // Form encoding, as real OAuth clients emit it: the scope
+        // separator space travels as '+', not %20.
+        let query = format!(
+            "response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=phext%3Aread+phext%3Awrite&resource={}&state=state-1",
+            test_form_encode(&client_id),
+            test_form_encode(OAUTH_REDIRECT),
+            test_form_encode(&challenge),
+            test_form_encode(&format!("{OAUTH_ISSUER}/mcp")),
+        );
+        let headers = session_headers();
+        let (code, raw) = http_request(
+            port,
+            "GET",
+            &format!("/oauth/authorize?{query}"),
+            &headers,
+            "",
+            None,
+        );
+        assert_eq!(code, 200, "{raw}");
+        let body = response_body(&raw);
+        assert!(body.contains("phext:read"), "{body}");
+        assert!(body.contains("phext:write"), "{body}");
     }
 
     #[test]
