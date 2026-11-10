@@ -7296,7 +7296,8 @@ are, so the server can tell whether your account is on its list of editors.</p>
     (<code>read:user</code>).</li>
   <li><b>X</b> sign-in asks for read-only access to your account ID and username
     (<code>tweet.read</code>, <code>users.read</code>). Signing in with X adds your
-    account to the list of editors.</li>
+    account to the list of editors. For the next two months, X users get that
+    editor account free.</li>
 </ul>
 <p>Phext Edit does not read your Gmail, Drive, contacts, calendar or repositories. It does
 not post anything for you, and it does not share or sell your information. The
@@ -8153,6 +8154,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
       <a class="auth-btn" data-provider="github" href="/api/auth/github?next=%2F">Sign in with GitHub</a>
       <a class="auth-btn" data-provider="x" href="/api/auth/x?next=%2F">Sign in with X</a>
     </div>
+    <p class="hint">Launch offer: sign in with X and your editor account is free for the next two months.</p>
     <div id="auth-error" role="alert" style="color:var(--danger);margin-top:8px;font-size:12px"></div>
     <div class="mcp-callout">
       <h2>Connect your AI — this site is an MCP server</h2>
