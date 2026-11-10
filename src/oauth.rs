@@ -1111,8 +1111,8 @@ pub fn forwarded_https(headers: &HashMap<String, String>) -> bool {
         .unwrap_or(false)
 }
 
-pub fn security_header_block(https: bool) -> String {
-    let mut csp = CONTENT_SECURITY_POLICY.to_string();
+pub fn security_header_block_csp(https: bool, csp_override: Option<&str>) -> String {
+    let mut csp = csp_override.unwrap_or(CONTENT_SECURITY_POLICY).to_string();
     if https {
         csp.push_str("; upgrade-insecure-requests");
     }
@@ -1127,6 +1127,10 @@ pub fn security_header_block(https: bool) -> String {
         block.push_str(&format!("Strict-Transport-Security: {HSTS_VALUE}\r\n"));
     }
     block
+}
+
+pub fn security_header_block(https: bool) -> String {
+    security_header_block_csp(https, None)
 }
 
 pub fn status_text(status: u16) -> &'static str {
