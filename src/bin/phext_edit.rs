@@ -153,6 +153,10 @@ struct AppState {
     home_file: Option<String>,
     /// Landing coordinate within the home file (--home-coord or PHEXT_HOME_COORD)
     home_coord: Option<libphext::phext::Coordinate>,
+    /// OAuth 2.1 state for the MCP endpoint (registered clients,
+    /// authorization codes, and hashed access/refresh tokens). The store
+    /// owns its own lock and file, beside the hosted phext.
+    mcp_oauth: Arc<McpOAuthStore>,
 }
 
 impl AppState {
@@ -167,7 +171,12 @@ impl AppState {
             nav.next_populated(lattice.index());
         }
 
-        AppState { lattice, nav, overview, default_file: file_path.clone(), file_path, dirty: false, phext_dir: None, home_file: None, home_coord: None }
+        let mcp_oauth_path = Path::new(&file_path)
+            .parent()
+            .map(|dir| dir.join("mcp-oauth.json"))
+            .unwrap_or_else(|| PathBuf::from("mcp-oauth.json"));
+        let mcp_oauth = Arc::new(McpOAuthStore::new(mcp_oauth_path));
+        AppState { lattice, nav, overview, default_file: file_path.clone(), file_path, dirty: false, phext_dir: None, home_file: None, home_coord: None, mcp_oauth }
     }
 
     fn rebuild_overview(&mut self) {
@@ -949,6 +958,14 @@ fn handle_request(
         }
         return;
     }
+    // OAuth 2.1 discovery, registration, authorization, and token routes
+    // for the MCP endpoint. These are answered here because the token and
+    // registration endpoints need the request body, which Gate::route does
+    // not receive. The authorization endpoint still reuses Gate's session
+    // and editor machinery verbatim.
+    if handle_mcp_oauth(stream, &mut reader, &method, &path, &headers, state, gate) {
+        return;
+    }
     // The MCP endpoint answers here, before the phext-link route can read
     // "/mcp" as a phext named "mcp": handle_mcp runs the same gate as the
     // editor API, so an MCP client is admitted exactly as a browser is.
@@ -1214,11 +1231,15 @@ fn handle_request(
 // agent-facing surface ships in the same binary and behind the same gate
 // as everything else here.
 //
-// Admission is Gate::admit, unchanged: an editor session cookie, and the
-// session's CSRF token in the x-csrf-token header, because an MCP call is
-// a non-GET request. There is no second credential system for a client to
-// leak. A client learns its CSRF token from GET /api/session while signed
-// in, and sends both headers on every call.
+// Admission has two forms. The original one is Gate::admit, unchanged:
+// an editor session cookie, and the session's CSRF token in the
+// x-csrf-token header, because an MCP call is a non-GET request; a local
+// client learns its CSRF token from GET /api/session while signed in.
+// The second is OAuth 2.1 (see the OAuth section below): hosted clients
+// such as ChatGPT and Claude.ai present a per-user, expiring Bearer
+// token issued by this server's own authorization endpoints, resolved
+// to the issuing editor and the scopes they approved. No static or
+// shared bearer token exists, and no other route accepts Bearer.
 //
 // The tools are per-file and coordinate-addressed. They never touch the
 // editor's shared navigation cursor or its open-file selection: each call
@@ -1232,6 +1253,58 @@ fn handle_request(
 
 const MCP_PROTOCOL_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// How a /mcp caller was admitted. The editor-cookie path carries the
+/// editor's full access, exactly as before. The OAuth path carries only
+/// the scopes granted to the token that was presented.
+#[derive(Clone)]
+enum McpAuthContext {
+    Editor,
+    Bearer(McpOAuthAccess),
+}
+
+impl McpAuthContext {
+    fn has_scope(&self, scope: &str) -> bool {
+        match self {
+            McpAuthContext::Editor => true,
+            McpAuthContext::Bearer(access) => access.scopes.iter().any(|s| s == scope),
+        }
+    }
+}
+
+fn mcp_bearer_challenge(issuer: &str, error: Option<&str>, scope: Option<&str>) -> String {
+    let resource_metadata = format!("{issuer}/.well-known/oauth-protected-resource");
+    let mut challenge = format!("Bearer resource_metadata=\"{resource_metadata}\"");
+    if let Some(error) = error {
+        challenge.push_str(&format!(", error=\"{error}\""));
+    }
+    if let Some(scope) = scope {
+        challenge.push_str(&format!(", scope=\"{scope}\""));
+    }
+    challenge
+}
+
+fn mcp_required_scope(req: &serde_json::Value) -> Option<&'static str> {
+    let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    match method {
+        "tools/call" => {
+            let name = req
+                .get("params")
+                .and_then(|p| p.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
+            match name {
+                "write_scroll" => Some(MCP_OAUTH_WRITE_SCOPE),
+                "list_phexts" | "phext_toc" | "read_scroll" | "search_scrolls" => {
+                    Some(MCP_OAUTH_READ_SCOPE)
+                }
+                _ => None,
+            }
+        }
+        "initialize" | "ping" | "tools/list" => Some(MCP_OAUTH_READ_SCOPE),
+        _ => None,
+    }
+}
 
 fn handle_mcp(
     stream: &mut std::net::TcpStream,
@@ -1255,10 +1328,79 @@ fn handle_mcp(
         send_json(stream, headers, 405, r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"method not allowed: POST is the whole transport"}}"#);
         return;
     }
-    if let Err(reply) = gate.admit(method, "/mcp", headers) {
-        reply.write_to(stream);
-        return;
-    }
+    let issuer = oauth_issuer(gate, headers);
+    let store = state.lock().unwrap().mcp_oauth.clone();
+    let auth = if let Some(authorization) = headers.get("authorization") {
+        let mut parts = authorization.splitn(2, ' ');
+        let scheme = parts.next().unwrap_or("");
+        let token = parts.next().unwrap_or("").trim();
+        if !scheme.eq_ignore_ascii_case("Bearer") || token.is_empty() {
+            send_oauth_json(
+                stream,
+                headers,
+                401,
+                &serde_json::json!({
+                    "error": "invalid_token",
+                    "error_description": "An OAuth 2.1 Bearer access token is required.",
+                }),
+                &[("WWW-Authenticate", mcp_bearer_challenge(&issuer, Some("invalid_token"), Some(MCP_OAUTH_READ_SCOPE)))],
+            );
+            return;
+        }
+        let Some(access) = store.lookup_access(gate, token) else {
+            send_oauth_json(
+                stream,
+                headers,
+                401,
+                &serde_json::json!({
+                    "error": "invalid_token",
+                    "error_description": "The access token is unknown, expired, or revoked.",
+                }),
+                &[("WWW-Authenticate", mcp_bearer_challenge(&issuer, Some("invalid_token"), Some(MCP_OAUTH_READ_SCOPE)))],
+            );
+            return;
+        };
+        if access.resource != oauth_resource(&issuer) {
+            send_oauth_json(
+                stream,
+                headers,
+                401,
+                &serde_json::json!({
+                    "error": "invalid_token",
+                    "error_description": "The access token was not issued for this resource.",
+                }),
+                &[("WWW-Authenticate", mcp_bearer_challenge(&issuer, Some("invalid_token"), Some(MCP_OAUTH_READ_SCOPE)))],
+            );
+            return;
+        }
+        let session = access.identity.session();
+        if !gate.is_editor(&session) {
+            send_oauth_json(
+                stream,
+                headers,
+                403,
+                &serde_json::json!({
+                    "error": "insufficient_scope",
+                    "error_description": "The account behind this token is no longer on the editor list.",
+                }),
+                &[("WWW-Authenticate", mcp_bearer_challenge(&issuer, Some("insufficient_scope"), Some(MCP_OAUTH_READ_SCOPE)))],
+            );
+            return;
+        }
+        McpAuthContext::Bearer(access)
+    } else {
+        if let Err(mut reply) = gate.admit(method, "/mcp", headers) {
+            if reply.status == 401 {
+                reply.headers.push((
+                    "WWW-Authenticate",
+                    mcp_bearer_challenge(&issuer, None, Some(MCP_OAUTH_READ_SCOPE)),
+                ));
+            }
+            reply.write_to(stream);
+            return;
+        }
+        McpAuthContext::Editor
+    };
     let content_type = headers.get("content-type").map(String::as_str).unwrap_or("");
     if !content_type.starts_with("application/json") {
         send_json(stream, headers, 415, r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"unsupported media type: application/json required"}}"#);
@@ -1272,10 +1414,33 @@ fn handle_mcp(
             return;
         }
     };
+    if matches!(auth, McpAuthContext::Bearer(_)) {
+        let requests: Vec<&serde_json::Value> = match &value {
+            serde_json::Value::Array(items) => items.iter().collect(),
+            single => vec![single],
+        };
+        if let Some(required) = requests
+            .iter()
+            .filter_map(|item| mcp_required_scope(item))
+            .find(|scope| !auth.has_scope(scope))
+        {
+            send_oauth_json(
+                stream,
+                headers,
+                403,
+                &serde_json::json!({
+                    "error": "insufficient_scope",
+                    "error_description": format!("This call requires the {required} scope."),
+                }),
+                &[("WWW-Authenticate", mcp_bearer_challenge(&issuer, Some("insufficient_scope"), Some(required)))],
+            );
+            return;
+        }
+    }
     // A batch is answered as a batch, notifications omitted (JSON-RPC 2.0).
     if let serde_json::Value::Array(items) = &value {
         let replies: Vec<serde_json::Value> =
-            items.iter().filter_map(|item| mcp_dispatch(state, item)).collect();
+            items.iter().filter_map(|item| mcp_dispatch(state, item, &auth)).collect();
         if replies.is_empty() {
             send_response(stream, 202, "application/json", b"", CacheClass::NoStore, headers, false);
         } else {
@@ -1284,7 +1449,7 @@ fn handle_mcp(
         }
         return;
     }
-    match mcp_dispatch(state, &value) {
+    match mcp_dispatch(state, &value, &auth) {
         Some(reply) => {
             let out = serde_json::to_string(&reply).unwrap_or_else(|_| "{}".into());
             send_json(stream, headers, 200, &out);
@@ -1295,7 +1460,11 @@ fn handle_mcp(
 
 /// One JSON-RPC request in, its response out — or None for a notification,
 /// which is answered by silence.
-fn mcp_dispatch(state: &Arc<Mutex<AppState>>, req: &serde_json::Value) -> Option<serde_json::Value> {
+fn mcp_dispatch(
+    state: &Arc<Mutex<AppState>>,
+    req: &serde_json::Value,
+    auth: &McpAuthContext,
+) -> Option<serde_json::Value> {
     if !req.is_object() {
         return Some(serde_json::json!({
             "jsonrpc": "2.0", "id": null,
@@ -1309,7 +1478,7 @@ fn mcp_dispatch(state: &Arc<Mutex<AppState>>, req: &serde_json::Value) -> Option
         "initialize" => Ok(mcp_initialize(&params)),
         "ping" => Ok(serde_json::json!({})),
         "tools/list" => Ok(serde_json::json!({ "tools": mcp_tools() })),
-        "tools/call" => Ok(mcp_call(state, &params)),
+        "tools/call" => Ok(mcp_call(state, &params, auth)),
         _ => Err((-32601, format!("method not found: {method}"))),
     };
     Some(match outcome {
@@ -1401,8 +1570,27 @@ fn mcp_tools() -> serde_json::Value {
     ])
 }
 
-fn mcp_call(state: &Arc<Mutex<AppState>>, params: &serde_json::Value) -> serde_json::Value {
+fn mcp_call(
+    state: &Arc<Mutex<AppState>>,
+    params: &serde_json::Value,
+    auth: &McpAuthContext,
+) -> serde_json::Value {
     let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let required = match name {
+        "write_scroll" => Some(MCP_OAUTH_WRITE_SCOPE),
+        "list_phexts" | "phext_toc" | "read_scroll" | "search_scrolls" => {
+            Some(MCP_OAUTH_READ_SCOPE)
+        }
+        _ => None,
+    };
+    if let Some(scope) = required {
+        if !auth.has_scope(scope) {
+            return serde_json::json!({
+                "content": [{ "type": "text", "text": format!("insufficient scope: this tool requires {scope}") }],
+                "isError": true,
+            });
+        }
+    }
     let args = params.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
     match mcp_run_tool(state, name, &args) {
         Ok(value) => {
@@ -1425,6 +1613,1665 @@ fn mcp_arg_str<'a>(args: &'a serde_json::Value, key: &str) -> Result<&'a str, St
 fn mcp_arg_coord(args: &serde_json::Value) -> Result<libphext::phext::Coordinate, String> {
     let raw = mcp_arg_str(args, "coordinate")?;
     parse_coordinate(raw).ok_or_else(|| format!("invalid coordinate: {raw}"))
+}
+
+// ── OAuth 2.1 for /mcp ───────────────────────────────────────────────
+//
+// edit.phext.io is its own authorization server for the MCP endpoint:
+// RFC 9728 protected-resource metadata, RFC 8414 authorization-server
+// metadata, RFC 7591 dynamic client registration, authorization codes
+// with mandatory PKCE S256, rotating refresh tokens, and RFC 8707
+// resource indicators. Client ID Metadata Documents are accepted in the
+// same client-validation path as registered clients; ChatGPT's public
+// (`none`) CIMD authentication method is supported, while
+// `private_key_jwt` is not (see the design note).
+//
+// The two scopes name this surface and nothing else. A token's stored
+// record is keyed by a domain-separated HMAC of the token under the
+// existing session secret (see Oauth::mcp_oauth_hash); raw codes,
+// tokens, and client secrets never reach disk.
+
+const MCP_OAUTH_READ_SCOPE: &str = "phext:read";
+const MCP_OAUTH_WRITE_SCOPE: &str = "phext:write";
+const MCP_OAUTH_SCOPES: [&str; 2] = [MCP_OAUTH_READ_SCOPE, MCP_OAUTH_WRITE_SCOPE];
+const MCP_OAUTH_CODE_TTL: i64 = 600;
+const MCP_OAUTH_ACCESS_TTL: i64 = 3_600;
+const MCP_OAUTH_REFRESH_TTL: i64 = 30 * 86_400;
+const MCP_OAUTH_CIMD_TTL: i64 = 300;
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct McpOAuthIdentity {
+    who: String,
+    handle: String,
+    name: String,
+    email: String,
+}
+
+impl McpOAuthIdentity {
+    fn from_session(session: &Session) -> Self {
+        Self {
+            who: session.who.clone(),
+            handle: session.handle.clone(),
+            name: session.name.clone(),
+            email: session.email.clone(),
+        }
+    }
+
+    fn session(&self) -> Session {
+        Session {
+            who: self.who.clone(),
+            handle: self.handle.clone(),
+            name: self.name.clone(),
+            email: self.email.clone(),
+            csrf: String::new(),
+        }
+    }
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct McpOAuthClient {
+    client_id: String,
+    client_name: String,
+    redirect_uris: Vec<String>,
+    grant_types: Vec<String>,
+    response_types: Vec<String>,
+    scopes: Vec<String>,
+    token_endpoint_auth_method: String,
+    token_endpoint_auth_methods: Vec<String>,
+    #[serde(default)]
+    client_secret_hash: Option<String>,
+    #[serde(default)]
+    client_uri: Option<String>,
+    #[serde(default)]
+    logo_uri: Option<String>,
+    #[serde(default)]
+    cimd: bool,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct McpOAuthCode {
+    client_id: String,
+    redirect_uri: String,
+    redirect_uri_explicit: bool,
+    code_challenge: String,
+    scopes: Vec<String>,
+    identity: McpOAuthIdentity,
+    resource: String,
+    family: String,
+    expires_at: i64,
+    used: bool,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct McpOAuthAccess {
+    client_id: String,
+    scopes: Vec<String>,
+    identity: McpOAuthIdentity,
+    resource: String,
+    family: String,
+    expires_at: i64,
+    revoked: bool,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct McpOAuthRefresh {
+    client_id: String,
+    scopes: Vec<String>,
+    identity: McpOAuthIdentity,
+    resource: String,
+    family: String,
+    expires_at: i64,
+    replaced: bool,
+    revoked: bool,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct McpOAuthCimdCache {
+    client: McpOAuthClient,
+    fetched_at: i64,
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct McpOAuthData {
+    #[serde(default)]
+    clients: HashMap<String, McpOAuthClient>,
+    #[serde(default)]
+    cimd_clients: HashMap<String, McpOAuthCimdCache>,
+    #[serde(default)]
+    codes: HashMap<String, McpOAuthCode>,
+    #[serde(default)]
+    access_tokens: HashMap<String, McpOAuthAccess>,
+    #[serde(default)]
+    refresh_tokens: HashMap<String, McpOAuthRefresh>,
+}
+
+impl McpOAuthData {
+    fn cleanup(&mut self, now: i64) {
+        self.codes.retain(|_, code| code.expires_at > now);
+        self.access_tokens.retain(|_, token| token.expires_at > now);
+        self.refresh_tokens.retain(|_, token| token.expires_at > now);
+        self.cimd_clients
+            .retain(|_, cached| now - cached.fetched_at <= MCP_OAUTH_CIMD_TTL * 10);
+    }
+
+    fn revoke_family(&mut self, family: &str) {
+        for token in self.access_tokens.values_mut() {
+            if token.family == family {
+                token.revoked = true;
+            }
+        }
+        for token in self.refresh_tokens.values_mut() {
+            if token.family == family {
+                token.revoked = true;
+            }
+        }
+    }
+}
+
+struct McpOAuthStore {
+    path: PathBuf,
+    inner: Mutex<McpOAuthData>,
+}
+
+impl McpOAuthStore {
+    fn new(path: PathBuf) -> Self {
+        let data = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        Self { path, inner: Mutex::new(data) }
+    }
+
+    fn save(&self, data: &McpOAuthData) -> Result<(), String> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("could not create the OAuth data directory: {e}"))?;
+        }
+        let text = serde_json::to_string_pretty(data)
+            .map_err(|e| format!("could not serialize OAuth state: {e}"))?;
+        let temp = self.path.with_extension(format!("json.tmp-{}", std::process::id()));
+        std::fs::write(&temp, text)
+            .map_err(|e| format!("could not write OAuth state: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600));
+        }
+        std::fs::rename(&temp, &self.path)
+            .map_err(|e| format!("could not store OAuth state: {e}"))?;
+        Ok(())
+    }
+
+    fn register_client(&self, client: McpOAuthClient) -> Result<(), String> {
+        let mut data = self.inner.lock().unwrap();
+        data.cleanup(oauth_now());
+        data.clients.insert(client.client_id.clone(), client);
+        self.save(&data)
+    }
+
+    fn registered_client(&self, client_id: &str) -> Option<McpOAuthClient> {
+        self.inner.lock().unwrap().clients.get(client_id).cloned()
+    }
+
+    fn cached_cimd(&self, client_id: &str) -> Option<McpOAuthClient> {
+        let data = self.inner.lock().unwrap();
+        let cached = data.cimd_clients.get(client_id)?;
+        if oauth_now() - cached.fetched_at <= MCP_OAUTH_CIMD_TTL {
+            Some(cached.client.clone())
+        } else {
+            None
+        }
+    }
+
+    fn cache_cimd(&self, client: McpOAuthClient) {
+        let mut data = self.inner.lock().unwrap();
+        data.cimd_clients.insert(
+            client.client_id.clone(),
+            McpOAuthCimdCache { client, fetched_at: oauth_now() },
+        );
+        let _ = self.save(&data);
+    }
+
+    fn issue_code(&self, gate: &Gate, raw_code: &str, code: McpOAuthCode) -> Result<(), String> {
+        let hash = oauth_hash(gate, "authorization-code", raw_code)
+            .ok_or_else(|| "OAuth credential hashing is not configured.".to_string())?;
+        let mut data = self.inner.lock().unwrap();
+        data.cleanup(oauth_now());
+        data.codes.insert(hash, code);
+        self.save(&data)
+    }
+
+    /// Take a code exactly once. A replayed code revokes its whole token
+    /// family, as RFC 6819 §5.2.2.3 requires of a detected reuse.
+    fn take_code(&self, gate: &Gate, raw_code: &str) -> Option<(McpOAuthCode, bool)> {
+        let hash = oauth_hash(gate, "authorization-code", raw_code)?;
+        let mut data = self.inner.lock().unwrap();
+        data.cleanup(oauth_now());
+        let code = data.codes.get_mut(&hash)?;
+        if code.used {
+            let family = code.family.clone();
+            let code = code.clone();
+            data.revoke_family(&family);
+            let _ = self.save(&data);
+            return Some((code, true));
+        }
+        if code.expires_at <= oauth_now() {
+            return None;
+        }
+        code.used = true;
+        let code = code.clone();
+        let _ = self.save(&data);
+        Some((code, false))
+    }
+
+    fn issue_tokens(
+        &self,
+        gate: &Gate,
+        raw_access: &str,
+        access: McpOAuthAccess,
+        refresh: Option<(&str, McpOAuthRefresh)>,
+    ) -> Result<(), String> {
+        let access_hash = oauth_hash(gate, "access-token", raw_access)
+            .ok_or_else(|| "OAuth credential hashing is not configured.".to_string())?;
+        let mut data = self.inner.lock().unwrap();
+        data.cleanup(oauth_now());
+        data.access_tokens.insert(access_hash, access);
+        if let Some((raw_refresh, record)) = refresh {
+            let refresh_hash = oauth_hash(gate, "refresh-token", raw_refresh)
+                .ok_or_else(|| "OAuth credential hashing is not configured.".to_string())?;
+            data.refresh_tokens.insert(refresh_hash, record);
+        }
+        self.save(&data)
+    }
+
+    fn peek_refresh(&self, gate: &Gate, raw_token: &str) -> Option<McpOAuthRefresh> {
+        let hash = oauth_hash(gate, "refresh-token", raw_token)?;
+        self.inner.lock().unwrap().refresh_tokens.get(&hash).cloned()
+    }
+
+    fn note_refresh_replay(&self, gate: &Gate, raw_token: &str) -> bool {
+        let Some(hash) = oauth_hash(gate, "refresh-token", raw_token) else {
+            return false;
+        };
+        let mut data = self.inner.lock().unwrap();
+        let Some(record) = data.refresh_tokens.get(&hash).cloned() else {
+            return false;
+        };
+        if !record.replaced {
+            return false;
+        }
+        data.revoke_family(&record.family);
+        let _ = self.save(&data);
+        true
+    }
+
+    fn lookup_access(&self, gate: &Gate, raw_token: &str) -> Option<McpOAuthAccess> {
+        let hash = oauth_hash(gate, "access-token", raw_token)?;
+        let data = self.inner.lock().unwrap();
+        let access = data.access_tokens.get(&hash)?;
+        if access.revoked || access.expires_at <= oauth_now() {
+            return None;
+        }
+        Some(access.clone())
+    }
+
+    /// Rotate a refresh token. Presenting an already-rotated token is a
+    /// replay: the whole family is revoked before the error is returned.
+    fn rotate_refresh(
+        &self,
+        gate: &Gate,
+        raw_refresh: &str,
+        raw_access: &str,
+        access: McpOAuthAccess,
+        raw_new_refresh: &str,
+        refresh: McpOAuthRefresh,
+    ) -> Result<McpOAuthRefresh, &'static str> {
+        let old_hash = oauth_hash(gate, "refresh-token", raw_refresh).ok_or("invalid")?;
+        let access_hash = oauth_hash(gate, "access-token", raw_access).ok_or("invalid")?;
+        let new_hash = oauth_hash(gate, "refresh-token", raw_new_refresh).ok_or("invalid")?;
+        let mut data = self.inner.lock().unwrap();
+        data.cleanup(oauth_now());
+        let old = data.refresh_tokens.get_mut(&old_hash).ok_or("invalid")?;
+        if old.replaced {
+            let family = old.family.clone();
+            data.revoke_family(&family);
+            let _ = self.save(&data);
+            return Err("replay");
+        }
+        if old.revoked || old.expires_at <= oauth_now() {
+            return Err("invalid");
+        }
+        old.replaced = true;
+        let old = old.clone();
+        data.access_tokens.insert(access_hash, access);
+        data.refresh_tokens.insert(new_hash, refresh);
+        self.save(&data).map_err(|_| "invalid")?;
+        Ok(old)
+    }
+}
+
+fn oauth_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn oauth_hash(gate: &Gate, domain: &str, value: &str) -> Option<String> {
+    gate.oauth().mcp_oauth_hash(domain, value)
+}
+
+fn oauth_base64url(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(ALPHABET[(n >> 12) as usize & 63] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[(n >> 6) as usize & 63] as char);
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[n as usize & 63] as char);
+        }
+    }
+    out
+}
+
+fn oauth_base64_decode(input: &str) -> Option<Vec<u8>> {
+    let mut values = Vec::with_capacity(input.len());
+    for byte in input.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            b'=' => break,
+            _ => return None,
+        };
+        values.push(value);
+    }
+    let mut out = Vec::with_capacity(values.len() * 3 / 4);
+    for chunk in values.chunks(4) {
+        if chunk.len() == 1 {
+            return None;
+        }
+        let n = chunk.iter().fold(0u32, |acc, v| (acc << 6) | *v as u32) << (6 * (4 - chunk.len()));
+        out.push((n >> 16) as u8);
+        if chunk.len() > 2 {
+            out.push((n >> 8) as u8);
+        }
+        if chunk.len() > 3 {
+            out.push(n as u8);
+        }
+    }
+    Some(out)
+}
+
+fn oauth_random(prefix: &str, bytes: usize) -> Result<String, String> {
+    let mut buf = vec![0u8; bytes];
+    getrandom::fill(&mut buf).map_err(|_| "secure randomness is unavailable".to_string())?;
+    Ok(format!("{prefix}{}", oauth_base64url(&buf)))
+}
+
+fn oauth_form_encode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn oauth_form_pairs(body: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for pair in body.split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        out.insert(url_decode(key), url_decode(value));
+    }
+    out
+}
+
+fn oauth_issuer(gate: &Gate, headers: &HashMap<String, String>) -> String {
+    let configured = gate.oauth().base().trim_end_matches('/');
+    if !configured.is_empty() {
+        return configured.to_string();
+    }
+    let scheme = if forwarded_https(headers) { "https" } else { "http" };
+    let host = headers.get("host").cloned().unwrap_or_else(|| "127.0.0.1:8080".into());
+    format!("{scheme}://{host}")
+}
+
+fn oauth_resource(issuer: &str) -> String {
+    format!("{issuer}/mcp")
+}
+
+fn oauth_scope_string(scopes: &[String]) -> String {
+    scopes.join(" ")
+}
+
+fn oauth_parse_scopes(raw: Option<&str>, default: &[String]) -> Result<Vec<String>, String> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(default.to_vec());
+    };
+    let mut out = Vec::new();
+    for scope in raw.split_whitespace() {
+        if !MCP_OAUTH_SCOPES.contains(&scope) {
+            return Err(format!("unsupported scope: {scope}"));
+        }
+        if !out.iter().any(|s: &String| s == scope) {
+            out.push(scope.to_string());
+        }
+    }
+    Ok(out)
+}
+
+fn oauth_pkce_challenge(verifier: &str) -> String {
+    oauth_base64url(&sha2::Sha256::digest(verifier.as_bytes()))
+}
+
+fn oauth_valid_pkce_verifier(verifier: &str) -> bool {
+    (43..=128).contains(&verifier.len())
+        && verifier
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'))
+}
+
+struct OAuthParsedUrl {
+    scheme: String,
+    host: String,
+    port: Option<u16>,
+}
+
+fn oauth_parse_url(raw: &str) -> Option<OAuthParsedUrl> {
+    if raw.len() > 2048
+        || raw.contains('#')
+        || raw.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return None;
+    }
+    let (scheme, rest) = raw.split_once("://")?;
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if authority.is_empty() || authority.contains('@') || authority.contains('\\') {
+        return None;
+    }
+    let (host, port) = if let Some(stripped) = authority.strip_prefix('[') {
+        let (host, tail) = stripped.split_once(']')?;
+        let port = if tail.is_empty() {
+            None
+        } else {
+            Some(tail.strip_prefix(':')?.parse().ok()?)
+        };
+        (host.to_ascii_lowercase(), port)
+    } else {
+        match authority.rsplit_once(':') {
+            Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => {
+                (host.to_ascii_lowercase(), Some(port.parse().ok()?))
+            }
+            _ => (authority.to_ascii_lowercase(), None),
+        }
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some(OAuthParsedUrl { scheme: scheme.to_string(), host, port })
+}
+
+fn oauth_loopback_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
+fn oauth_valid_redirect_uri(raw: &str) -> bool {
+    let Some(url) = oauth_parse_url(raw) else {
+        return false;
+    };
+    match url.scheme.as_str() {
+        "https" => !url.host.is_empty(),
+        "http" => oauth_loopback_host(&url.host),
+        _ => false,
+    }
+}
+
+fn oauth_ip_literal(host: &str) -> bool {
+    host.parse::<std::net::IpAddr>().is_ok()
+}
+
+struct McpOAuthError {
+    status: u16,
+    error: &'static str,
+    description: String,
+}
+
+impl McpOAuthError {
+    fn new(status: u16, error: &'static str, description: impl Into<String>) -> Self {
+        Self { status, error, description: description.into() }
+    }
+
+    fn bad_request(error: &'static str, description: impl Into<String>) -> Self {
+        Self::new(400, error, description)
+    }
+}
+
+fn send_oauth_json(
+    stream: &mut std::net::TcpStream,
+    headers: &HashMap<String, String>,
+    status: u16,
+    value: &serde_json::Value,
+    extra_headers: &[(&str, String)],
+) {
+    let body = serde_json::to_string(value).unwrap_or_else(|_| "{}".into());
+    let mut head = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nPragma: no-cache\r\nConnection: close\r\n{}",
+        status,
+        status_text(status),
+        body.len(),
+        security_header_block(forwarded_https(headers)),
+    );
+    for (name, value) in extra_headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str("\r\n");
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(body.as_bytes());
+    let _ = stream.flush();
+}
+
+fn send_oauth_error(
+    stream: &mut std::net::TcpStream,
+    headers: &HashMap<String, String>,
+    error: &McpOAuthError,
+) {
+    send_oauth_json(
+        stream,
+        headers,
+        error.status,
+        &serde_json::json!({
+            "error": error.error,
+            "error_description": error.description,
+        }),
+        &[],
+    );
+}
+
+fn oauth_string_list(
+    metadata: &serde_json::Value,
+    field: &str,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(value) = metadata.get(field) else {
+        return Ok(None);
+    };
+    let Some(items) = value.as_array() else {
+        return Err(format!("{field} must be an array of strings"));
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let Some(item) = item.as_str() else {
+            return Err(format!("{field} must be an array of strings"));
+        };
+        if item.len() > 200 {
+            return Err(format!("{field} contains an unreasonably long value"));
+        }
+        out.push(item.to_string());
+    }
+    Ok(Some(out))
+}
+
+fn oauth_client_from_metadata(
+    metadata: &serde_json::Value,
+    client_id: &str,
+    cimd: bool,
+) -> Result<McpOAuthClient, String> {
+    if !metadata.is_object() {
+        return Err("client metadata must be a JSON object".into());
+    }
+    let redirect_uris = oauth_string_list(metadata, "redirect_uris")?
+        .ok_or_else(|| "redirect_uris is required".to_string())?;
+    if redirect_uris.is_empty() || redirect_uris.len() > 10 {
+        return Err("redirect_uris must contain between one and ten URIs".into());
+    }
+    for uri in &redirect_uris {
+        if !oauth_valid_redirect_uri(uri) {
+            return Err(format!(
+                "invalid redirect_uri {uri:?}: https is required, except http on a loopback host"
+            ));
+        }
+    }
+    let grant_types = oauth_string_list(metadata, "grant_types")?
+        .unwrap_or_else(|| vec!["authorization_code".into(), "refresh_token".into()]);
+    if grant_types.is_empty()
+        || !grant_types.iter().any(|g| g == "authorization_code")
+        || !grant_types
+            .iter()
+            .all(|g| matches!(g.as_str(), "authorization_code" | "refresh_token"))
+    {
+        return Err("grant_types must include authorization_code and may include refresh_token".into());
+    }
+    let response_types = oauth_string_list(metadata, "response_types")?
+        .unwrap_or_else(|| vec!["code".into()]);
+    if response_types.len() != 1 || response_types[0] != "code" {
+        return Err("only response_types [\"code\"] is supported".into());
+    }
+    let scopes = oauth_parse_scopes(
+        metadata.get("scope").and_then(|v| v.as_str()),
+        &[MCP_OAUTH_READ_SCOPE.to_string()],
+    )?;
+    let mut auth_methods = Vec::new();
+    if let Some(method) = metadata.get("token_endpoint_auth_method").and_then(|v| v.as_str()) {
+        auth_methods.push(method.to_string());
+    }
+    if let Some(methods) = oauth_string_list(metadata, "token_endpoint_auth_methods_supported")? {
+        for method in methods {
+            if !auth_methods.contains(&method) {
+                auth_methods.push(method);
+            }
+        }
+    }
+    if auth_methods.is_empty() {
+        auth_methods.push("none".into());
+    }
+    let auth_method = if cimd {
+        if auth_methods.iter().any(|m| m == "none") {
+            "none".to_string()
+        } else {
+            return Err(
+                "this authorization server supports CIMD clients with the public (none) authentication method; private_key_jwt is not supported"
+                    .into(),
+            );
+        }
+    } else {
+        let method = auth_methods[0].clone();
+        if !matches!(method.as_str(), "none" | "client_secret_basic" | "client_secret_post") {
+            return Err(format!("unsupported token_endpoint_auth_method: {method}"));
+        }
+        method
+    };
+    let client_name = metadata
+        .get("client_name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.chars().take(120).collect::<String>())
+        .unwrap_or_else(|| if cimd { "CIMD MCP client".into() } else { "MCP client".into() });
+    let optional_url = |field: &str| -> Result<Option<String>, String> {
+        let Some(value) = metadata.get(field) else {
+            return Ok(None);
+        };
+        let Some(value) = value.as_str() else {
+            return Err(format!("{field} must be a string"));
+        };
+        let Some(url) = oauth_parse_url(value) else {
+            return Err(format!("{field} must be an absolute http(s) URL"));
+        };
+        if url.scheme != "https" {
+            return Err(format!("{field} must use https"));
+        }
+        Ok(Some(value.to_string()))
+    };
+    Ok(McpOAuthClient {
+        client_id: client_id.to_string(),
+        client_name,
+        redirect_uris,
+        grant_types,
+        response_types,
+        scopes,
+        token_endpoint_auth_method: auth_method,
+        token_endpoint_auth_methods: auth_methods,
+        client_secret_hash: None,
+        client_uri: optional_url("client_uri")?,
+        logo_uri: optional_url("logo_uri")?,
+        cimd,
+    })
+}
+
+/// Whether an address is a public unicast address, from the stable
+/// per-range predicates (IpAddr::is_global is not stable on this
+/// toolchain). Shared-address space, benchmarking, and protocol
+/// assignment ranges are refused alongside the obvious private ones.
+fn oauth_ip_is_public(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || o[0] == 0
+                || (o[0] == 100 && (64..128).contains(&o[1]))
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+                || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
+                || o[0] >= 240)
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return oauth_ip_is_public(std::net::IpAddr::V4(v4));
+            }
+            let s = v6.segments();
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                || (s[0] == 0x2001 && s[1] == 0x0db8))
+        }
+    }
+}
+
+fn oauth_is_cimd_client_id(client_id: &str) -> bool {
+    client_id.starts_with("https://")
+}
+
+fn oauth_fetch_cimd(client_id: &str) -> Result<McpOAuthClient, McpOAuthError> {
+    let invalid = |message: String| McpOAuthError::bad_request("invalid_client_metadata", message);
+    let Some(url) = oauth_parse_url(client_id) else {
+        return Err(invalid("the CIMD client_id is not a valid HTTPS URL".into()));
+    };
+    if url.scheme != "https"
+        || oauth_loopback_host(&url.host)
+        || url.host.ends_with(".local")
+        || oauth_ip_literal(&url.host)
+        || matches!(url.port, Some(port) if port != 443)
+    {
+        return Err(invalid(
+            "the CIMD client_id must be an https URL on a public DNS host".into(),
+        ));
+    }
+    // Resolve first and refuse non-public addresses, so a CIMD hostname
+    // cannot point the fetch at a loopback or private address. (A DNS
+    // rebinding race between this check and the fetch remains possible;
+    // the fetch itself is HTTPS, redirect-free, and size-capped.)
+    {
+        use std::net::ToSocketAddrs;
+        let addresses: Vec<std::net::SocketAddr> = (url.host.as_str(), 443)
+            .to_socket_addrs()
+            .map(|iter| iter.collect())
+            .unwrap_or_default();
+        if addresses.is_empty() || addresses.iter().any(|addr| !oauth_ip_is_public(addr.ip())) {
+            return Err(invalid(
+                "the CIMD hostname does not resolve to a public address".into(),
+            ));
+        }
+    }
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(5))
+        .redirects(0)
+        .build();
+    let response = agent
+        .get(client_id)
+        .set("Accept", "application/json")
+        .call()
+        .map_err(|e| invalid(format!("could not fetch the CIMD document: {e}")))?;
+    if response.status() != 200 {
+        return Err(invalid(format!(
+            "the CIMD document returned HTTP {}",
+            response.status()
+        )));
+    }
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(65_537)
+        .read_to_end(&mut bytes)
+        .map_err(|e| invalid(format!("could not read the CIMD document: {e}")))?;
+    if bytes.len() > 65_536 {
+        return Err(invalid("the CIMD document is larger than 64 KiB".into()));
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| invalid(format!("the CIMD document is not valid JSON: {e}")))?;
+    if metadata.get("client_id").and_then(|v| v.as_str()) != Some(client_id) {
+        return Err(invalid(
+            "the CIMD document's client_id does not exactly match its URL".into(),
+        ));
+    }
+    oauth_client_from_metadata(&metadata, client_id, true).map_err(invalid)
+}
+
+fn oauth_resolve_client(
+    store: &McpOAuthStore,
+    client_id: &str,
+) -> Result<McpOAuthClient, McpOAuthError> {
+    if oauth_is_cimd_client_id(client_id) {
+        if let Some(client) = store.cached_cimd(client_id) {
+            return Ok(client);
+        }
+        let client = oauth_fetch_cimd(client_id)?;
+        store.cache_cimd(client.clone());
+        return Ok(client);
+    }
+    store.registered_client(client_id).ok_or_else(|| {
+        McpOAuthError::bad_request("invalid_client", "unknown client_id")
+    })
+}
+
+fn oauth_append_query(base: &str, pairs: &[(&str, String)]) -> String {
+    let mut out = base.to_string();
+    out.push(if base.contains('?') { '&' } else { '?' });
+    let encoded: Vec<String> = pairs
+        .iter()
+        .map(|(key, value)| format!("{}={}", oauth_form_encode(key), oauth_form_encode(value)))
+        .collect();
+    out.push_str(&encoded.join("&"));
+    out
+}
+
+fn oauth_redirect_error(
+    stream: &mut std::net::TcpStream,
+    headers: &HashMap<String, String>,
+    redirect_uri: &str,
+    error: &McpOAuthError,
+    state: Option<&str>,
+    issuer: &str,
+) {
+    let mut pairs = vec![
+        ("error", error.error.to_string()),
+        ("error_description", error.description.clone()),
+        ("iss", issuer.to_string()),
+    ];
+    if let Some(state) = state {
+        pairs.push(("state", state.to_string()));
+    }
+    send_redirect(stream, &oauth_append_query(redirect_uri, &pairs), headers);
+}
+
+struct McpAuthorizeRequest {
+    client: McpOAuthClient,
+    redirect_uri: String,
+    redirect_uri_explicit: bool,
+    scopes: Vec<String>,
+    state: Option<String>,
+    code_challenge: String,
+}
+
+struct McpAuthorizeFailure {
+    redirect_uri: Option<String>,
+    error: McpOAuthError,
+}
+
+fn oauth_validate_authorize(
+    store: &McpOAuthStore,
+    params: &HashMap<String, String>,
+    resource: &str,
+) -> Result<McpAuthorizeRequest, McpAuthorizeFailure> {
+    let direct = |error: McpOAuthError| McpAuthorizeFailure { redirect_uri: None, error };
+    let Some(client_id) = params.get("client_id").filter(|s| !s.is_empty()) else {
+        return Err(direct(McpOAuthError::bad_request(
+            "invalid_request",
+            "client_id is required",
+        )));
+    };
+    let client = oauth_resolve_client(store, client_id).map_err(direct)?;
+    let (redirect_uri, redirect_uri_explicit) = match params.get("redirect_uri") {
+        Some(uri) => {
+            if !client.redirect_uris.iter().any(|allowed| allowed == uri) {
+                return Err(direct(McpOAuthError::bad_request(
+                    "invalid_request",
+                    "redirect_uri does not exactly match the client's registered redirect URIs",
+                )));
+            }
+            (uri.clone(), true)
+        }
+        None => {
+            if client.redirect_uris.len() != 1 {
+                return Err(direct(McpOAuthError::bad_request(
+                    "invalid_request",
+                    "redirect_uri is required for a client with multiple registered redirect URIs",
+                )));
+            }
+            (client.redirect_uris[0].clone(), false)
+        }
+    };
+    let redirect = |error: McpOAuthError| McpAuthorizeFailure {
+        redirect_uri: Some(redirect_uri.clone()),
+        error,
+    };
+    if params.get("response_type").map(String::as_str) != Some("code") {
+        return Err(redirect(McpOAuthError::bad_request(
+            "unsupported_response_type",
+            "only response_type=code is supported",
+        )));
+    }
+    if let Some(requested_resource) = params.get("resource") {
+        if requested_resource != resource {
+            return Err(redirect(McpOAuthError::bad_request(
+                "invalid_target",
+                "the resource parameter does not identify this MCP endpoint",
+            )));
+        }
+    }
+    let Some(code_challenge) = params.get("code_challenge").filter(|s| !s.is_empty()) else {
+        return Err(redirect(McpOAuthError::bad_request(
+            "invalid_request",
+            "code_challenge is required; PKCE S256 is mandatory",
+        )));
+    };
+    if params.get("code_challenge_method").map(String::as_str) != Some("S256") {
+        return Err(redirect(McpOAuthError::bad_request(
+            "invalid_request",
+            "code_challenge_method must be S256; plain is not accepted",
+        )));
+    }
+    let scopes = oauth_parse_scopes(
+        params.get("scope").map(String::as_str),
+        &client.scopes,
+    )
+    .map_err(|e| redirect(McpOAuthError::bad_request("invalid_scope", e)))?;
+    Ok(McpAuthorizeRequest {
+        client,
+        redirect_uri,
+        redirect_uri_explicit,
+        scopes,
+        state: params.get("state").cloned(),
+        code_challenge: code_challenge.clone(),
+    })
+}
+
+fn oauth_handle_authorize(
+    stream: &mut std::net::TcpStream,
+    reader: &mut BufReader<std::net::TcpStream>,
+    method: &str,
+    path: &str,
+    headers: &HashMap<String, String>,
+    state: &Arc<Mutex<AppState>>,
+    gate: &Gate,
+) {
+    let issuer = oauth_issuer(gate, headers);
+    let resource = oauth_resource(&issuer);
+    let store = state.lock().unwrap().mcp_oauth.clone();
+    let params = if method == "POST" {
+        oauth_form_pairs(&read_body(reader, headers))
+    } else {
+        let query = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+        query_pairs(query)
+    };
+    let request = match oauth_validate_authorize(&store, &params, &resource) {
+        Ok(request) => request,
+        Err(failure) => {
+            if let Some(redirect_uri) = failure.redirect_uri {
+                oauth_redirect_error(
+                    stream,
+                    headers,
+                    &redirect_uri,
+                    &failure.error,
+                    params.get("state").map(String::as_str),
+                    &issuer,
+                );
+            } else {
+                send_oauth_error(stream, headers, &failure.error);
+            }
+            return;
+        }
+    };
+    let Some(session) = gate.session(headers) else {
+        if method == "GET" {
+            let next = oauth_form_encode(path);
+            send_redirect(stream, &format!("{issuer}/?next={next}"), headers);
+        } else {
+            send_oauth_error(
+                stream,
+                headers,
+                &McpOAuthError::new(401, "login_required", "Sign in before approving this client."),
+            );
+        }
+        return;
+    };
+    if !gate.is_editor(&session) {
+        send_oauth_json(
+            stream,
+            headers,
+            403,
+            &serde_json::json!({
+                "ok": false,
+                "error": "This account is not on the editor list.",
+            }),
+            &[],
+        );
+        return;
+    }
+    if method == "GET" {
+        let hidden = |name: &str, value: &str| {
+            format!(
+                "<input type=\"hidden\" name=\"{}\" value=\"{}\">",
+                html_escape(name),
+                html_escape(value)
+            )
+        };
+        let mut fields = String::new();
+        fields.push_str(&hidden("response_type", "code"));
+        fields.push_str(&hidden("client_id", &request.client.client_id));
+        fields.push_str(&hidden("redirect_uri", &request.redirect_uri));
+        fields.push_str(&hidden("code_challenge", &request.code_challenge));
+        fields.push_str(&hidden("code_challenge_method", "S256"));
+        fields.push_str(&hidden("scope", &oauth_scope_string(&request.scopes)));
+        fields.push_str(&hidden("resource", &resource));
+        if let Some(state_value) = &request.state {
+            fields.push_str(&hidden("state", state_value));
+        }
+        fields.push_str(&hidden("phext_csrf", &session.csrf));
+        let scope_items: String = request
+            .scopes
+            .iter()
+            .map(|scope| {
+                let description = if scope == MCP_OAUTH_READ_SCOPE {
+                    "Read phexts and scrolls through the MCP tools."
+                } else {
+                    "Write scrolls through the MCP write_scroll tool."
+                };
+                format!("<li><code>{}</code> — {}</li>", html_escape(scope), description)
+            })
+            .collect();
+        let page = format!(
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Connect to Phext Edit</title></head><body><main><h1>Connect {} to Phext Edit?</h1><p>Signed in as {} (@{}).</p><p>This client will be able to use the MCP endpoint at <code>{}</code> with these scopes:</p><ul>{}</ul><p>It will return to <code>{}</code>.</p><form method=\"post\" action=\"/oauth/authorize\">{fields}<button type=\"submit\" name=\"decision\" value=\"approve\">Approve</button> <button type=\"submit\" name=\"decision\" value=\"deny\">Deny</button></form></main></body></html>",
+            html_escape(&request.client.client_name),
+            html_escape(&session.name),
+            html_escape(&session.handle),
+            html_escape(&resource),
+            scope_items,
+            html_escape(&request.redirect_uri),
+        );
+        send_html(stream, 200, &page, CacheClass::NoStore, headers, false);
+        return;
+    }
+    if method != "POST" {
+        send_oauth_error(
+            stream,
+            headers,
+            &McpOAuthError::new(405, "invalid_request", "GET or POST is required"),
+        );
+        return;
+    }
+    if !gate.oauth().csrf_matches(&session, params.get("phext_csrf").map(String::as_str).unwrap_or("")) {
+        send_oauth_error(
+            stream,
+            headers,
+            &McpOAuthError::new(403, "access_denied", "The consent form's CSRF token did not match."),
+        );
+        return;
+    }
+    if params.get("decision").map(String::as_str) != Some("approve") {
+        oauth_redirect_error(
+            stream,
+            headers,
+            &request.redirect_uri,
+            &McpOAuthError::new(403, "access_denied", "The editor denied this authorization request."),
+            request.state.as_deref(),
+            &issuer,
+        );
+        return;
+    }
+    let raw_code = match oauth_random("phext_code_", 32) {
+        Ok(code) => code,
+        Err(message) => {
+            oauth_redirect_error(
+                stream,
+                headers,
+                &request.redirect_uri,
+                &McpOAuthError::new(500, "server_error", message),
+                request.state.as_deref(),
+                &issuer,
+            );
+            return;
+        }
+    };
+    let family = match oauth_random("", 18) {
+        Ok(value) => value,
+        Err(message) => {
+            send_oauth_error(stream, headers, &McpOAuthError::new(500, "server_error", message));
+            return;
+        }
+    };
+    let code = McpOAuthCode {
+        client_id: request.client.client_id.clone(),
+        redirect_uri: request.redirect_uri.clone(),
+        redirect_uri_explicit: request.redirect_uri_explicit,
+        code_challenge: request.code_challenge.clone(),
+        scopes: request.scopes.clone(),
+        identity: McpOAuthIdentity::from_session(&session),
+        resource: resource.clone(),
+        family,
+        expires_at: oauth_now() + MCP_OAUTH_CODE_TTL,
+        used: false,
+    };
+    if let Err(message) = store.issue_code(gate, &raw_code, code) {
+        oauth_redirect_error(
+            stream,
+            headers,
+            &request.redirect_uri,
+            &McpOAuthError::new(500, "server_error", message),
+            request.state.as_deref(),
+            &issuer,
+        );
+        return;
+    }
+    let mut pairs = vec![("code", raw_code), ("iss", issuer.clone())];
+    if let Some(state_value) = request.state.clone() {
+        pairs.push(("state", state_value));
+    }
+    send_redirect(stream, &oauth_append_query(&request.redirect_uri, &pairs), headers);
+}
+
+fn oauth_basic_credentials(
+    headers: &HashMap<String, String>,
+) -> Option<(String, String)> {
+    let authorization = headers.get("authorization")?;
+    let encoded = authorization.strip_prefix("Basic ").or_else(|| authorization.strip_prefix("basic "))?;
+    let bytes = oauth_base64_decode(encoded.trim())?;
+    let text = String::from_utf8(bytes).ok()?;
+    let (client_id, secret) = text.split_once(':')?;
+    Some((url_decode(client_id), url_decode(secret)))
+}
+
+fn oauth_authenticate_client(
+    gate: &Gate,
+    headers: &HashMap<String, String>,
+    form: &HashMap<String, String>,
+    client: &McpOAuthClient,
+) -> Result<(), McpOAuthError> {
+    let invalid = |message: &str| {
+        McpOAuthError::new(401, "invalid_client", message.to_string())
+    };
+    let basic = oauth_basic_credentials(headers);
+    if let Some((basic_client_id, _)) = &basic {
+        if basic_client_id != &client.client_id {
+            return Err(invalid("HTTP Basic credentials name a different client_id"));
+        }
+    }
+    if let Some(form_client_id) = form.get("client_id") {
+        if form_client_id != &client.client_id {
+            return Err(invalid("the form client_id does not match the authenticated client"));
+        }
+    }
+    let verify_secret = |secret: &str| -> Result<(), McpOAuthError> {
+        let Some(expected) = &client.client_secret_hash else {
+            return Err(invalid("this client has no registered secret"));
+        };
+        let Some(given) = oauth_hash(gate, "client-secret", secret) else {
+            return Err(McpOAuthError::new(
+                503,
+                "server_error",
+                "OAuth credential hashing is not configured.",
+            ));
+        };
+        if phext_lattice::oauth::token_eq(expected, &given) {
+            Ok(())
+        } else {
+            Err(invalid("client authentication failed"))
+        }
+    };
+    match client.token_endpoint_auth_method.as_str() {
+        "none" => {
+            if basic.is_some()
+                || form.contains_key("client_secret")
+                || form.contains_key("client_assertion")
+                || form.contains_key("client_assertion_type")
+            {
+                return Err(invalid(
+                    "this is a public client; authenticate with PKCE and no client secret or assertion",
+                ));
+            }
+            Ok(())
+        }
+        "client_secret_basic" => {
+            let Some((_, secret)) = basic else {
+                return Err(invalid("client_secret_basic authentication is required"));
+            };
+            if form.contains_key("client_secret") {
+                return Err(invalid("do not also send client_secret in the form for client_secret_basic"));
+            }
+            verify_secret(&secret)
+        }
+        "client_secret_post" => {
+            if basic.is_some() {
+                return Err(invalid("do not also send HTTP Basic credentials for client_secret_post"));
+            }
+            let Some(secret) = form.get("client_secret") else {
+                return Err(invalid("client_secret_post authentication is required"));
+            };
+            verify_secret(secret)
+        }
+        _ => Err(McpOAuthError::new(
+            401,
+            "invalid_client",
+            "unsupported client authentication method",
+        )),
+    }
+}
+
+fn oauth_token_response(
+    raw_access: &str,
+    raw_refresh: Option<&str>,
+    scopes: &[String],
+) -> serde_json::Value {
+    let mut response = serde_json::json!({
+        "access_token": raw_access,
+        "token_type": "Bearer",
+        "expires_in": MCP_OAUTH_ACCESS_TTL,
+        "scope": oauth_scope_string(scopes),
+    });
+    if let Some(refresh) = raw_refresh {
+        response["refresh_token"] = serde_json::Value::String(refresh.to_string());
+    }
+    response
+}
+
+fn oauth_handle_token(
+    stream: &mut std::net::TcpStream,
+    reader: &mut BufReader<std::net::TcpStream>,
+    headers: &HashMap<String, String>,
+    state: &Arc<Mutex<AppState>>,
+    gate: &Gate,
+) {
+    let issuer = oauth_issuer(gate, headers);
+    let resource = oauth_resource(&issuer);
+    let store = state.lock().unwrap().mcp_oauth.clone();
+    let content_type = headers.get("content-type").map(String::as_str).unwrap_or("");
+    if !content_type.starts_with("application/x-www-form-urlencoded") {
+        send_oauth_error(
+            stream,
+            headers,
+            &McpOAuthError::bad_request(
+                "invalid_request",
+                "the token endpoint requires application/x-www-form-urlencoded",
+            ),
+        );
+        return;
+    }
+    let form = oauth_form_pairs(&read_body(reader, headers));
+    let basic_client_id = oauth_basic_credentials(headers).map(|(id, _)| id);
+    let Some(client_id) = form.get("client_id").cloned().or(basic_client_id) else {
+        send_oauth_error(
+            stream,
+            headers,
+            &McpOAuthError::new(401, "invalid_client", "client_id is required"),
+        );
+        return;
+    };
+    let client = match oauth_resolve_client(&store, &client_id) {
+        Ok(client) => client,
+        Err(error) => {
+            send_oauth_error(stream, headers, &error);
+            return;
+        }
+    };
+    if let Err(error) = oauth_authenticate_client(gate, headers, &form, &client) {
+        send_oauth_error(stream, headers, &error);
+        return;
+    }
+    let fail = |stream: &mut std::net::TcpStream, error: McpOAuthError| {
+        send_oauth_error(stream, headers, &error);
+    };
+    match form.get("grant_type").map(String::as_str) {
+        Some("authorization_code") => {
+            if !client.grant_types.iter().any(|g| g == "authorization_code") {
+                fail(stream, McpOAuthError::bad_request("unauthorized_client", "this client is not registered for the authorization_code grant"));
+                return;
+            }
+            let Some(raw_code) = form.get("code").filter(|s| !s.is_empty()) else {
+                fail(stream, McpOAuthError::bad_request("invalid_request", "code is required"));
+                return;
+            };
+            // A request with no usable verifier is malformed, not a code
+            // presentation: reject it before the code is consumed. A
+            // well-formed but wrong verifier, below, does burn the code.
+            let Some(verifier) = form.get("code_verifier") else {
+                fail(stream, McpOAuthError::bad_request("invalid_request", "code_verifier is required; PKCE S256 is mandatory"));
+                return;
+            };
+            if !oauth_valid_pkce_verifier(verifier) {
+                fail(stream, McpOAuthError::bad_request("invalid_request", "code_verifier is not a valid PKCE verifier"));
+                return;
+            }
+            let Some((code, replayed)) = store.take_code(gate, raw_code) else {
+                fail(stream, McpOAuthError::bad_request("invalid_grant", "the authorization code is unknown or expired"));
+                return;
+            };
+            if replayed {
+                fail(stream, McpOAuthError::bad_request("invalid_grant", "the authorization code was already used; its token family has been revoked"));
+                return;
+            }
+            if code.client_id != client.client_id {
+                fail(stream, McpOAuthError::bad_request("invalid_grant", "the authorization code was issued to a different client"));
+                return;
+            }
+            if code.resource != resource {
+                fail(stream, McpOAuthError::bad_request("invalid_grant", "the authorization code was issued for a different resource"));
+                return;
+            }
+            if let Some(requested_resource) = form.get("resource") {
+                if requested_resource != &code.resource {
+                    fail(stream, McpOAuthError::bad_request("invalid_target", "the resource parameter does not match the authorization code"));
+                    return;
+                }
+            }
+            match form.get("redirect_uri") {
+                Some(uri) if uri == &code.redirect_uri => {}
+                None if !code.redirect_uri_explicit => {}
+                _ => {
+                    fail(stream, McpOAuthError::bad_request("invalid_grant", "redirect_uri does not match the authorization request"));
+                    return;
+                }
+            }
+            if !phext_lattice::oauth::token_eq(
+                    &code.code_challenge,
+                    &oauth_pkce_challenge(verifier),
+                )
+            {
+                fail(stream, McpOAuthError::bad_request("invalid_grant", "code_verifier does not satisfy the S256 code_challenge"));
+                return;
+            }
+            let raw_access = match oauth_random("phext_at_", 32) {
+                Ok(value) => value,
+                Err(message) => {
+                    fail(stream, McpOAuthError::new(500, "server_error", message));
+                    return;
+                }
+            };
+            let include_refresh = client.grant_types.iter().any(|g| g == "refresh_token");
+            let raw_refresh = if include_refresh {
+                match oauth_random("phext_rt_", 32) {
+                    Ok(value) => Some(value),
+                    Err(message) => {
+                        fail(stream, McpOAuthError::new(500, "server_error", message));
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+            let access = McpOAuthAccess {
+                client_id: client.client_id.clone(),
+                scopes: code.scopes.clone(),
+                identity: code.identity.clone(),
+                resource: code.resource.clone(),
+                family: code.family.clone(),
+                expires_at: oauth_now() + MCP_OAUTH_ACCESS_TTL,
+                revoked: false,
+            };
+            let refresh = raw_refresh.as_ref().map(|_| McpOAuthRefresh {
+                client_id: client.client_id.clone(),
+                scopes: code.scopes.clone(),
+                identity: code.identity.clone(),
+                resource: code.resource.clone(),
+                family: code.family.clone(),
+                expires_at: oauth_now() + MCP_OAUTH_REFRESH_TTL,
+                replaced: false,
+                revoked: false,
+            });
+            let refresh_pair = raw_refresh
+                .as_deref()
+                .zip(refresh)
+                .map(|(raw, record)| (raw, record));
+            if let Err(message) = store.issue_tokens(gate, &raw_access, access, refresh_pair) {
+                fail(stream, McpOAuthError::new(500, "server_error", message));
+                return;
+            }
+            send_oauth_json(
+                stream,
+                headers,
+                200,
+                &oauth_token_response(&raw_access, raw_refresh.as_deref(), &code.scopes),
+                &[],
+            );
+        }
+        Some("refresh_token") => {
+            if !client.grant_types.iter().any(|g| g == "refresh_token") {
+                fail(stream, McpOAuthError::bad_request("unauthorized_client", "this client is not registered for the refresh_token grant"));
+                return;
+            }
+            let Some(raw_refresh) = form.get("refresh_token").filter(|s| !s.is_empty()) else {
+                fail(stream, McpOAuthError::bad_request("invalid_request", "refresh_token is required"));
+                return;
+            };
+            if store.note_refresh_replay(gate, raw_refresh) {
+                fail(stream, McpOAuthError::bad_request("invalid_grant", "the refresh token was already rotated; its token family has been revoked"));
+                return;
+            }
+            let Some(old) = store.peek_refresh(gate, raw_refresh) else {
+                fail(stream, McpOAuthError::bad_request("invalid_grant", "the refresh token is unknown or expired"));
+                return;
+            };
+            if old.revoked || old.expires_at <= oauth_now() {
+                fail(stream, McpOAuthError::bad_request("invalid_grant", "the refresh token is expired or revoked"));
+                return;
+            }
+            if old.client_id != client.client_id {
+                fail(stream, McpOAuthError::bad_request("invalid_grant", "the refresh token was issued to a different client"));
+                return;
+            }
+            if old.resource != resource {
+                fail(stream, McpOAuthError::bad_request("invalid_grant", "the refresh token was issued for a different resource"));
+                return;
+            }
+            if let Some(requested_resource) = form.get("resource") {
+                if requested_resource != &old.resource {
+                    fail(stream, McpOAuthError::bad_request("invalid_target", "the resource parameter does not match the refresh token"));
+                    return;
+                }
+            }
+            let scopes = match oauth_parse_scopes(form.get("scope").map(String::as_str), &old.scopes) {
+                Ok(scopes) => scopes,
+                Err(message) => {
+                    fail(stream, McpOAuthError::bad_request("invalid_scope", message));
+                    return;
+                }
+            };
+            if !scopes.iter().all(|scope| old.scopes.contains(scope)) {
+                fail(stream, McpOAuthError::bad_request("invalid_scope", "a refresh cannot widen the originally granted scopes"));
+                return;
+            }
+            let raw_access = match oauth_random("phext_at_", 32) {
+                Ok(value) => value,
+                Err(message) => {
+                    fail(stream, McpOAuthError::new(500, "server_error", message));
+                    return;
+                }
+            };
+            let raw_new_refresh = match oauth_random("phext_rt_", 32) {
+                Ok(value) => value,
+                Err(message) => {
+                    fail(stream, McpOAuthError::new(500, "server_error", message));
+                    return;
+                }
+            };
+            let access = McpOAuthAccess {
+                client_id: client.client_id.clone(),
+                scopes: scopes.clone(),
+                identity: old.identity.clone(),
+                resource: old.resource.clone(),
+                family: old.family.clone(),
+                expires_at: oauth_now() + MCP_OAUTH_ACCESS_TTL,
+                revoked: false,
+            };
+            let refresh = McpOAuthRefresh {
+                client_id: client.client_id.clone(),
+                scopes: scopes.clone(),
+                identity: old.identity.clone(),
+                resource: old.resource.clone(),
+                family: old.family.clone(),
+                expires_at: oauth_now() + MCP_OAUTH_REFRESH_TTL,
+                replaced: false,
+                revoked: false,
+            };
+            match store.rotate_refresh(gate, raw_refresh, &raw_access, access, &raw_new_refresh, refresh) {
+                Ok(_) => send_oauth_json(
+                    stream,
+                    headers,
+                    200,
+                    &oauth_token_response(&raw_access, Some(&raw_new_refresh), &scopes),
+                    &[],
+                ),
+                Err("replay") => fail(
+                    stream,
+                    McpOAuthError::bad_request("invalid_grant", "the refresh token was already rotated; its token family has been revoked"),
+                ),
+                Err(_) => fail(
+                    stream,
+                    McpOAuthError::bad_request("invalid_grant", "the refresh token is unknown, expired, or revoked"),
+                ),
+            }
+        }
+        Some(other) => {
+            fail(stream, McpOAuthError::bad_request("unsupported_grant_type", format!("unsupported grant_type: {other}")));
+        }
+        None => {
+            fail(stream, McpOAuthError::bad_request("invalid_request", "grant_type is required"));
+        }
+    }
+}
+
+fn handle_mcp_oauth(
+    stream: &mut std::net::TcpStream,
+    reader: &mut BufReader<std::net::TcpStream>,
+    method: &str,
+    path: &str,
+    headers: &HashMap<String, String>,
+    state: &Arc<Mutex<AppState>>,
+    gate: &Gate,
+) -> bool {
+    let route = path_route(path);
+    let issuer = oauth_issuer(gate, headers);
+    let resource = oauth_resource(&issuer);
+    match route {
+        "/.well-known/oauth-protected-resource" | "/.well-known/oauth-protected-resource/mcp" => {
+            if !matches!(method, "GET" | "HEAD") {
+                send_oauth_error(stream, headers, &McpOAuthError::new(405, "invalid_request", "GET is required"));
+                return true;
+            }
+            let body = serde_json::json!({
+                "resource": resource,
+                "authorization_servers": [issuer],
+                "scopes_supported": MCP_OAUTH_SCOPES,
+                "bearer_methods_supported": ["header"],
+                "resource_documentation": format!("{}/about", oauth_issuer(gate, headers)),
+            });
+            let text = body.to_string();
+            send_response(stream, 200, "application/json", text.as_bytes(), CacheClass::NoStore, headers, method == "HEAD");
+            true
+        }
+        "/.well-known/oauth-authorization-server" => {
+            if !matches!(method, "GET" | "HEAD") {
+                send_oauth_error(stream, headers, &McpOAuthError::new(405, "invalid_request", "GET is required"));
+                return true;
+            }
+            let body = serde_json::json!({
+                "issuer": issuer,
+                "authorization_endpoint": format!("{issuer}/oauth/authorize"),
+                "token_endpoint": format!("{issuer}/oauth/token"),
+                "registration_endpoint": format!("{issuer}/oauth/register"),
+                "scopes_supported": MCP_OAUTH_SCOPES,
+                "response_types_supported": ["code"],
+                "response_modes_supported": ["query"],
+                "grant_types_supported": ["authorization_code", "refresh_token"],
+                "code_challenge_methods_supported": ["S256"],
+                "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
+                "client_id_metadata_document_supported": true,
+                "authorization_response_iss_parameter_supported": true,
+            });
+            let text = body.to_string();
+            send_response(stream, 200, "application/json", text.as_bytes(), CacheClass::NoStore, headers, method == "HEAD");
+            true
+        }
+        "/oauth/register" => {
+            if method != "POST" {
+                send_oauth_error(stream, headers, &McpOAuthError::new(405, "invalid_request", "POST is required"));
+                return true;
+            }
+            let content_type = headers.get("content-type").map(String::as_str).unwrap_or("");
+            if !content_type.starts_with("application/json") {
+                send_oauth_error(stream, headers, &McpOAuthError::bad_request("invalid_request", "client registration requires application/json"));
+                return true;
+            }
+            let body = read_body(reader, headers);
+            let metadata: serde_json::Value = match serde_json::from_str(&body) {
+                Ok(value) => value,
+                Err(e) => {
+                    send_oauth_error(stream, headers, &McpOAuthError::bad_request("invalid_client_metadata", format!("registration body is not valid JSON: {e}")));
+                    return true;
+                }
+            };
+            let client_id = match oauth_random("phext_client_", 18) {
+                Ok(value) => value,
+                Err(message) => {
+                    send_oauth_error(stream, headers, &McpOAuthError::new(500, "server_error", message));
+                    return true;
+                }
+            };
+            let mut client = match oauth_client_from_metadata(&metadata, &client_id, false) {
+                Ok(client) => client,
+                Err(message) => {
+                    send_oauth_error(stream, headers, &McpOAuthError::bad_request("invalid_client_metadata", message));
+                    return true;
+                }
+            };
+            let raw_secret = if client.token_endpoint_auth_method == "none" {
+                None
+            } else {
+                match oauth_random("", 32) {
+                    Ok(secret) => {
+                        let Some(hash) = oauth_hash(gate, "client-secret", &secret) else {
+                            send_oauth_error(stream, headers, &McpOAuthError::new(503, "server_error", "OAuth credential hashing is not configured."));
+                            return true;
+                        };
+                        client.client_secret_hash = Some(hash);
+                        Some(secret)
+                    }
+                    Err(message) => {
+                        send_oauth_error(stream, headers, &McpOAuthError::new(500, "server_error", message));
+                        return true;
+                    }
+                }
+            };
+            let store = state.lock().unwrap().mcp_oauth.clone();
+            if let Err(message) = store.register_client(client.clone()) {
+                send_oauth_error(stream, headers, &McpOAuthError::new(500, "server_error", message));
+                return true;
+            }
+            let mut response = serde_json::json!({
+                "client_id": client.client_id,
+                "client_id_issued_at": oauth_now(),
+                "client_name": client.client_name,
+                "redirect_uris": client.redirect_uris,
+                "grant_types": client.grant_types,
+                "response_types": client.response_types,
+                "scope": oauth_scope_string(&client.scopes),
+                "token_endpoint_auth_method": client.token_endpoint_auth_method,
+            });
+            if let Some(secret) = raw_secret {
+                response["client_secret"] = serde_json::Value::String(secret);
+                response["client_secret_expires_at"] = serde_json::json!(0);
+            }
+            send_oauth_json(stream, headers, 201, &response, &[]);
+            true
+        }
+        "/oauth/authorize" => {
+            if !matches!(method, "GET" | "POST") {
+                send_oauth_error(stream, headers, &McpOAuthError::new(405, "invalid_request", "GET or POST is required"));
+                return true;
+            }
+            oauth_handle_authorize(stream, reader, method, path, headers, state, gate);
+            true
+        }
+        "/oauth/token" => {
+            if method != "POST" {
+                send_oauth_error(stream, headers, &McpOAuthError::new(405, "invalid_request", "POST is required"));
+                return true;
+            }
+            oauth_handle_token(stream, reader, headers, state, gate);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Run `f` against one hosted phext's lattice, under the same mutex the
@@ -7756,5 +9603,520 @@ mod mcp_tests {
         );
         assert_eq!(result["isError"], true);
         assert!(tool_text(&result).contains("phext not found"), "{}", tool_text(&result));
+    }
+
+    // ── OAuth 2.1 ────────────────────────────────────────────────────
+
+    const OAUTH_VERIFIER: &str =
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const OAUTH_REDIRECT: &str = "https://client.example/callback";
+    const OAUTH_ISSUER: &str = "http://127.0.0.1:8080";
+
+    fn http_request(
+        port: u16,
+        method: &str,
+        path: &str,
+        headers: &str,
+        body: &str,
+        content_type: Option<&str>,
+    ) -> (u16, String) {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let content_type = content_type
+            .map(|value| format!("Content-Type: {value}\r\n"))
+            .unwrap_or_default();
+        let req = format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n{headers}{content_type}Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).unwrap();
+        let code: u16 = raw
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse()
+            .unwrap();
+        (code, raw)
+    }
+
+    fn test_form_encode(value: &str) -> String {
+        let mut out = String::new();
+        for byte in value.bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(byte as char)
+                }
+                _ => out.push_str(&format!("%{byte:02X}")),
+            }
+        }
+        out
+    }
+
+    fn location_of(raw: &str) -> String {
+        raw.lines()
+            .find_map(|line| line.strip_prefix("Location: "))
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    }
+
+    fn query_value(url: &str, key: &str) -> String {
+        url.split_once('?')
+            .map(|(_, query)| query)
+            .unwrap_or("")
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .find(|(name, _)| *name == key)
+            .map(|(_, value)| url_decode(value))
+            .unwrap_or_default()
+    }
+
+    fn register_oauth_client(
+        port: u16,
+        scope: &str,
+        auth_method: &str,
+    ) -> (String, Option<String>) {
+        let registration = serde_json::json!({
+            "client_name": "Test MCP Client",
+            "redirect_uris": [OAUTH_REDIRECT],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "scope": scope,
+            "token_endpoint_auth_method": auth_method,
+        })
+        .to_string();
+        let (code, raw) = http_request(
+            port,
+            "POST",
+            "/oauth/register",
+            "",
+            &registration,
+            Some("application/json"),
+        );
+        assert_eq!(code, 201, "{raw}");
+        let reply: serde_json::Value =
+            serde_json::from_str(response_body(&raw)).unwrap();
+        assert_eq!(reply["token_endpoint_auth_method"], auth_method);
+        (
+            reply["client_id"].as_str().unwrap().to_string(),
+            reply["client_secret"].as_str().map(str::to_string),
+        )
+    }
+
+    fn authorize_oauth_code(port: u16, client_id: &str, scope: &str) -> String {
+        let challenge = oauth_pkce_challenge(OAUTH_VERIFIER);
+        let query = format!(
+            "response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope={}&resource={}&state=state-1",
+            test_form_encode(client_id),
+            test_form_encode(OAUTH_REDIRECT),
+            test_form_encode(&challenge),
+            test_form_encode(scope),
+            test_form_encode(&format!("{OAUTH_ISSUER}/mcp")),
+        );
+        let headers = session_headers();
+        let (code, raw) = http_request(
+            port,
+            "GET",
+            &format!("/oauth/authorize?{query}"),
+            &headers,
+            "",
+            None,
+        );
+        assert_eq!(code, 200, "{raw}");
+        let body = response_body(&raw);
+        assert!(body.contains("Test MCP Client"), "{body}");
+        assert!(body.contains("phext:read"), "{body}");
+        assert!(body.contains(OAUTH_REDIRECT), "{body}");
+
+        let form = format!(
+            "response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope={}&resource={}&state=state-1&phext_csrf={}&decision=approve",
+            test_form_encode(client_id),
+            test_form_encode(OAUTH_REDIRECT),
+            test_form_encode(&challenge),
+            test_form_encode(scope),
+            test_form_encode(&format!("{OAUTH_ISSUER}/mcp")),
+            TEST_CSRF,
+        );
+        let cookie_only = format!(
+            "Cookie: phext_session={}\r\n",
+            Oauth::test_session_cookie()
+        );
+        let (code, raw) = http_request(
+            port,
+            "POST",
+            "/oauth/authorize",
+            &cookie_only,
+            &form,
+            Some("application/x-www-form-urlencoded"),
+        );
+        assert_eq!(code, 302, "{raw}");
+        let location = location_of(&raw);
+        assert!(location.starts_with(OAUTH_REDIRECT), "{location}");
+        assert_eq!(query_value(&location, "state"), "state-1");
+        assert_eq!(query_value(&location, "iss"), OAUTH_ISSUER);
+        let auth_code = query_value(&location, "code");
+        assert!(!auth_code.is_empty(), "{location}");
+        auth_code
+    }
+
+    fn exchange_oauth_code(
+        port: u16,
+        client_id: &str,
+        secret: Option<&str>,
+        auth_code: &str,
+        verifier: Option<&str>,
+    ) -> (u16, serde_json::Value) {
+        let mut form = format!(
+            "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&resource={}",
+            test_form_encode(auth_code),
+            test_form_encode(OAUTH_REDIRECT),
+            test_form_encode(client_id),
+            test_form_encode(&format!("{OAUTH_ISSUER}/mcp")),
+        );
+        if let Some(verifier) = verifier {
+            form.push_str(&format!("&code_verifier={}", test_form_encode(verifier)));
+        }
+        if let Some(secret) = secret {
+            form.push_str(&format!("&client_secret={}", test_form_encode(secret)));
+        }
+        let (code, raw) = http_request(
+            port,
+            "POST",
+            "/oauth/token",
+            "",
+            &form,
+            Some("application/x-www-form-urlencoded"),
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(response_body(&raw)).unwrap_or(serde_json::Value::Null);
+        (code, value)
+    }
+
+    fn mint_oauth_tokens(
+        port: u16,
+        scope: &str,
+    ) -> (String, String, String) {
+        let (client_id, _) = register_oauth_client(port, scope, "none");
+        let auth_code = authorize_oauth_code(port, &client_id, scope);
+        let (code, tokens) =
+            exchange_oauth_code(port, &client_id, None, &auth_code, Some(OAUTH_VERIFIER));
+        assert_eq!(code, 200, "{tokens}");
+        assert_eq!(tokens["token_type"], "Bearer");
+        (
+            client_id,
+            tokens["access_token"].as_str().unwrap().to_string(),
+            tokens["refresh_token"].as_str().unwrap().to_string(),
+        )
+    }
+
+    fn refresh_oauth_tokens(
+        port: u16,
+        client_id: &str,
+        refresh_token: &str,
+    ) -> (u16, serde_json::Value) {
+        let form = format!(
+            "grant_type=refresh_token&refresh_token={}&client_id={}&resource={}",
+            test_form_encode(refresh_token),
+            test_form_encode(client_id),
+            test_form_encode(&format!("{OAUTH_ISSUER}/mcp")),
+        );
+        let (code, raw) = http_request(
+            port,
+            "POST",
+            "/oauth/token",
+            "",
+            &form,
+            Some("application/x-www-form-urlencoded"),
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(response_body(&raw)).unwrap_or(serde_json::Value::Null);
+        (code, value)
+    }
+
+    #[test]
+    fn oauth_discovery_documents_and_anonymous_challenge() {
+        let (port, _dir) = serve(Editors::default());
+        let (code, raw) = http_request(
+            port,
+            "GET",
+            "/.well-known/oauth-protected-resource",
+            "",
+            "",
+            None,
+        );
+        assert_eq!(code, 200, "{raw}");
+        let resource: serde_json::Value =
+            serde_json::from_str(response_body(&raw)).unwrap();
+        assert_eq!(resource["resource"], format!("{OAUTH_ISSUER}/mcp"));
+        assert_eq!(resource["authorization_servers"][0], OAUTH_ISSUER);
+        assert_eq!(resource["scopes_supported"][0], "phext:read");
+        assert_eq!(resource["scopes_supported"][1], "phext:write");
+
+        let (code, raw) = http_request(
+            port,
+            "GET",
+            "/.well-known/oauth-authorization-server",
+            "",
+            "",
+            None,
+        );
+        assert_eq!(code, 200, "{raw}");
+        let server: serde_json::Value =
+            serde_json::from_str(response_body(&raw)).unwrap();
+        assert_eq!(server["issuer"], OAUTH_ISSUER);
+        assert_eq!(
+            server["authorization_endpoint"],
+            format!("{OAUTH_ISSUER}/oauth/authorize")
+        );
+        assert_eq!(server["token_endpoint"], format!("{OAUTH_ISSUER}/oauth/token"));
+        assert_eq!(
+            server["registration_endpoint"],
+            format!("{OAUTH_ISSUER}/oauth/register")
+        );
+        assert_eq!(server["code_challenge_methods_supported"][0], "S256");
+        assert_eq!(server["client_id_metadata_document_supported"], true);
+        assert_eq!(server["authorization_response_iss_parameter_supported"], true);
+
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#;
+        let (code, raw) = rpc(port, "", init);
+        assert_eq!(code, 401);
+        assert!(
+            raw.contains(&format!(
+                "WWW-Authenticate: Bearer resource_metadata=\"{OAUTH_ISSUER}/.well-known/oauth-protected-resource\""
+            )),
+            "{raw}"
+        );
+    }
+
+    #[test]
+    fn oauth_full_flow_scopes_and_refresh_rotation() {
+        let (port, _dir) = serve(Editors::default());
+
+        // Read-only token: initialize, list, and read work; write is a
+        // transport-level 403 naming the missing scope.
+        let (_client, access, _refresh) = mint_oauth_tokens(port, "phext:read");
+        let bearer = format!("Authorization: Bearer {access}\r\n");
+        let (code, raw) = rpc(
+            port,
+            &bearer,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+        );
+        assert_eq!(code, 200, "{raw}");
+        let (code, raw) = rpc(port, &bearer, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+        assert_eq!(code, 200, "{raw}");
+        let result = call_tool(
+            port,
+            &bearer,
+            "read_scroll",
+            serde_json::json!({"phext": "note", "coordinate": "1.1.1/1.1.1/1.1.1"}),
+        );
+        assert_eq!(result["isError"], false, "{}", tool_text(&result));
+        let write_body = serde_json::json!({
+            "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": {
+                "name": "write_scroll",
+                "arguments": {"phext": "note", "coordinate": "1.1.1/1.1.1/1.1.9", "content": "must not land"},
+            },
+        })
+        .to_string();
+        let (code, raw) = rpc(port, &bearer, &write_body);
+        assert_eq!(code, 403, "{raw}");
+        assert!(raw.contains("insufficient_scope"), "{raw}");
+        assert!(raw.contains("phext:write"), "{raw}");
+
+        // A read+write token writes, and the write reads back.
+        let (_client, access, _refresh) =
+            mint_oauth_tokens(port, "phext:read phext:write");
+        let bearer = format!("Authorization: Bearer {access}\r\n");
+        let result = call_tool(
+            port,
+            &bearer,
+            "write_scroll",
+            serde_json::json!({"phext": "note", "coordinate": "1.1.1/1.1.1/1.1.9", "content": "written by oauth"}),
+        );
+        assert_eq!(result["isError"], false, "{}", tool_text(&result));
+        let result = call_tool(
+            port,
+            &bearer,
+            "read_scroll",
+            serde_json::json!({"phext": "note", "coordinate": "1.1.1/1.1.1/1.1.9"}),
+        );
+        assert!(tool_text(&result).contains("written by oauth"), "{}", tool_text(&result));
+
+        // Refresh rotation: the new pair works; replaying the rotated
+        // token revokes the whole family, including the newest access.
+        let (client, _access, refresh) = mint_oauth_tokens(port, "phext:read");
+        let (code, rotated) = refresh_oauth_tokens(port, &client, &refresh);
+        assert_eq!(code, 200, "{rotated}");
+        let rotated_access = rotated["access_token"].as_str().unwrap().to_string();
+        let rotated_refresh = rotated["refresh_token"].as_str().unwrap().to_string();
+        assert_ne!(rotated_refresh, refresh);
+        let (code, replay) = refresh_oauth_tokens(port, &client, &refresh);
+        assert_eq!(code, 400, "{replay}");
+        assert_eq!(replay["error"], "invalid_grant");
+        let rotated_bearer = format!("Authorization: Bearer {rotated_access}\r\n");
+        let (code, _raw) = rpc(
+            port,
+            &rotated_bearer,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+        );
+        assert_eq!(code, 401);
+    }
+
+    #[test]
+    fn oauth_confidential_client_secret_post() {
+        let (port, _dir) = serve(Editors::default());
+        let (client_id, secret) =
+            register_oauth_client(port, "phext:read", "client_secret_post");
+        let secret = secret.expect("confidential registration returns a secret");
+        let auth_code = authorize_oauth_code(port, &client_id, "phext:read");
+        let (code, tokens) =
+            exchange_oauth_code(port, &client_id, None, &auth_code, Some(OAUTH_VERIFIER));
+        assert_eq!(code, 401, "{tokens}");
+        // The failed authentication did not burn the code.
+        let (code, tokens) = exchange_oauth_code(
+            port,
+            &client_id,
+            Some(&secret),
+            &auth_code,
+            Some(OAUTH_VERIFIER),
+        );
+        assert_eq!(code, 200, "{tokens}");
+        assert!(tokens["access_token"].is_string());
+    }
+
+    #[test]
+    fn oauth_negative_cases() {
+        let (port, _dir) = serve(Editors::default());
+        let (client_id, _) = register_oauth_client(port, "phext:read", "none");
+
+        // Wrong verifier is rejected, and the attempt burns the code.
+        let auth_code = authorize_oauth_code(port, &client_id, "phext:read");
+        let wrong = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345678X";
+        let (code, tokens) =
+            exchange_oauth_code(port, &client_id, None, &auth_code, Some(wrong));
+        assert_eq!(code, 400, "{tokens}");
+        assert_eq!(tokens["error"], "invalid_grant");
+        let (code, tokens) =
+            exchange_oauth_code(port, &client_id, None, &auth_code, Some(OAUTH_VERIFIER));
+        assert_eq!(code, 400, "{tokens}");
+
+        // Missing verifier is rejected before the code is consumed.
+        let auth_code = authorize_oauth_code(port, &client_id, "phext:read");
+        let (code, tokens) = exchange_oauth_code(port, &client_id, None, &auth_code, None);
+        assert_eq!(code, 400, "{tokens}");
+        assert_eq!(tokens["error"], "invalid_request");
+
+        // Code replay is rejected and revokes the tokens it first issued.
+        let (code, tokens) =
+            exchange_oauth_code(port, &client_id, None, &auth_code, Some(OAUTH_VERIFIER));
+        assert_eq!(code, 200, "{tokens}");
+        let access = tokens["access_token"].as_str().unwrap().to_string();
+        let (code, replay) =
+            exchange_oauth_code(port, &client_id, None, &auth_code, Some(OAUTH_VERIFIER));
+        assert_eq!(code, 400, "{replay}");
+        assert_eq!(replay["error"], "invalid_grant");
+        let bearer = format!("Authorization: Bearer {access}\r\n");
+        let (code, _raw) = rpc(
+            port,
+            &bearer,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+        );
+        assert_eq!(code, 401);
+
+        // redirect_uri must exactly match the registration.
+        let challenge = oauth_pkce_challenge(OAUTH_VERIFIER);
+        let query = format!(
+            "response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256",
+            test_form_encode(&client_id),
+            test_form_encode("https://client.example/other"),
+            test_form_encode(&challenge),
+        );
+        let headers = session_headers();
+        let (code, raw) = http_request(
+            port,
+            "GET",
+            &format!("/oauth/authorize?{query}"),
+            &headers,
+            "",
+            None,
+        );
+        assert_eq!(code, 400, "{raw}");
+        assert!(!location_of(&raw).starts_with("https://client.example/other"));
+
+        // `plain` PKCE is refused (as a redirect error, per RFC 6749).
+        let query = format!(
+            "response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=plain",
+            test_form_encode(&client_id),
+            test_form_encode(OAUTH_REDIRECT),
+            test_form_encode(&challenge),
+        );
+        let (code, raw) = http_request(
+            port,
+            "GET",
+            &format!("/oauth/authorize?{query}"),
+            &headers,
+            "",
+            None,
+        );
+        assert_eq!(code, 302, "{raw}");
+        let location = location_of(&raw);
+        assert!(location.contains("error=invalid_request"), "{location}");
+        assert!(location.contains(&format!("iss={}", test_form_encode(OAUTH_ISSUER))), "{location}");
+    }
+
+    #[test]
+    fn oauth_non_editor_is_refused_at_authorize() {
+        let (port, _dir) = serve(Editors::parse("github:999"));
+        let (client_id, _) = register_oauth_client(port, "phext:read", "none");
+        let challenge = oauth_pkce_challenge(OAUTH_VERIFIER);
+        let query = format!(
+            "response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256",
+            test_form_encode(&client_id),
+            test_form_encode(OAUTH_REDIRECT),
+            test_form_encode(&challenge),
+        );
+        let headers = session_headers();
+        let (code, raw) = http_request(
+            port,
+            "GET",
+            &format!("/oauth/authorize?{query}"),
+            &headers,
+            "",
+            None,
+        );
+        assert_eq!(code, 403, "{raw}");
+        assert!(raw.contains("This account is not on the editor list."), "{raw}");
+    }
+
+    #[test]
+    fn oauth_expired_code_is_rejected_by_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = McpOAuthStore::new(dir.path().join("mcp-oauth.json"));
+        let gate = Gate::new(Oauth::test_ready(), Editors::default());
+        let identity = McpOAuthIdentity {
+            who: "github:100".into(),
+            handle: "octocat".into(),
+            name: "The Octocat".into(),
+            email: "octo@example.com".into(),
+        };
+        let code = McpOAuthCode {
+            client_id: "client".into(),
+            redirect_uri: OAUTH_REDIRECT.into(),
+            redirect_uri_explicit: true,
+            code_challenge: oauth_pkce_challenge(OAUTH_VERIFIER),
+            scopes: vec!["phext:read".into()],
+            identity,
+            resource: format!("{OAUTH_ISSUER}/mcp"),
+            family: "family".into(),
+            expires_at: oauth_now() - 1,
+            used: false,
+        };
+        store.issue_code(&gate, "expired-code", code).unwrap();
+        assert!(store.take_code(&gate, "expired-code").is_none());
     }
 }

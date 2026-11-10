@@ -622,6 +622,32 @@ impl Oauth {
         !session.csrf.is_empty() && token_eq(&session.csrf, header.trim())
     }
 
+    /// A domain-separated, keyed digest for the MCP OAuth 2.1 store.
+    ///
+    /// Authorization codes, access tokens, refresh tokens, and client
+    /// secrets are never stored in the clear. Each value is represented by
+    /// HMAC-SHA256 under the existing session secret, with the caller's
+    /// domain label mixed in before the value, so a digest minted for one
+    /// kind of credential cannot be replayed as another. No separate OAuth
+    /// secret is required: rotating the session secret intentionally
+    /// invalidates the stored OAuth credentials along with sessions.
+    pub fn mcp_oauth_hash(&self, domain: &str, value: &str) -> Option<String> {
+        if !real_session_secret(&self.session_secret) || domain.is_empty() || value.is_empty() {
+            return None;
+        }
+        let mut mac = HmacSha256::new_from_slice(self.session_secret.as_bytes()).ok()?;
+        mac.update(b"phext-edit/mcp-oauth21/v1\0");
+        mac.update(domain.as_bytes());
+        mac.update(b"\0");
+        mac.update(value.as_bytes());
+        let digest = mac.finalize().into_bytes();
+        let mut out = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            out.push_str(&format!("{byte:02x}"));
+        }
+        Some(out)
+    }
+
     pub fn test_session_cookie() -> String {
         Self::test_ready()
             .seal(&SessionBody {
@@ -2261,6 +2287,20 @@ mod tests {
 
     fn header<'a>(reply: &'a Reply, name: &str) -> Vec<&'a str> {
         reply.headers.iter().filter(|(n, _)| *n == name).map(|(_, v)| v.as_str()).collect()
+    }
+
+    #[test]
+    fn mcp_oauth_hash_is_domain_separated_and_keyed() {
+        let oauth = Oauth::test_ready();
+        let code = oauth.mcp_oauth_hash("authorization-code", "secret-value").unwrap();
+        let token = oauth.mcp_oauth_hash("access-token", "secret-value").unwrap();
+        let other = oauth.mcp_oauth_hash("authorization-code", "other-value").unwrap();
+        assert_ne!(code, token, "domains must separate credential kinds");
+        assert_ne!(code, other, "values must change the digest");
+        assert_eq!(code.len(), 64, "SHA-256 hex");
+        assert!(!code.contains("secret-value"), "the digest never carries the raw value");
+        assert!(oauth.mcp_oauth_hash("", "x").is_none());
+        assert!(oauth.mcp_oauth_hash("access-token", "").is_none());
     }
 
     #[test]
