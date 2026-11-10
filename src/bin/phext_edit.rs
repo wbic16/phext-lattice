@@ -7859,6 +7859,14 @@ body {
   background:#241e10; color:var(--coord); font-size:12px; border-bottom:1px solid var(--border);
 }
 #demo-banner a, #wiki-banner a { color:var(--coord); }
+#wiki-start {
+  align-items:center; gap:6px 16px; flex-wrap:wrap; padding:7px 16px; flex-shrink:0;
+  background:#1d1809; color:var(--text); font-size:12.5px; line-height:1.55;
+  border-bottom:1px solid var(--border);
+}
+#wiki-start .start-label { color:var(--coord); font-weight:600; }
+#wiki-start a { color:var(--coord); }
+#wiki-start .start-more { color:var(--dim); }
 
 /* ── Auth screen artwork ──
    The sign-in screen is the shell's front door, so it wears the art:
@@ -8068,6 +8076,15 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
     <a href="/api/auth/github?next=%2Fwiki%2F">GitHub</a>
     <a href="/api/auth/x?next=%2Fwiki%2F">X</a>
   </span>
+</div>
+
+<div id="wiki-start" style="display:none">
+  <span><span class="start-label">Start here.</span> New here?
+    ① Pick any article in the tree on the left.
+    ② Jump straight to a coordinate — try <a href="#" onclick="event.preventDefault();gotoCoord('1.1.1/2.1.2/2.1.1')">1.1.1/2.1.2/2.1.1</a>, the Oak article.
+    ③ Search the whole box — press / or tap ⌕ Search.
+    Nothing here is saved; you can't break it.</span>
+  <span class="start-more">Want the whole story? The <a href="/">full editor</a> is one sign-in away — or explore the <a href="/about">public utilities</a>, no account needed.</span>
 </div>
 
 <header id="coord-bar">
@@ -9140,6 +9157,7 @@ async function startWiki() {
   wikiMode = true;
   $('auth-screen').style.display = 'none';
   $('wiki-banner').style.display = 'flex';
+  $('wiki-start').style.display = 'flex';
   try {
     const start = coordHash() || '1.1.1/1.1.1/1.1.1';
     wikiAt = start;
@@ -9149,6 +9167,7 @@ async function startWiki() {
   } catch (e) {
     wikiMode = false;
     $('wiki-banner').style.display = 'none';
+    $('wiki-start').style.display = 'none';
     $('auth-screen').style.display = 'flex';
     $('auth-error').textContent = 'The example wiki did not load. You can still sign in.';
     if (!needsAuth) console.error(e);
@@ -11139,6 +11158,18 @@ mod demo_tests {
         let (status, body) = exchange(port, "GET /wiki/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
         assert_eq!(status, 200, "{body}");
         assert!(body.contains("startWiki"), "shell carries the wiki boot");
+        // The Start here strip rides in the shell chrome (never in the
+        // wiki's own scrolls): the three things a first-time visitor
+        // can do in the box, and the way onward to the full editor and
+        // the public utilities. Wiki mode raises it with the banner.
+        assert!(body.contains("id=\"wiki-start\""), "start-here strip");
+        assert!(body.contains("Start here"), "start-here label");
+        assert!(body.contains("Pick any article in the tree"), "tree action");
+        assert!(body.contains("gotoCoord('1.1.1/2.1.2/2.1.1')"), "coordinate action");
+        assert!(body.contains("Search the whole box"), "search action");
+        assert!(body.contains("you can't break it"), "nothing-to-break reassurance");
+        assert!(body.contains("public utilities"), "utilities pointer");
+        assert!(body.contains("$('wiki-start').style.display = 'flex'"), "strip raised with wiki mode");
         assert!(!body.contains("example wiki home scroll"));
         assert!(!body.contains("hello-real-file-marker"));
 
