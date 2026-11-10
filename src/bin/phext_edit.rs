@@ -1067,14 +1067,12 @@ const PH_BADGE_SLOT: &str = "<!--phext-ph-badge-->";
 const PH_POST_URL: &str = "https://www.producthunt.com/posts/phext-edit";
 
 /// The numeric Product Hunt POST id the official badge widget is keyed
-/// by. It is NOT the launch id and NOT the product id, and Product Hunt
-/// only assigns it when the launch goes live — so this stays None until
-/// then, and pages render a static launch link instead of a badge image
-/// that cannot exist yet. GO-LIVE: set this to Some("<post id>") — the
-/// number in `post_id=` inside the Embed snippet on the post page — and
-/// the real badge renders everywhere the slot appears. That one line is
-/// the whole go-live change.
-const PH_POST_ID: Option<&str> = None;
+/// by. Product Hunt only assigns it when the launch goes live; until
+/// then this stays None and pages render a static launch link instead of
+/// a badge image that cannot exist yet. The launch went live on
+/// 2026-11-10 and the Embed snippet on the post page carries this id, so
+/// the real badge renders everywhere the slot appears.
+const PH_POST_ID: Option<&str> = Some("1310786");
 
 /// The Product Hunt badge markup for a page's badge slot. With a post
 /// id, the official embed snippet (post anchor + featured badge image,
@@ -1084,10 +1082,10 @@ const PH_POST_ID: Option<&str> = None;
 fn ph_badge_html(post_id: Option<&str>) -> String {
     match post_id {
         Some(id) if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) => format!(
-            "<div class=\"ph-badge\"><a href=\"{PH_POST_URL}?utm_source=badge-featured&utm_medium=badge&utm_souce=badge-phext-edit\" target=\"_blank\" rel=\"noopener\"><img src=\"https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id={id}&theme=dark\" alt=\"Phext Edit - Write in 11 dimensions: plain text, no lock-in. | Product Hunt\" width=\"250\" height=\"54\"></a></div>"
+            "<div class=\"ph-badge\"><a href=\"{PH_POST_URL}?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-phext-edit\" target=\"_blank\" rel=\"noopener\"><img src=\"https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id={id}&theme=dark\" alt=\"Phext Edit - Write in 11 dimensions: plain text, no lock-in. | Product Hunt\" width=\"250\" height=\"54\"></a></div>"
         ),
         _ => format!(
-            "<div class=\"ph-badge\"><a class=\"ph-badge-fallback\" href=\"{PH_POST_URL}\">🚀 Launching on Product Hunt — Tue Nov 10</a></div>"
+            "<div class=\"ph-badge\"><a class=\"ph-badge-fallback\" href=\"{PH_POST_URL}\">🚀 Phext Edit is live on Product Hunt</a></div>"
         ),
     }
 }
@@ -9560,32 +9558,36 @@ mod public_route_tests {
     }
 
     #[test]
-    fn product_hunt_badge_slot_renders_the_fallback_until_the_post_id_is_set() {
+    fn product_hunt_badge_slot_renders_the_live_badge() {
         // The slot sits on the surfaces a launch visitor lands on: the
         // sign-in screen (under the MCP callout) and the About page.
         assert!(INDEX_HTML.contains(PH_BADGE_SLOT), "sign-in screen badge slot");
         assert!(ABOUT_HTML.contains(PH_BADGE_SLOT), "about page badge slot");
 
-        // The post id is assigned by Product Hunt at go-live, never
-        // before: the shipped config must still be unset.
-        assert!(PH_POST_ID.is_none(), "post id is a go-live config change");
+        // The launch is live: the shipped config carries the post id
+        // from the post page's Embed snippet, so the official badge
+        // renders instead of the pre-launch static link.
+        assert_eq!(PH_POST_ID, Some("1310786"), "post id set at go-live");
 
-        // Pre-launch rendering: a static launch link in the badge's
-        // place — no badge image, which could only 404.
+        // Without an id, the fallback is a static link to the post in
+        // the badge's place — no badge image, which could only 404.
         let fallback = ph_badge_html(None);
         assert!(fallback.contains("class=\"ph-badge\""), "badge wrapper");
         assert!(fallback.contains(PH_POST_URL), "fallback links to the post");
-        assert!(fallback.contains("Launching on Product Hunt"), "fallback names the launch");
-        assert!(!fallback.contains("<img"), "no badge image before a post id exists");
+        assert!(fallback.contains("Phext Edit is live on Product Hunt"), "fallback names the live launch");
+        assert!(!fallback.contains("<img"), "no badge image without a post id");
 
-        // Served pages fill the slot: no placeholder reaches a visitor.
+        // Served pages fill the slot with the live badge: no placeholder
+        // and no pre-launch pill text reach a visitor.
         let gate = locked_gate();
         let shell = get(&gate, "/");
         assert!(!shell.body.contains(PH_BADGE_SLOT), "slot filled on the shell");
-        assert!(shell.body.contains("Launching on Product Hunt"), "fallback is served");
+        assert!(shell.body.contains("post_id=1310786&theme=dark"), "live badge served on the shell");
+        assert!(!shell.body.contains("Launching on Product Hunt"), "no stale pre-launch pill on the shell");
         let about = get(&gate, "/about");
         assert!(!about.body.contains(PH_BADGE_SLOT), "slot filled on /about");
-        assert!(about.body.contains("Launching on Product Hunt"), "about fallback is served");
+        assert!(about.body.contains("post_id=1310786&theme=dark"), "live badge served on /about");
+        assert!(!about.body.contains("Launching on Product Hunt"), "no stale pre-launch pill on /about");
     }
 
     #[test]
@@ -9596,8 +9598,8 @@ mod public_route_tests {
             "official badge image URL, keyed by the post id"
         );
         assert!(
-            badge.contains("href=\"https://www.producthunt.com/posts/phext-edit"),
-            "badge links to the post"
+            badge.contains("href=\"https://www.producthunt.com/posts/phext-edit?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-phext-edit"),
+            "badge links to the post with the official snippet's query"
         );
         assert!(badge.contains("width=\"250\"") && badge.contains("height=\"54\""), "official badge size");
         assert!(badge.contains("| Product Hunt"), "badge alt text names Product Hunt");
@@ -9606,7 +9608,7 @@ mod public_route_tests {
         // static link rather than emit an image URL that cannot work.
         let bad = ph_badge_html(Some("not-a-number"));
         assert!(!bad.contains("<img"), "non-numeric id falls back");
-        assert!(bad.contains("Launching on Product Hunt"), "fallback copy");
+        assert!(bad.contains("Phext Edit is live on Product Hunt"), "fallback copy");
     }
 
     #[test]
