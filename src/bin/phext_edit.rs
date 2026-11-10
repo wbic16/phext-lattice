@@ -1656,7 +1656,7 @@ fn handle_mcp(
                     "error": "invalid_token",
                     "error_description": "An OAuth 2.1 Bearer access token is required.",
                 }),
-                &[("WWW-Authenticate", mcp_bearer_challenge(&issuer, Some("invalid_token"), Some(MCP_OAUTH_READ_SCOPE)))],
+                &[("WWW-Authenticate", mcp_bearer_challenge(&issuer, Some("invalid_token"), Some(MCP_OAUTH_DEFAULT_SCOPES)))],
             );
             return;
         }
@@ -1669,7 +1669,7 @@ fn handle_mcp(
                     "error": "invalid_token",
                     "error_description": "The access token is unknown, expired, or revoked.",
                 }),
-                &[("WWW-Authenticate", mcp_bearer_challenge(&issuer, Some("invalid_token"), Some(MCP_OAUTH_READ_SCOPE)))],
+                &[("WWW-Authenticate", mcp_bearer_challenge(&issuer, Some("invalid_token"), Some(MCP_OAUTH_DEFAULT_SCOPES)))],
             );
             return;
         };
@@ -1682,7 +1682,7 @@ fn handle_mcp(
                     "error": "invalid_token",
                     "error_description": "The access token was not issued for this resource.",
                 }),
-                &[("WWW-Authenticate", mcp_bearer_challenge(&issuer, Some("invalid_token"), Some(MCP_OAUTH_READ_SCOPE)))],
+                &[("WWW-Authenticate", mcp_bearer_challenge(&issuer, Some("invalid_token"), Some(MCP_OAUTH_DEFAULT_SCOPES)))],
             );
             return;
         }
@@ -1696,7 +1696,7 @@ fn handle_mcp(
                     "error": "insufficient_scope",
                     "error_description": "The account behind this token is no longer on the editor list.",
                 }),
-                &[("WWW-Authenticate", mcp_bearer_challenge(&issuer, Some("insufficient_scope"), Some(MCP_OAUTH_READ_SCOPE)))],
+                &[("WWW-Authenticate", mcp_bearer_challenge(&issuer, Some("insufficient_scope"), Some(MCP_OAUTH_DEFAULT_SCOPES)))],
             );
             return;
         }
@@ -1706,7 +1706,7 @@ fn handle_mcp(
             if reply.status == 401 {
                 reply.headers.push((
                     "WWW-Authenticate",
-                    mcp_bearer_challenge(&issuer, None, Some(MCP_OAUTH_READ_SCOPE)),
+                    mcp_bearer_challenge(&issuer, None, Some(MCP_OAUTH_DEFAULT_SCOPES)),
                 ));
             }
             reply.write_to(stream);
@@ -1977,6 +1977,15 @@ fn mcp_arg_coord(args: &serde_json::Value) -> Result<libphext::phext::Coordinate
 const MCP_OAUTH_READ_SCOPE: &str = "phext:read";
 const MCP_OAUTH_WRITE_SCOPE: &str = "phext:write";
 const MCP_OAUTH_SCOPES: [&str; 2] = [MCP_OAUTH_READ_SCOPE, MCP_OAUTH_WRITE_SCOPE];
+/// The scope string advertised in the initial/discovery Bearer
+/// challenges on /mcp, and in the invalid_token answers: the full
+/// grantable set. Clients bootstrap the scope of their authorize
+/// request from that challenge, so advertising read alone landed
+/// every client with a read-only token and write_scroll then failed
+/// with insufficient_scope. The step-up challenge inside an
+/// authenticated call is a different site: it names only the one
+/// required scope, deliberately not this constant.
+const MCP_OAUTH_DEFAULT_SCOPES: &str = "phext:read phext:write";
 const MCP_OAUTH_CODE_TTL: i64 = 600;
 const MCP_OAUTH_ACCESS_TTL: i64 = 3_600;
 const MCP_OAUTH_REFRESH_TTL: i64 = 30 * 86_400;
@@ -11859,6 +11868,22 @@ mod mcp_tests {
             )),
             "{raw}"
         );
+        // The discovery challenge advertises the full grantable scope
+        // set: clients bootstrap their authorize request from it, so
+        // naming read alone would land them with read-only tokens.
+        assert!(
+            raw.contains("scope=\"phext:read phext:write\""),
+            "{raw}"
+        );
+        // An unknown bearer token gets the same combined-scope
+        // challenge alongside its invalid_token error.
+        let (code, raw) = rpc(port, "Authorization: Bearer not-a-real-token\r\n", init);
+        assert_eq!(code, 401, "{raw}");
+        assert!(raw.contains("invalid_token"), "{raw}");
+        assert!(
+            raw.contains("scope=\"phext:read phext:write\""),
+            "{raw}"
+        );
         // Streamable HTTP clients may try GET before POST (for SSE or
         // endpoint detection). Unauthenticated GET must trigger OAuth
         // discovery, not exit early with a bare method-not-allowed.
@@ -11913,6 +11938,10 @@ mod mcp_tests {
         assert_eq!(code, 403, "{raw}");
         assert!(raw.contains("insufficient_scope"), "{raw}");
         assert!(raw.contains("phext:write"), "{raw}");
+        // The step-up challenge names only the one required scope,
+        // not the combined discovery set.
+        assert!(raw.contains("scope=\"phext:write\""), "{raw}");
+        assert!(!raw.contains("scope=\"phext:read phext:write\""), "{raw}");
 
         // A read+write token writes, and the write reads back.
         let (_client, access, _refresh) =
