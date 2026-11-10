@@ -16,6 +16,10 @@
   .big { font-size:1.15rem; line-height:1.5; margin:10px 0; }
   .rule { color:var(--flame2); font-weight:600; }
   .fine { color:var(--dim); font-size:.92rem; line-height:1.55; }
+  .wall { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:14px 16px; line-height:1.55; margin:20px 0 2px; }
+  .wall a { color:var(--flame2); font-weight:600; text-decoration:none; }
+  .wall a:hover { text-decoration:underline; }
   .searchbar { position:sticky; top:0; z-index:5; background:rgba(13,11,9,.94);
                backdrop-filter:blur(6px); border-bottom:1px solid var(--line);
                padding:14px 20px; margin-top:22px; }
@@ -48,6 +52,10 @@
   <p class="big rule">No ranking. This list shuffles on every load — every zero gets the same daylight.</p>
   <p class="fine">Snapshot taken 07:21 CST, while every product here still had exactly zero upvotes.
      Discovery only — go look, go comment; votes are yours to give freely, never owed.</p>
+  <p class="wall">This page is launch day, as it happened. Cross-linked, not competing:
+     the living record lives at <a href="https://productcant.com/wall" target="_blank" rel="noopener">productcant's wall</a> —
+     84,557 launches nobody came to, filed by the day they launched, nothing removed.
+     Today's launches join the wall once their counts settle.</p>
 </header>
 <div class="searchbar"><div class="inner">
   <input type="search" id="q" placeholder="Search the zeros by name…" aria-label="Search products by name">
