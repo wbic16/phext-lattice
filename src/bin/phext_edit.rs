@@ -2960,6 +2960,10 @@ fn oauth_append_query(base: &str, pairs: &[(&str, String)]) -> String {
 /// The authorize route's redirect answers under the consent policy:
 /// an error redirect is still the tail of a form submission, so the
 /// browser evaluates it against the consent page's `form-action`.
+/// When the answer closes out a consent form POST (`continue_page`
+/// names the outcome), a cross-origin target is answered with the
+/// continue page instead of the bare redirect — app browsers swallow
+/// the POST redirect; see `send_oauth_continue_page`.
 fn oauth_redirect_error_with_policy(
     stream: &mut std::net::TcpStream,
     headers: &HashMap<String, String>,
@@ -2968,6 +2972,7 @@ fn oauth_redirect_error_with_policy(
     state: Option<&str>,
     issuer: &str,
     csp: Option<&str>,
+    continue_page: Option<(&str, &str, &str)>,
 ) {
     let mut pairs = vec![
         ("error", error.error.to_string()),
@@ -2977,10 +2982,115 @@ fn oauth_redirect_error_with_policy(
     if let Some(state) = state {
         pairs.push(("state", state.to_string()));
     }
+    let target = oauth_append_query(redirect_uri, &pairs);
     match csp {
-        Some(policy) => send_redirect_csp(stream, &oauth_append_query(redirect_uri, &pairs), headers, policy),
-        None => send_redirect(stream, &oauth_append_query(redirect_uri, &pairs), headers),
+        Some(policy) => match continue_page {
+            Some((heading, detail, client_name)) => oauth_send_consent_redirect(
+                stream, headers, issuer, &target, policy, heading, detail, client_name,
+            ),
+            None => send_redirect_csp(stream, &target, headers, policy),
+        },
+        None => send_redirect(stream, &target, headers),
     }
+}
+
+/// Whether a redirect target stays on the issuer's own origin:
+/// scheme, host, and effective port all equal. Only a same-origin
+/// target may be answered with a bare 302 from a consent form POST —
+/// see `send_oauth_continue_page` for the cross-origin answer. An
+/// unparseable side never counts as same-origin.
+fn oauth_redirect_stays_on_issuer(issuer: &str, target: &str) -> bool {
+    let (Some(issuer_url), Some(target_url)) = (oauth_parse_url(issuer), oauth_parse_url(target))
+    else {
+        return false;
+    };
+    let effective_port = |url: &OAuthParsedUrl| {
+        url.port.unwrap_or(if url.scheme == "https" { 443 } else { 80 })
+    };
+    issuer_url.scheme == target_url.scheme
+        && issuer_url.host == target_url.host
+        && effective_port(&issuer_url) == effective_port(&target_url)
+}
+
+/// The cross-origin answer to a consent form POST: a small page
+/// carrying a plain anchor to the client's callback, instead of a
+/// 302.
+///
+/// Phone app browsers (Android Custom Tabs and WebViews — Cursor and
+/// Grok confirmed against production v1.1.1) swallow the cross-origin
+/// redirect hop that follows a form submission: the POST is
+/// processed, the code is issued, and the user is stranded on the
+/// consent page with nothing visibly happening. A fresh GET
+/// navigation started by tapping a link is not subject to that
+/// handling, so the anchor is the guaranteed path; the meta refresh
+/// and the inline script are progressive enhancement for browsers
+/// that do follow them. The page ships under the consent CSP (whose
+/// script-src already allows the inline script), is styled like the
+/// consent page, and is never stored. Everything interpolated is
+/// escaped for its context: the callback URL for the href attribute,
+/// and as a JSON string with the HTML-significant characters
+/// unicode-escaped for the script.
+fn send_oauth_continue_page(
+    stream: &mut std::net::TcpStream,
+    headers: &HashMap<String, String>,
+    csp: &str,
+    heading: &str,
+    detail: &str,
+    client_name: &str,
+    target: &str,
+) {
+    let href = html_escape(target);
+    let script_url = serde_json::to_string(target)
+        .unwrap_or_else(|_| "\"\"".to_string())
+        .replace('&', "\\u0026")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e");
+    let heading = html_escape(heading);
+    let detail = html_escape(detail);
+    let client_name = html_escape(client_name);
+    let page = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta http-equiv=\"refresh\" content=\"3; url={href}\"><title>{heading} — Phext Edit</title><link rel=\"icon\" href=\"/favicon.ico\" sizes=\"16x16 32x32 48x48\"><link rel=\"icon\" type=\"image/svg+xml\" href=\"/favicon.svg\"><style>{MCP_CONSENT_STYLE}{MCP_CONTINUE_STYLE}</style><script>window.location.replace({script_url});</script></head><body><main><h1>{heading}</h1><p>{detail}</p><p><a class=\"continue\" href=\"{href}\">Continue to {client_name}</a></p><p class=\"hint\">You should be taken there automatically in a few seconds. If nothing happens, the button above always works.</p></main></body></html>"
+    );
+    send_html_csp(stream, 200, &page, CacheClass::NoStore, headers, false, csp);
+}
+
+/// Answer a consent form outcome that hands the browser back to the
+/// client's redirect URI: a same-origin target keeps the direct 302,
+/// a cross-origin target gets the continue page (see
+/// `send_oauth_continue_page`).
+fn oauth_send_consent_redirect(
+    stream: &mut std::net::TcpStream,
+    headers: &HashMap<String, String>,
+    issuer: &str,
+    target: &str,
+    csp: &str,
+    heading: &str,
+    detail: &str,
+    client_name: &str,
+) {
+    if oauth_redirect_stays_on_issuer(issuer, target) {
+        send_redirect_csp(stream, target, headers, csp);
+    } else {
+        send_oauth_continue_page(stream, headers, csp, heading, detail, client_name, target);
+    }
+}
+
+/// The name the continue page puts on an authorize request that
+/// failed before a validated client existed: the registered client's
+/// name when it resolves locally, else the redirect target's host.
+fn oauth_client_display_name(
+    store: &McpOAuthStore,
+    params: &HashMap<String, String>,
+    redirect_uri: &str,
+) -> String {
+    if let Some(client_id) = params.get("client_id") {
+        if let Some(client) = store.registered_client(client_id) {
+            return client.client_name;
+        }
+    }
+    oauth_parse_url(redirect_uri)
+        .map(|url| url.host)
+        .unwrap_or_else(|| "the client".to_string())
 }
 
 struct McpAuthorizeRequest {
@@ -3092,6 +3202,12 @@ button:hover { border-color: #d4a855; } \
 :focus-visible { outline: 2px solid #e8c547; outline-offset: 3px; } \
 @media (max-width: 760px) { main { margin: 16px; } }";
 
+/// The continue page's additions to the consent styling: the anchor
+/// that carries the editor back to the client is styled as the
+/// consent page's approve button, so the tap target reads as the
+/// primary action it is.
+const MCP_CONTINUE_STYLE: &str = "a.continue { display: inline-block; font-size: 14px; padding: 10px 18px; border-radius: 6px; border: 1px solid #d4a855; background: #d4a855; color: #1a1408; font-weight: 600; text-decoration: none; } a.continue:hover { border-color: #e8c547; } .hint { color: #9a9a9a; font-size: 13px; }";
+
 /// The consent page's Content-Security-Policy: the site-wide policy
 /// with `form-action` widened so the approval form's 302 — which lands
 /// on the OAuth client's own origin (claude.ai, chatgpt.com, a Cursor
@@ -3133,6 +3249,24 @@ fn oauth_handle_authorize(
         Ok(request) => request,
         Err(failure) => {
             if let Some(redirect_uri) = failure.redirect_uri {
+                // A failed POST is still the tail of the consent
+                // form, so its error answer gets the continue page
+                // like the decision outcomes below; GET keeps the
+                // bare redirect it has always had.
+                let client_name = if method == "POST" {
+                    oauth_client_display_name(&store, &params, &redirect_uri)
+                } else {
+                    String::new()
+                };
+                let continue_page = if method == "POST" {
+                    Some((
+                        "That request couldn't be completed",
+                        "The authorization request did not validate, and the client will be told.",
+                        client_name.as_str(),
+                    ))
+                } else {
+                    None
+                };
                 oauth_redirect_error_with_policy(
                     stream,
                     headers,
@@ -3141,6 +3275,7 @@ fn oauth_handle_authorize(
                     params.get("state").map(String::as_str),
                     &issuer,
                     Some(csp),
+                    continue_page,
                 );
             } else {
                 send_oauth_error(stream, headers, &failure.error);
@@ -3244,6 +3379,11 @@ fn oauth_handle_authorize(
             request.state.as_deref(),
             &issuer,
             Some(csp),
+            Some((
+                "Authorization denied",
+                "You declined this connection, and the client will be told.",
+                request.client.client_name.as_str(),
+            )),
         );
         return;
     }
@@ -3258,6 +3398,11 @@ fn oauth_handle_authorize(
                 request.state.as_deref(),
                 &issuer,
                 Some(csp),
+                Some((
+                    "Something went wrong",
+                    "Phext Edit could not finish answering this request, and the client will be told.",
+                    request.client.client_name.as_str(),
+                )),
             );
             return;
         }
@@ -3290,6 +3435,11 @@ fn oauth_handle_authorize(
             request.state.as_deref(),
             &issuer,
             Some(csp),
+            Some((
+                "Something went wrong",
+                "Phext Edit could not finish answering this request, and the client will be told.",
+                request.client.client_name.as_str(),
+            )),
         );
         return;
     }
@@ -3297,7 +3447,16 @@ fn oauth_handle_authorize(
     if let Some(state_value) = request.state.clone() {
         pairs.push(("state", state_value));
     }
-    send_redirect_csp(stream, &oauth_append_query(&request.redirect_uri, &pairs), headers, csp);
+    oauth_send_consent_redirect(
+        stream,
+        headers,
+        &issuer,
+        &oauth_append_query(&request.redirect_uri, &pairs),
+        csp,
+        "Approved — you're connected",
+        "Your approval is recorded with Phext Edit.",
+        &request.client.client_name,
+    );
 }
 
 /// Fetch a client's JWKS document from its `jwks_uri`, with the same
@@ -11428,6 +11587,23 @@ mod mcp_tests {
             .to_string()
     }
 
+    /// The callback URL a continue page carries: the href of its
+    /// "Continue to …" anchor, with the HTML attribute escaping
+    /// undone so query assertions can read it.
+    fn continue_href(raw: &str) -> String {
+        let body = response_body(raw);
+        let marker = "class=\"continue\" href=\"";
+        let start = body
+            .find(marker)
+            .map(|index| index + marker.len())
+            .expect("continue page carries its anchor");
+        let end = body[start..]
+            .find('"')
+            .map(|index| start + index)
+            .expect("anchor href is quoted");
+        body[start..end].replace("&amp;", "&")
+    }
+
     fn query_value(url: &str, key: &str) -> String {
         url.split_once('?')
             .map(|(_, query)| query)
@@ -11517,8 +11693,12 @@ mod mcp_tests {
             &form,
             Some("application/x-www-form-urlencoded"),
         );
-        assert_eq!(code, 302, "{raw}");
-        let location = location_of(&raw);
+        // The fixture's callback is cross-origin to the issuer, so
+        // the approval is answered with the continue page, not a 302
+        // (app browsers swallow POST redirects); the page's anchor
+        // carries the full callback URL.
+        assert_eq!(code, 200, "{raw}");
+        let location = continue_href(&raw);
         assert!(location.starts_with(OAUTH_REDIRECT), "{location}");
         assert_eq!(query_value(&location, "state"), "state-1");
         assert_eq!(query_value(&location, "iss"), OAUTH_ISSUER);
@@ -12128,13 +12308,11 @@ mod mcp_tests {
         assert!(body.contains("class=\"approve\""), "{body}");
         assert!(body.contains("Test MCP Client"), "{body}");
 
-        // The consent page's own policy must let its form's POST be
-        // answered with the 302 to the client's origin: Chrome and
-        // WebKit evaluate `form-action` against the redirect target
-        // too, and the site-wide `form-action 'self'` vetoed every
-        // approval in production (the POST was processed, the browser
-        // refused to follow the redirect, and the user saw "nothing
-        // happened"). The rest of the policy stays strict.
+        // The consent page's own policy keeps the widened
+        // `form-action`: authorize answers that do redirect (the
+        // GET-path error redirects) land on the client's origin under
+        // it, and the POST outcomes' continue page ships under the
+        // same policy. The rest of the policy stays strict.
         let head = raw.split("\r\n\r\n").next().unwrap_or("");
         let csp_line = head
             .lines()
@@ -12146,8 +12324,11 @@ mod mcp_tests {
         assert!(csp_line.contains("frame-ancestors 'none'"), "{csp_line}");
         assert!(csp_line.contains("object-src 'none'"), "{csp_line}");
 
-        // Deny: a redirect back to the client carrying access_denied,
-        // the client's state, and this issuer (RFC 9207).
+        // Deny: the answer goes back to the client carrying
+        // access_denied, the client's state, and this issuer
+        // (RFC 9207) — on the continue page's anchor, since the
+        // callback is cross-origin and a bare 302 is what the app
+        // browsers swallow.
         let form = format!(
             "response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=phext:read&resource={}&state=state-1&phext_csrf={}&decision=deny",
             test_form_encode(&client_id),
@@ -12165,13 +12346,88 @@ mod mcp_tests {
             &form,
             Some("application/x-www-form-urlencoded"),
         );
-        assert_eq!(code, 302, "{raw}");
-        let location = location_of(&raw);
+        assert_eq!(code, 200, "{raw}");
+        assert!(response_body(&raw).contains("Authorization denied"), "{raw}");
+        let location = continue_href(&raw);
         assert!(location.starts_with(OAUTH_REDIRECT), "{location}");
         assert_eq!(query_value(&location, "error"), "access_denied");
         assert_eq!(query_value(&location, "state"), "state-1");
         assert_eq!(query_value(&location, "iss"), OAUTH_ISSUER);
         assert!(query_value(&location, "code").is_empty(), "{location}");
+    }
+
+    #[test]
+    fn oauth_consent_continue_page_cross_origin_and_same_origin() {
+        let (port, _dir) = serve(Editors::default());
+        let (client_id, _) = register_oauth_client(port, "phext:read", "none");
+        let challenge = oauth_pkce_challenge(OAUTH_VERIFIER);
+        let cookie_only = format!("Cookie: phext_session={}\r\n", Oauth::test_session_cookie());
+        let approve_form = |client: &str, redirect_uri: &str| {
+            format!(
+                "response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=phext:read&resource={}&state=state-1&phext_csrf={}&decision=approve",
+                test_form_encode(client),
+                test_form_encode(redirect_uri),
+                test_form_encode(&challenge),
+                test_form_encode(&format!("{OAUTH_ISSUER}/mcp")),
+                TEST_CSRF,
+            )
+        };
+
+        // Cross-origin callback: the approval is a 200 continue page,
+        // never stored, whose anchor, meta refresh, and script all
+        // carry the full callback URL — code, state, and iss
+        // (RFC 9207) — because the app browsers this defends against
+        // swallow the POST's 302 hop.
+        let (code, raw) = http_request(
+            port,
+            "POST",
+            "/oauth/authorize",
+            &cookie_only,
+            &approve_form(&client_id, OAUTH_REDIRECT),
+            Some("application/x-www-form-urlencoded"),
+        );
+        assert_eq!(code, 200, "{raw}");
+        let head = raw.split("\r\n\r\n").next().unwrap_or("");
+        assert!(head.to_ascii_lowercase().contains("cache-control: no-store"), "{head}");
+        let body = response_body(&raw);
+        assert!(body.contains("Approved"), "{body}");
+        assert!(body.contains("Continue to Test MCP Client"), "{body}");
+        assert!(body.contains("http-equiv=\"refresh\""), "{body}");
+        assert!(body.contains("location.replace"), "{body}");
+        let location = continue_href(&raw);
+        assert!(location.starts_with(OAUTH_REDIRECT), "{location}");
+        assert!(!query_value(&location, "code").is_empty(), "{location}");
+        assert_eq!(query_value(&location, "state"), "state-1");
+        assert_eq!(query_value(&location, "iss"), OAUTH_ISSUER);
+
+        // Same-origin callback: the direct 302 is kept exactly as
+        // before — nothing about the same-origin flow changes.
+        let same_origin_redirect = format!("{OAUTH_ISSUER}/callback");
+        let (code, registration) = post_registration(
+            port,
+            serde_json::json!({
+                "client_name": "Same-origin Client",
+                "redirect_uris": [same_origin_redirect],
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+                "scope": "phext:read",
+                "token_endpoint_auth_method": "none",
+            }),
+        );
+        assert_eq!(code, 201, "{registration}");
+        let same_origin_client = registration["client_id"].as_str().unwrap();
+        let (code, raw) = http_request(
+            port,
+            "POST",
+            "/oauth/authorize",
+            &cookie_only,
+            &approve_form(same_origin_client, &same_origin_redirect),
+            Some("application/x-www-form-urlencoded"),
+        );
+        assert_eq!(code, 302, "{raw}");
+        let location = location_of(&raw);
+        assert!(location.starts_with(&same_origin_redirect), "{location}");
+        assert!(!query_value(&location, "code").is_empty(), "{location}");
     }
 
     // A throwaway RSA keypair generated for these tests only — it
@@ -12385,8 +12641,8 @@ mod mcp_tests {
         );
         let cookie_only = format!("Cookie: phext_session={}\r\n", Oauth::test_session_cookie());
         let (code, raw) = http_request(port, "POST", "/oauth/authorize", &cookie_only, &form, Some("application/x-www-form-urlencoded"));
-        assert_eq!(code, 302, "{raw}");
-        let auth_code = query_value(&location_of(&raw), "code");
+        assert_eq!(code, 200, "{raw}");
+        let auth_code = query_value(&continue_href(&raw), "code");
         assert!(!auth_code.is_empty(), "{raw}");
 
         let (code, tokens) = exchange_oauth_code(port, client_id, None, &auth_code, Some(OAUTH_VERIFIER));
