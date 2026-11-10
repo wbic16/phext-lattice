@@ -949,6 +949,13 @@ fn handle_request(
         }
         return;
     }
+    // The MCP endpoint answers here, before the phext-link route can read
+    // "/mcp" as a phext named "mcp": handle_mcp runs the same gate as the
+    // editor API, so an MCP client is admitted exactly as a browser is.
+    if path_route(&path) == "/mcp" {
+        handle_mcp(stream, &mut reader, &method, &headers, state, gate);
+        return;
+    }
     // `/<name>/` is the same editor shell as `/`, aimed at `<name>.phext`.
     // The shell HTML has no scroll text. Bytes still go through `/api/*`,
     // which `admit` gates the same way as every other file. Signed-out
@@ -970,7 +977,7 @@ fn handle_request(
         }
         return;
     }
-    if !is_editor_shell(&path) && !is_api_path(&path) && path_route(&path) != "/submit" && path_route(&path) != "/claim/dashboard" {
+    if !is_editor_shell(&path) && !is_api_path(&path) && path_route(&path) != "/submit" && path_route(&path) != "/claim/dashboard" && path_route(&path) != "/mcp" {
         match method.as_str() {
             "HEAD" => send_html(stream, 404, NOT_FOUND_HTML, CacheClass::NoStore, &headers, true),
             _ => send_html(stream, 404, NOT_FOUND_HTML, CacheClass::NoStore, &headers, false),
@@ -1197,6 +1204,361 @@ fn handle_request(
             send_response(stream, 404, "application/json", API_NOT_FOUND, CacheClass::NoStore, &headers, false);
         }
         _ => { send_response(stream, 404, "text/plain", b"not found", CacheClass::NoStore, &headers, false); }
+    }
+}
+
+// ── MCP endpoint ────────────────────────────────────────────────────────
+//
+// A stateless Model Context Protocol endpoint (Streamable HTTP transport,
+// JSON-RPC 2.0) served by phext-edit itself at POST /mcp, so the site's
+// agent-facing surface ships in the same binary and behind the same gate
+// as everything else here.
+//
+// Admission is Gate::admit, unchanged: an editor session cookie, and the
+// session's CSRF token in the x-csrf-token header, because an MCP call is
+// a non-GET request. There is no second credential system for a client to
+// leak. A client learns its CSRF token from GET /api/session while signed
+// in, and sends both headers on every call.
+//
+// The tools are per-file and coordinate-addressed. They never touch the
+// editor's shared navigation cursor or its open-file selection: each call
+// names a hosted phext, the way the demo answers per request so visitors
+// do not share a cursor. A call that names the file the editor currently
+// has open goes through that lattice, so it reads the live text; a write
+// there refuses while the editor holds unsaved changes, rather than
+// flushing a human's half-finished edit to disk. A call that names any
+// other hosted file opens it directly, and a write saves before
+// returning, so the bytes on disk are the truth an MCP client reads back.
+
+const MCP_PROTOCOL_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
+const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+
+fn handle_mcp(
+    stream: &mut std::net::TcpStream,
+    reader: &mut BufReader<std::net::TcpStream>,
+    method: &str,
+    headers: &HashMap<String, String>,
+    state: &Arc<Mutex<AppState>>,
+    gate: &Gate,
+) {
+    fn send_json(
+        stream: &mut std::net::TcpStream,
+        headers: &HashMap<String, String>,
+        status: u16,
+        body: &str,
+    ) {
+        send_response(stream, status, "application/json", body.as_bytes(), CacheClass::NoStore, headers, false);
+    }
+    // Stateless: there is no server-initiated stream for a GET to open and
+    // no transport session for a DELETE to close.
+    if method != "POST" {
+        send_json(stream, headers, 405, r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"method not allowed: POST is the whole transport"}}"#);
+        return;
+    }
+    if let Err(reply) = gate.admit(method, "/mcp", headers) {
+        reply.write_to(stream);
+        return;
+    }
+    let content_type = headers.get("content-type").map(String::as_str).unwrap_or("");
+    if !content_type.starts_with("application/json") {
+        send_json(stream, headers, 415, r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"unsupported media type: application/json required"}}"#);
+        return;
+    }
+    let body = read_body(reader, headers);
+    let value: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(_) => {
+            send_json(stream, headers, 400, r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}}"#);
+            return;
+        }
+    };
+    // A batch is answered as a batch, notifications omitted (JSON-RPC 2.0).
+    if let serde_json::Value::Array(items) = &value {
+        let replies: Vec<serde_json::Value> =
+            items.iter().filter_map(|item| mcp_dispatch(state, item)).collect();
+        if replies.is_empty() {
+            send_response(stream, 202, "application/json", b"", CacheClass::NoStore, headers, false);
+        } else {
+            let out = serde_json::to_string(&replies).unwrap_or_else(|_| "[]".into());
+            send_json(stream, headers, 200, &out);
+        }
+        return;
+    }
+    match mcp_dispatch(state, &value) {
+        Some(reply) => {
+            let out = serde_json::to_string(&reply).unwrap_or_else(|_| "{}".into());
+            send_json(stream, headers, 200, &out);
+        }
+        None => send_response(stream, 202, "application/json", b"", CacheClass::NoStore, headers, false),
+    }
+}
+
+/// One JSON-RPC request in, its response out — or None for a notification,
+/// which is answered by silence.
+fn mcp_dispatch(state: &Arc<Mutex<AppState>>, req: &serde_json::Value) -> Option<serde_json::Value> {
+    if !req.is_object() {
+        return Some(serde_json::json!({
+            "jsonrpc": "2.0", "id": null,
+            "error": { "code": -32600, "message": "invalid request" },
+        }));
+    }
+    let id = req.get("id")?.clone();
+    let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    let params = req.get("params").cloned().unwrap_or(serde_json::Value::Null);
+    let outcome: Result<serde_json::Value, (i64, String)> = match method {
+        "initialize" => Ok(mcp_initialize(&params)),
+        "ping" => Ok(serde_json::json!({})),
+        "tools/list" => Ok(serde_json::json!({ "tools": mcp_tools() })),
+        "tools/call" => Ok(mcp_call(state, &params)),
+        _ => Err((-32601, format!("method not found: {method}"))),
+    };
+    Some(match outcome {
+        Ok(result) => serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+        Err((code, message)) => serde_json::json!({
+            "jsonrpc": "2.0", "id": id,
+            "error": { "code": code, "message": message },
+        }),
+    })
+}
+
+fn mcp_initialize(params: &serde_json::Value) -> serde_json::Value {
+    let asked = params.get("protocolVersion").and_then(|v| v.as_str()).unwrap_or("");
+    let version = if MCP_PROTOCOL_VERSIONS.contains(&asked) { asked } else { MCP_PROTOCOL_VERSION };
+    serde_json::json!({
+        "protocolVersion": version,
+        "capabilities": { "tools": { "listChanged": false } },
+        "serverInfo": {
+            "name": "phext-edit",
+            "title": "Phext Edit",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+        "instructions": "Tools for the phexts hosted at edit.phext.io. A phext is plain text \
+            arranged in 11 dimensions; each scroll of text lives at a coordinate written \
+            z.z.z/y.y.y/x.x.x (for example 1.1.1/1.1.1/1.1.1). Start with list_phexts, then \
+            phext_toc, read_scroll, and search_scrolls. write_scroll replaces one scroll \
+            and saves the file.",
+    })
+}
+
+fn mcp_tools() -> serde_json::Value {
+    let phext_arg = serde_json::json!({
+        "type": "string",
+        "description": "Hosted phext name from list_phexts, with or without the .phext suffix.",
+    });
+    let coord_arg = serde_json::json!({
+        "type": "string",
+        "description": "Scroll coordinate, z.z.z/y.y.y/x.x.x — for example 1.1.1/1.1.1/1.1.1.",
+    });
+    serde_json::json!([
+        {
+            "name": "list_phexts",
+            "description": "List the phext files hosted on this server, with their sizes and which one the web editor currently has open.",
+            "inputSchema": { "type": "object", "properties": {} },
+        },
+        {
+            "name": "phext_toc",
+            "description": "Table of contents for one phext: every populated scroll coordinate, sorted.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "phext": phext_arg },
+                "required": ["phext"],
+            },
+        },
+        {
+            "name": "read_scroll",
+            "description": "Read the text of one scroll at a coordinate in a hosted phext.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "phext": phext_arg, "coordinate": coord_arg },
+                "required": ["phext", "coordinate"],
+            },
+        },
+        {
+            "name": "search_scrolls",
+            "description": "Search one phext's text; returns up to 50 hits with coordinate, context, and offset.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "phext": phext_arg,
+                    "query": { "type": "string", "description": "Text to find." },
+                },
+                "required": ["phext", "query"],
+            },
+        },
+        {
+            "name": "write_scroll",
+            "description": "Replace one scroll's text in a hosted phext and save the file. Refuses while the web editor holds unsaved changes to that same file.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "phext": phext_arg,
+                    "coordinate": coord_arg,
+                    "content": { "type": "string", "description": "The scroll's new text (may be empty to clear it)." },
+                },
+                "required": ["phext", "coordinate", "content"],
+            },
+        },
+    ])
+}
+
+fn mcp_call(state: &Arc<Mutex<AppState>>, params: &serde_json::Value) -> serde_json::Value {
+    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let args = params.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
+    match mcp_run_tool(state, name, &args) {
+        Ok(value) => {
+            let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".into());
+            serde_json::json!({ "content": [{ "type": "text", "text": text }], "isError": false })
+        }
+        Err(message) => {
+            serde_json::json!({ "content": [{ "type": "text", "text": message }], "isError": true })
+        }
+    }
+}
+
+fn mcp_arg_str<'a>(args: &'a serde_json::Value, key: &str) -> Result<&'a str, String> {
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("missing argument: {key}"))
+}
+
+fn mcp_arg_coord(args: &serde_json::Value) -> Result<libphext::phext::Coordinate, String> {
+    let raw = mcp_arg_str(args, "coordinate")?;
+    parse_coordinate(raw).ok_or_else(|| format!("invalid coordinate: {raw}"))
+}
+
+/// Run `f` against one hosted phext's lattice, under the same mutex the
+/// editor API holds, and report whether that file is the editor's open
+/// file with unsaved changes. The open file is served from the editor's
+/// own lattice; any other hosted file is opened directly from disk, and
+/// a write is saved before `f`'s result returns.
+fn mcp_with_lattice<T>(
+    state: &Arc<Mutex<AppState>>,
+    name: &str,
+    write: bool,
+    f: impl FnOnce(&mut MappedLattice) -> Result<T, String>,
+) -> Result<(T, bool), String> {
+    let bare = name.strip_suffix(".phext").unwrap_or(name);
+    if !phext_name_ok(bare) {
+        return Err(format!("invalid phext name: {name}"));
+    }
+    let mut state = state.lock().unwrap();
+    let target = state.hosted_phext(bare).ok_or_else(|| format!("phext not found: {name}"))?;
+    let current = std::fs::canonicalize(&state.file_path)
+        .unwrap_or_else(|_| PathBuf::from(&state.file_path));
+    if target == current {
+        let dirty = state.dirty;
+        if write && dirty {
+            return Err("the web editor has unsaved changes to this phext; \
+                        save or discard them there before writing through MCP"
+                .into());
+        }
+        let out = f(&mut state.lattice)?;
+        if write {
+            state.lattice.save().map_err(|e| format!("save failed: {e}"))?;
+            state.rebuild_overview();
+        }
+        return Ok((out, dirty));
+    }
+    let mut lattice = MappedLattice::open(&target).map_err(|e| format!("open failed: {e}"))?;
+    let out = f(&mut lattice)?;
+    if write {
+        lattice.save().map_err(|e| format!("save failed: {e}"))?;
+    }
+    Ok((out, false))
+}
+
+fn mcp_run_tool(
+    state: &Arc<Mutex<AppState>>,
+    name: &str,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    match name {
+        "list_phexts" => {
+            let state = state.lock().unwrap();
+            let open = Path::new(&state.file_path)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let files: Vec<serde_json::Value> = state
+                .list_phexts()
+                .iter()
+                .map(|f| {
+                    serde_json::json!({
+                        "name": f.name,
+                        "bytes": f.bytes,
+                        "open_in_editor": f.name == open,
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({ "phexts": files }))
+        }
+        "phext_toc" => {
+            let phext = mcp_arg_str(args, "phext")?.to_string();
+            let (tree, _) = mcp_with_lattice(state, &phext, false, |lattice| Ok(tree_view(lattice)))?;
+            Ok(serde_json::json!({
+                "phext": phext,
+                "total_scrolls": tree.total_scrolls,
+                "coordinates": tree.coordinates,
+            }))
+        }
+        "read_scroll" => {
+            let phext = mcp_arg_str(args, "phext")?.to_string();
+            let coord = mcp_arg_coord(args)?;
+            let (found, dirty) = mcp_with_lattice(state, &phext, false, |lattice| {
+                Ok((lattice.has_scroll(&coord), lattice.read_scroll(&coord).unwrap_or_default()))
+            })?;
+            let (exists, content) = found;
+            Ok(serde_json::json!({
+                "phext": phext,
+                "coordinate": format!("{coord}"),
+                "exists": exists,
+                "bytes": content.len(),
+                "content": content,
+                "unsaved_changes_in_editor": dirty,
+            }))
+        }
+        "search_scrolls" => {
+            let phext = mcp_arg_str(args, "phext")?.to_string();
+            let query = mcp_arg_str(args, "query")?.to_string();
+            let (hits, _) = mcp_with_lattice(state, &phext, false, |lattice| {
+                let buf = lattice.to_phext_bytes();
+                let hits = phext_lattice::search_lattice_auto(&buf, lattice.index(), &query, false, 50);
+                Ok(hits
+                    .into_iter()
+                    .map(|h| {
+                        serde_json::json!({
+                            "coordinate": format!("{}", h.coordinate),
+                            "context": h.context,
+                            "offset": h.offset,
+                        })
+                    })
+                    .collect::<Vec<serde_json::Value>>())
+            })?;
+            Ok(serde_json::json!({ "phext": phext, "query": query, "hits": hits }))
+        }
+        "write_scroll" => {
+            let phext = mcp_arg_str(args, "phext")?.to_string();
+            let coord = mcp_arg_coord(args)?;
+            let content = args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "missing argument: content".to_string())?
+                .to_string();
+            let (bytes, _) = mcp_with_lattice(state, &phext, true, |lattice| {
+                lattice.write_scroll(coord, content.clone());
+                Ok(content.len())
+            })?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "phext": phext,
+                "coordinate": format!("{coord}"),
+                "bytes": bytes,
+                "saved": true,
+            }))
+        }
+        _ => Err(format!("unknown tool: {name}")),
     }
 }
 
@@ -7191,5 +7553,208 @@ mod demo_tests {
         );
         assert_eq!(status, 200, "{body}");
         assert!(body.contains("2.1.1/1.1.1/1.1.1"));
+    }
+}
+
+#[cfg(test)]
+mod mcp_tests {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    use phext_lattice::oauth::{Editors, Oauth, TEST_CSRF};
+    use phext_lattice::MappedLattice;
+
+    use super::*;
+
+    /// A locked server (no --local) over a tempdir library of two phexts:
+    /// note.phext is the editor's open file, other.phext sits beside it.
+    fn serve(editors: Editors) -> (u16, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.phext");
+        std::fs::write(&path, b"local note\n").unwrap();
+        std::fs::write(dir.path().join("other.phext"), b"other text\n").unwrap();
+        let lattice = MappedLattice::open(&path).unwrap();
+        let mut app = AppState::new(lattice, path.to_string_lossy().to_string());
+        app.phext_dir = Some(dir.path().to_string_lossy().to_string());
+        let state = Arc::new(Mutex::new(app));
+        let gate = Arc::new(Gate::new(Oauth::test_ready(), editors));
+        let demo = DemoCatalog::load();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for incoming in listener.incoming() {
+                let Ok(mut stream) = incoming else { break };
+                let state = Arc::clone(&state);
+                handle_request(&mut stream, &state, &gate, &demo);
+            }
+        });
+        (port, dir)
+    }
+
+    fn session_headers() -> String {
+        format!(
+            "Cookie: phext_session={}\r\nX-CSRF-Token: {TEST_CSRF}\r\n",
+            Oauth::test_session_cookie()
+        )
+    }
+
+    fn rpc(port: u16, headers: &str, body: &str) -> (u16, String) {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let req = format!(
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n{headers}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut status = String::new();
+        reader.read_line(&mut status).unwrap();
+        let code: u16 = status.split_whitespace().nth(1).unwrap().parse().unwrap();
+        let mut raw = Vec::new();
+        reader.read_to_end(&mut raw).unwrap();
+        (code, String::from_utf8_lossy(&raw).into_owned())
+    }
+
+    fn response_body(raw: &str) -> &str {
+        raw.split_once("\r\n\r\n").map(|(_, body)| body).unwrap_or(raw)
+    }
+
+    fn call_tool(port: u16, headers: &str, name: &str, arguments: serde_json::Value) -> serde_json::Value {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": { "name": name, "arguments": arguments },
+        })
+        .to_string();
+        let (code, raw) = rpc(port, headers, &body);
+        assert_eq!(code, 200, "{raw}");
+        let reply: serde_json::Value = serde_json::from_str(response_body(&raw)).unwrap();
+        reply["result"].clone()
+    }
+
+    fn tool_text(result: &serde_json::Value) -> String {
+        result["content"][0]["text"].as_str().unwrap_or("").to_string()
+    }
+
+    #[test]
+    fn mcp_refuses_anonymous_and_non_editors() {
+        let (port, _dir) = serve(Editors::default());
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#;
+        let (code, _raw) = rpc(port, "", init);
+        assert_eq!(code, 401);
+        // A session cookie without the CSRF token is refused on a POST,
+        // exactly as the editor API refuses it.
+        let cookie_only = format!("Cookie: phext_session={}\r\n", Oauth::test_session_cookie());
+        let (code, _raw) = rpc(port, &cookie_only, init);
+        assert_eq!(code, 403);
+
+        // Signed in, but not on the editor list.
+        let (port, _dir) = serve(Editors::parse("github:999"));
+        let (code, _raw) = rpc(port, &session_headers(), init);
+        assert_eq!(code, 403);
+    }
+
+    #[test]
+    fn mcp_initialize_and_tools_list() {
+        let (port, _dir) = serve(Editors::default());
+        let headers = session_headers();
+        let (code, raw) = rpc(
+            port,
+            &headers,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
+        );
+        assert_eq!(code, 200, "{raw}");
+        let reply: serde_json::Value = serde_json::from_str(response_body(&raw)).unwrap();
+        assert_eq!(reply["result"]["protocolVersion"], "2025-03-26");
+        assert_eq!(reply["result"]["serverInfo"]["name"], "phext-edit");
+
+        let (code, raw) = rpc(port, &headers, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+        assert_eq!(code, 200, "{raw}");
+        let reply: serde_json::Value = serde_json::from_str(response_body(&raw)).unwrap();
+        let names: Vec<&str> = reply["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["list_phexts", "phext_toc", "read_scroll", "search_scrolls", "write_scroll"]);
+
+        // A notification is answered with silence and a 202.
+        let (code, raw) = rpc(port, &headers, r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+        assert_eq!(code, 202);
+        assert!(response_body(&raw).is_empty());
+    }
+
+    #[test]
+    fn mcp_write_then_read_round_trip() {
+        let (port, dir) = serve(Editors::default());
+        let headers = session_headers();
+
+        // The editor's open file, written through MCP, reads back through
+        // both MCP and the editor's own scroll route.
+        let result = call_tool(
+            port,
+            &headers,
+            "write_scroll",
+            serde_json::json!({"phext": "note", "coordinate": "1.1.1/1.1.1/1.1.2", "content": "hello from mcp"}),
+        );
+        assert_eq!(result["isError"], false, "{}", tool_text(&result));
+        let result = call_tool(
+            port,
+            &headers,
+            "read_scroll",
+            serde_json::json!({"phext": "note.phext", "coordinate": "1.1.1/1.1.1/1.1.2"}),
+        );
+        assert_eq!(result["isError"], false, "{}", tool_text(&result));
+        let text = tool_text(&result);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["content"], "hello from mcp");
+        assert_eq!(value["exists"], true);
+
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let req = format!(
+            "GET /api/scroll/1.1.1/1.1.1/1.1.2 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n{headers}\r\n"
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw).unwrap();
+        assert!(raw.contains("hello from mcp"), "{raw}");
+
+        // A hosted file the editor does not have open: written directly,
+        // saved to disk, and visible to toc and search.
+        let result = call_tool(
+            port,
+            &headers,
+            "write_scroll",
+            serde_json::json!({"phext": "other", "coordinate": "2.1.1/1.1.1/1.1.1", "content": "needle in the other file"}),
+        );
+        assert_eq!(result["isError"], false, "{}", tool_text(&result));
+        let on_disk = std::fs::read_to_string(dir.path().join("other.phext")).unwrap();
+        assert!(on_disk.contains("needle in the other file"), "{on_disk}");
+
+        let result = call_tool(port, &headers, "phext_toc", serde_json::json!({"phext": "other"}));
+        assert!(tool_text(&result).contains("2.1.1/1.1.1/1.1.1"), "{}", tool_text(&result));
+
+        let result = call_tool(
+            port,
+            &headers,
+            "search_scrolls",
+            serde_json::json!({"phext": "other", "query": "needle"}),
+        );
+        assert!(tool_text(&result).contains("2.1.1/1.1.1/1.1.1"), "{}", tool_text(&result));
+
+        let result = call_tool(port, &headers, "list_phexts", serde_json::json!({}));
+        let text = tool_text(&result);
+        assert!(text.contains("note.phext") && text.contains("other.phext"), "{text}");
+
+        // An unknown phext is a tool error, not a panic or a 500.
+        let result = call_tool(
+            port,
+            &headers,
+            "read_scroll",
+            serde_json::json!({"phext": "nope", "coordinate": "1.1.1/1.1.1/1.1.1"}),
+        );
+        assert_eq!(result["isError"], true);
+        assert!(tool_text(&result).contains("phext not found"), "{}", tool_text(&result));
     }
 }
