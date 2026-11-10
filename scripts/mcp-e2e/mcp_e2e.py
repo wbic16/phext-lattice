@@ -196,6 +196,12 @@ if status == 401:
     challenge_hdr = hdrs.get("WWW-Authenticate", "")
     check("resource_metadata=" in challenge_hdr and "/.well-known/oauth-protected-resource" in challenge_hdr,
           "401 challenge carries resource_metadata", challenge_hdr)
+    for path in ["/mcp", "/mcp/"]:
+        get_status, get_headers, _ = req("GET", path)
+        challenge = get_headers.get("WWW-Authenticate", "")
+        check(get_status == 401 and "resource_metadata=" in challenge,
+              f"anonymous GET {path} challenges OAuth before method handling",
+              f"status {get_status}, WWW-Authenticate: {challenge}")
     status, _, _ = req("POST", "/mcp/", "{}", {"Content-Type": "application/json"})
     check(status == 401, "anon /mcp/ (trailing slash) is 401, not 404", f"got {status}")
 else:
@@ -206,6 +212,10 @@ else:
     # is still asserted with a Bearer token below.
     skip("anon /mcp 401 + challenge", f"instance answered {status} (local mode admits anonymous)")
     skip("anon /mcp/ 401", "local mode admits anonymous")
+    # In --local, GET is admitted then correctly rejected with 405.
+    for path in ["/mcp", "/mcp/"]:
+        get_status, _, _ = req("GET", path)
+        check(get_status == 405, f"local-mode GET {path} is 405", f"got {get_status}")
 
 # ── Cursor dialect: DCR public client, exact production shape ───────────
 print("== FLOW Cursor (DCR)")

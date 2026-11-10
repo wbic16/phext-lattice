@@ -1637,12 +1637,10 @@ fn handle_mcp(
     ) {
         send_response(stream, status, "application/json", body.as_bytes(), CacheClass::NoStore, headers, false);
     }
-    // Stateless: there is no server-initiated stream for a GET to open and
-    // no transport session for a DELETE to close.
-    if method != "POST" {
-        send_json(stream, headers, 405, r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"method not allowed: POST is the whole transport"}}"#);
-        return;
-    }
+    // Authenticate *before* rejecting unsupported transport methods. Some
+    // clients probe the streamable endpoint with GET first; a signed-out GET
+    // must receive the same 401 Bearer challenge as POST so the client can
+    // discover OAuth instead of treating a bare 405 as a dead MCP server.
     let issuer = oauth_issuer(gate, headers);
     let store = state.lock().unwrap().mcp_oauth.clone();
     let auth = if let Some(authorization) = headers.get("authorization") {
@@ -1716,6 +1714,13 @@ fn handle_mcp(
         }
         McpAuthContext::Editor
     };
+    // Stateless: there is no server-initiated stream for a GET to open and
+    // no transport session for a DELETE to close. Authenticated probes get
+    // the spec-permitted 405, while unauthenticated probes got the challenge.
+    if method != "POST" {
+        send_json(stream, headers, 405, r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"method not allowed: POST is the whole transport"}}"#);
+        return;
+    }
     let content_type = headers.get("content-type").map(String::as_str).unwrap_or("");
     if !content_type.starts_with("application/json") {
         send_json(stream, headers, 415, r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"unsupported media type: application/json required"}}"#);
@@ -2444,8 +2449,12 @@ fn oauth_parse_scopes(raw: Option<&str>, default: &[String]) -> Result<Vec<Strin
 /// unsupported scope names a client asks for are dropped, not fatal —
 /// the client is registered for the subset this server can grant, and
 /// the authorize/token flows still refuse anything outside that subset
-/// with `invalid_scope`. An empty remainder means the read-only
-/// default.
+/// with `invalid_scope`. A client that omits scopes receives both read
+/// and write only after the editor explicitly approves both on
+/// the consent screen. Hosted MCP clients such as ChatGPT publish no
+/// `scope` in their metadata or authorize URL, and the editor advertises
+/// both read and write as the intended capability of this connection.
+/// An explicitly unsupported scope still falls back to read only.
 fn oauth_filter_scopes(raw: Option<&str>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     if let Some(raw) = raw {
@@ -2456,7 +2465,11 @@ fn oauth_filter_scopes(raw: Option<&str>) -> Vec<String> {
         }
     }
     if out.is_empty() {
-        out.push(MCP_OAUTH_READ_SCOPE.to_string());
+        if raw.map_or(true, |s| s.trim().is_empty()) {
+            out.extend(MCP_OAUTH_SCOPES.iter().map(|s| s.to_string()));
+        } else {
+            out.push(MCP_OAUTH_READ_SCOPE.to_string());
+        }
     }
     out
 }
@@ -3087,8 +3100,10 @@ button:hover { border-color: #d4a855; } \
 /// redirect_uri was validated against its registered/CIMD metadata
 /// before this page rendered, so the widening exposes nothing the
 /// authorization request did not already name. Every other directive,
-/// and every other page on the site, keeps the strict policy.
-const MCP_CONSENT_CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self'; form-action 'self' https:; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; frame-src 'none'";
+/// and every other page on the site, keeps the strict policy. HTTPS
+/// covers hosted callbacks; native MCP clients also register HTTP
+/// loopback callbacks, which Chrome/WebKit must be allowed to follow.
+const MCP_CONSENT_CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self'; form-action 'self' https: http://localhost:* http://127.0.0.1:*; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; frame-src 'none'";
 
 fn oauth_handle_authorize(
     csp: &str,
@@ -11664,6 +11679,23 @@ mod mcp_tests {
             )),
             "{raw}"
         );
+        // Streamable HTTP clients may try GET before POST (for SSE or
+        // endpoint detection). Unauthenticated GET must trigger OAuth
+        // discovery, not exit early with a bare method-not-allowed.
+        for path in ["/mcp", "/mcp/"] {
+            let (code, raw) = http_request(port, "GET", path, "", "", None);
+            assert_eq!(code, 401, "{path}: {raw}");
+            assert!(
+                raw.contains(&format!(
+                    "WWW-Authenticate: Bearer resource_metadata=\"{OAUTH_ISSUER}/.well-known/oauth-protected-resource\""
+                )),
+                "{path}: {raw}"
+            );
+            // Once authorized, GET is still an unsupported transport
+            // method on this intentionally stateless server.
+            let (code, raw) = http_request(port, "GET", path, &session_headers(), "", None);
+            assert_eq!(code, 405, "{path}: {raw}");
+        }
     }
 
     #[test]
@@ -12031,6 +12063,40 @@ mod mcp_tests {
     }
 
     #[test]
+    fn oauth_unspecified_scope_offers_read_and_write_at_consent() {
+        let (port, _dir) = serve(Editors::default());
+        // ChatGPT's published CIMD and many DCR clients omit `scope`.
+        // Since the UI promises read/write, the editor can grant both,
+        // but only after the consent page names both permissions.
+        let (code, registration) = post_registration(
+            port,
+            serde_json::json!({
+                "client_name": "No-scope MCP client",
+                "redirect_uris": [OAUTH_REDIRECT],
+                "token_endpoint_auth_method": "none",
+            }),
+        );
+        assert_eq!(code, 201, "{registration}");
+        assert_eq!(registration["scope"], "phext:read phext:write");
+
+        let challenge = oauth_pkce_challenge(OAUTH_VERIFIER);
+        let path = format!(
+            "/oauth/authorize?response_type=code&client_id={}&redirect_uri={}&code_challenge={challenge}&code_challenge_method=S256&resource={}",
+            test_form_encode(registration["client_id"].as_str().unwrap()),
+            test_form_encode(OAUTH_REDIRECT),
+            test_form_encode(&format!("{OAUTH_ISSUER}/mcp")),
+        );
+        let (code, raw) = http_request(port, "GET", &path, &session_headers(), "", None);
+        assert_eq!(code, 200, "{raw}");
+        assert!(response_body(&raw).contains("Read phexts and scrolls"), "{raw}");
+        assert!(response_body(&raw).contains("Write scrolls through"), "{raw}");
+        // Explicitly requested read-only remains read-only, and
+        // completely unsupported scopes never accidentally grant write.
+        assert_eq!(oauth_filter_scopes(Some("phext:read")), vec!["phext:read".to_string()]);
+        assert_eq!(oauth_filter_scopes(Some("openid profile")), vec!["phext:read".to_string()]);
+    }
+
+    #[test]
     fn oauth_authorize_login_return_and_consent_deny() {
         let (port, _dir) = serve(Editors::default());
         let (client_id, _) = register_oauth_client(port, "phext:read", "none");
@@ -12075,6 +12141,8 @@ mod mcp_tests {
             .find(|line| line.to_ascii_lowercase().starts_with("content-security-policy:"))
             .expect("consent response carries a CSP");
         assert!(csp_line.contains("form-action 'self' https:"), "{csp_line}");
+        assert!(csp_line.contains("http://localhost:*"), "{csp_line}");
+        assert!(csp_line.contains("http://127.0.0.1:*"), "{csp_line}");
         assert!(csp_line.contains("frame-ancestors 'none'"), "{csp_line}");
         assert!(csp_line.contains("object-src 'none'"), "{csp_line}");
 
