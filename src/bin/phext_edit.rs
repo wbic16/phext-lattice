@@ -861,18 +861,57 @@ const BUILD_SLOT: &str = "<!--phext-build-->";
 /// can be told apart from a fix still waiting on a deploy.
 const BUILD_STAMP: &str = env!("PHEXT_LATTICE_BUILD");
 
-/// Fill the serve-time slots: the build stamp, then the donation slot.
-/// Pages without a slot are returned as-is.
+/// Placeholder in the served HTML for the Product Hunt launch badge.
+/// Filled when a page is served, like the build stamp.
+const PH_BADGE_SLOT: &str = "<!--phext-ph-badge-->";
+
+/// The Phext Edit post on Product Hunt.
+const PH_POST_URL: &str = "https://www.producthunt.com/posts/phext-edit";
+
+/// The numeric Product Hunt POST id the official badge widget is keyed
+/// by. It is NOT the launch id and NOT the product id, and Product Hunt
+/// only assigns it when the launch goes live — so this stays None until
+/// then, and pages render a static launch link instead of a badge image
+/// that cannot exist yet. GO-LIVE: set this to Some("<post id>") — the
+/// number in `post_id=` inside the Embed snippet on the post page — and
+/// the real badge renders everywhere the slot appears. That one line is
+/// the whole go-live change.
+const PH_POST_ID: Option<&str> = None;
+
+/// The Product Hunt badge markup for a page's badge slot. With a post
+/// id, the official embed snippet (post anchor + featured badge image,
+/// dark theme to match the site's palette); without one — or with an id
+/// that is not numeric, so never a real post id — a static launch link
+/// in the same place, so a page never carries a broken badge image.
+fn ph_badge_html(post_id: Option<&str>) -> String {
+    match post_id {
+        Some(id) if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) => format!(
+            "<div class=\"ph-badge\"><a href=\"{PH_POST_URL}?utm_source=badge-featured&utm_medium=badge&utm_souce=badge-phext-edit\" target=\"_blank\" rel=\"noopener\"><img src=\"https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id={id}&theme=dark\" alt=\"Phext Edit - Write in 11 dimensions: plain text, no lock-in. | Product Hunt\" width=\"250\" height=\"54\"></a></div>"
+        ),
+        _ => format!(
+            "<div class=\"ph-badge\"><a class=\"ph-badge-fallback\" href=\"{PH_POST_URL}\">🚀 Launching on Product Hunt — Tue Nov 10</a></div>"
+        ),
+    }
+}
+
+/// Fill the serve-time slots: the build stamp, then the donation slot,
+/// then the Product Hunt badge slot. Pages without a slot are returned
+/// as-is.
 fn render_page(html: &str) -> std::borrow::Cow<'_, str> {
     let stamped = if html.contains(BUILD_SLOT) {
         std::borrow::Cow::Owned(html.replace(BUILD_SLOT, BUILD_STAMP))
     } else {
         std::borrow::Cow::Borrowed(html)
     };
-    if stamped.contains(sponsor::SLOT) {
+    let sponsored = if stamped.contains(sponsor::SLOT) {
         std::borrow::Cow::Owned(sponsor::apply_slot(&stamped, sponsor_offer()))
     } else {
         stamped
+    };
+    if sponsored.contains(PH_BADGE_SLOT) {
+        std::borrow::Cow::Owned(sponsored.replace(PH_BADGE_SLOT, &ph_badge_html(PH_POST_ID)))
+    } else {
+        sponsored
     }
 }
 
@@ -5811,6 +5850,10 @@ main { max-width: 720px; margin: 0 auto; padding: 32px 16px 48px; }
 h1 { color: #d4a855; font-size: 28px; margin: 0 0 8px; }
 h2 { color: #d4a855; font-size: 18px; margin: 28px 0 8px; }
 a { color: #4dc9c9; }
+.ph-badge { margin: 16px 0; }
+.ph-badge img { max-width: 100%; height: auto; }
+.ph-badge-fallback { display: inline-block; border: 1px solid #d4a855; background: #1f1f1f; color: #d4a855; border-radius: 8px; padding: 10px 14px; font-size: 13px; font-weight: 600; text-decoration: none; }
+.ph-badge-fallback:hover { text-decoration: underline; }
 nav { margin-bottom: 24px; font-size: 14px; }
 .dim { color: #9a9a9a; }
 footer { margin-top: 40px; font-size: 13px; color: #9a9a9a; border-top: 1px solid #2e2e2e; padding-top: 16px; }
@@ -6383,6 +6426,7 @@ with those files from a browser:</p>
 </ul>
 <p>Phext Edit is part of the open-source
 <a href="https://github.com/wbic16/phext-lattice">phext-lattice</a> project.</p>
+<!--phext-ph-badge-->
 
 <h2>Public utilities</h2>
 <p>Some parts of this site need no sign-in at all:</p>
@@ -6913,6 +6957,10 @@ body {
 .welcome .mcp-callout h2 { color: var(--coord); font-size: 15px; margin: 0 0 6px; }
 .welcome .mcp-callout p { font-size: 13px; line-height: 1.55; margin: 0; }
 .welcome .mcp-callout code { color: var(--active); overflow-wrap: anywhere; }
+.welcome .ph-badge { margin-top: 14px; text-align: left; }
+.welcome .ph-badge img { max-width: 100%; height: auto; }
+.ph-badge-fallback { display: inline-block; border: 1px solid var(--coord); background: var(--panel); color: var(--coord); border-radius: 8px; padding: 10px 14px; font-size: 13px; font-weight: 600; text-decoration: none; }
+.ph-badge-fallback:hover { text-decoration: underline; }
 #status-bar { padding-bottom: env(safe-area-inset-bottom, 0px); }
 #status-bar .sponsor-offer { margin-left: 14px; white-space: nowrap; }
 #status-bar .sponsor-link { color: var(--dim); text-decoration: none; }
@@ -7257,6 +7305,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
       <h2>Connect your AI — this site is an MCP server</h2>
       <p>Point ChatGPT, Claude, Cursor, or any MCP client at <code>https://edit.phext.io/mcp</code> and approve the sign-in it offers you. Your assistant can then read and write scrolls in your phexts, with the same editor permissions as your account.</p>
     </div>
+    <!--phext-ph-badge-->
     <p class="explain">Nine numbers name a scroll: library, shelf, series, collection, volume, book, chapter, section, scroll. The scroll is a page of lines and columns, which makes eleven. The file stays plain text.</p>
     <p class="hint">Sign in to save and edit your own files. The demo is a sample you can walk through; nothing in it is saved.</p>
     <p class="links"><a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · <a href="mailto:will+support@phext.io">Contact</a><br>
@@ -8160,7 +8209,8 @@ $('try-demo').addEventListener('click', (e) => {
 #[cfg(test)]
 mod public_route_tests {
     use super::{
-        dashboard_html, handle_request, is_api_path, is_editor_shell, public_document, render_page,
+        dashboard_html, handle_request, is_api_path, is_editor_shell, ph_badge_html, public_document,
+        render_page, PH_BADGE_SLOT, PH_POST_ID, PH_POST_URL,
         AppState, DemoCatalog, ABOUT_HTML, BACKGROUND_WEBP, BANNER_WEBP, BUILD_SLOT, BUILD_STAMP,
         CLAIM_HTML, EXPLORE_HTML, INDEX_HTML,
         LEARN_YOU_PHEXT_HTML, NOT_FOUND_HTML, PREVIEWER_HTML, PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE,
@@ -8514,6 +8564,56 @@ mod public_route_tests {
         assert!(INDEX_HTML.contains("class=\"mcp-endpoint\""), "status bar MCP endpoint");
         assert!(INDEX_HTML.contains("https://edit.phext.io/mcp"), "endpoint URL shown");
         assert!(INDEX_HTML.contains("Connect your AI"), "callout heading");
+    }
+
+    #[test]
+    fn product_hunt_badge_slot_renders_the_fallback_until_the_post_id_is_set() {
+        // The slot sits on the surfaces a launch visitor lands on: the
+        // sign-in screen (under the MCP callout) and the About page.
+        assert!(INDEX_HTML.contains(PH_BADGE_SLOT), "sign-in screen badge slot");
+        assert!(ABOUT_HTML.contains(PH_BADGE_SLOT), "about page badge slot");
+
+        // The post id is assigned by Product Hunt at go-live, never
+        // before: the shipped config must still be unset.
+        assert!(PH_POST_ID.is_none(), "post id is a go-live config change");
+
+        // Pre-launch rendering: a static launch link in the badge's
+        // place — no badge image, which could only 404.
+        let fallback = ph_badge_html(None);
+        assert!(fallback.contains("class=\"ph-badge\""), "badge wrapper");
+        assert!(fallback.contains(PH_POST_URL), "fallback links to the post");
+        assert!(fallback.contains("Launching on Product Hunt"), "fallback names the launch");
+        assert!(!fallback.contains("<img"), "no badge image before a post id exists");
+
+        // Served pages fill the slot: no placeholder reaches a visitor.
+        let gate = locked_gate();
+        let shell = get(&gate, "/");
+        assert!(!shell.body.contains(PH_BADGE_SLOT), "slot filled on the shell");
+        assert!(shell.body.contains("Launching on Product Hunt"), "fallback is served");
+        let about = get(&gate, "/about");
+        assert!(!about.body.contains(PH_BADGE_SLOT), "slot filled on /about");
+        assert!(about.body.contains("Launching on Product Hunt"), "about fallback is served");
+    }
+
+    #[test]
+    fn product_hunt_badge_renders_the_official_snippet_with_a_post_id() {
+        let badge = ph_badge_html(Some("123456"));
+        assert!(
+            badge.contains("https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=123456&theme=dark"),
+            "official badge image URL, keyed by the post id"
+        );
+        assert!(
+            badge.contains("href=\"https://www.producthunt.com/posts/phext-edit"),
+            "badge links to the post"
+        );
+        assert!(badge.contains("width=\"250\"") && badge.contains("height=\"54\""), "official badge size");
+        assert!(badge.contains("| Product Hunt"), "badge alt text names Product Hunt");
+
+        // A non-numeric id is never a real post id: fall back to the
+        // static link rather than emit an image URL that cannot work.
+        let bad = ph_badge_html(Some("not-a-number"));
+        assert!(!bad.contains("<img"), "non-numeric id falls back");
+        assert!(bad.contains("Launching on Product Hunt"), "fallback copy");
     }
 
     #[test]
