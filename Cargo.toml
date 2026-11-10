@@ -11,7 +11,7 @@ categories = ["text-editors", "command-line-utilities"]
 
 [features]
 default = ["web"]
-web = ["dep:serde", "dep:serde_json", "dep:hmac", "dep:sha2", "dep:getrandom", "dep:ureq"]
+web = ["dep:serde", "dep:serde_json", "dep:hmac", "dep:sha2", "dep:getrandom", "dep:ureq", "dep:ring"]
 tui = ["dep:ratatui", "dep:crossterm"]
 
 [dependencies]
@@ -29,6 +29,10 @@ hmac = { version = "0.12", optional = true }
 sha2 = { version = "0.10", optional = true }
 getrandom = { version = "0.4", optional = true }
 ureq = { version = "2", default-features = false, features = ["tls"], optional = true }
+# RS256 verification for OAuth private_key_jwt client assertions. ring is
+# already in the dependency graph (rustls builds on it); this only makes
+# the existing version a direct dependency of the web feature.
+ring = { version = "0.17", optional = true }
 
 # TUI deps
 ratatui = { version = "0.29", optional = true }

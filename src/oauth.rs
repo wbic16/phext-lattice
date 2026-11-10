@@ -1780,13 +1780,25 @@ fn valid_base(base: &str) -> bool {
 
 /// Keeps the post-sign-in redirect on this site: a path, optionally with a
 /// `#coordinate` fragment.
+///
+/// A `:` is refused in the path portion only. Past the `?`, a query may
+/// legitimately carry URLs of its own — an OAuth authorization request
+/// returning from sign-in names https redirect URIs and, for CIMD
+/// clients, an https client_id — and a colon there cannot move the
+/// destination off this site, because the value still begins with a
+/// single `/` and browsers resolve it as a path on this origin. The
+/// length cap admits those same authorization requests (a full
+/// `/oauth/authorize?...` round trip runs several hundred characters);
+/// the sealed pending cookie that carries `next` through a provider
+/// sign-in holds it comfortably.
 pub fn safe_next(next: &str) -> String {
     let next = next.trim();
-    if next.len() > 200
+    let path_end = next.find(['?', '#']).unwrap_or(next.len());
+    if next.len() > 2048
         || !next.starts_with('/')
         || next.starts_with("//")
         || next.contains('\\')
-        || next.contains(':')
+        || next[..path_end].contains(':')
         || next.chars().any(|ch| ch.is_control() || ch == ' ')
     {
         return "/".into();
@@ -1815,8 +1827,8 @@ pub fn safe_next(next: &str) -> String {
 ///   controls, or non-ASCII.
 ///
 /// The result is capped short enough to ride the sign-in bounce —
-/// this endpoint travels as the `next` of a `/?next=` redirect, and
-/// `safe_next` refuses anything over 200 characters there.
+/// this endpoint travels as the `next` of a `/?next=` redirect, well
+/// inside the length `safe_next` admits there.
 pub fn loopback_return(raw: &str) -> Option<String> {
     let raw = raw.trim();
     if raw.is_empty()
@@ -2342,6 +2354,25 @@ mod tests {
         assert_eq!(safe_next("https://evil.example"), "/");
         assert_eq!(safe_next("//evil.example"), "/");
         assert_eq!(safe_next("/\\evil"), "/");
+        // A colon in the path portion is still refused, query or not.
+        assert_eq!(safe_next("/foo:bar?next=https://evil.example"), "/");
+    }
+
+    #[test]
+    fn oauth_authorize_next_survives_sign_in() {
+        // The MCP authorization endpoint bounces a signed-out visitor to
+        // sign-in with the whole authorize request as `next`. Its query
+        // carries https URLs (the redirect URI, the resource, a CIMD
+        // client_id) and runs well past the old 200-character cap: both
+        // used to clamp the return to `/`, stranding the flow on the
+        // homepage. The full request must come through verbatim.
+        let authorize = "/oauth/authorize?response_type=code&client_id=https%3A%2F%2Fclient.example%2Fclient.json&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&code_challenge=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~&code_challenge_method=S256&scope=phext%3Aread&resource=https%3A%2F%2Fedit.phext.io%2Fmcp&state=opaque-state";
+        assert!(authorize.len() > 200);
+        assert_eq!(safe_next(authorize), authorize);
+        // The decoded form the shell hands back after one decode pass
+        // carries literal colons in the query; those are admitted too.
+        let decoded = "/oauth/authorize?response_type=code&client_id=https://client.example/client.json&redirect_uri=https://client.example/callback&resource=https://edit.phext.io/mcp";
+        assert_eq!(safe_next(decoded), decoded);
     }
 
     #[test]
@@ -2509,6 +2540,28 @@ mod tests {
             .route("GET", "/api/auth/github/callback?code=ok&state=forged", &headers(&[("cookie", &pending)]))
             .unwrap();
         assert_eq!(wrong_state.status, 400);
+    }
+
+    #[test]
+    fn sign_in_returns_to_an_oauth_authorize_request() {
+        // The MCP authorize endpoint sends a signed-out visitor to
+        // sign-in with the whole authorize request as `next`. The flow
+        // must land back on that exact request — query, https URLs and
+        // all — not on the homepage.
+        let gate = gate("github:100");
+        let next = "/oauth/authorize?response_type=code&client_id=https://client.example/client.json&redirect_uri=https://client.example/callback&code_challenge=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789&code_challenge_method=S256&scope=phext:read&resource=https://edit.phext.io/mcp&state=opaque";
+        let start = gate
+            .route("GET", &format!("/api/auth/github?next={}", form_encode(next)), &headers(&[]))
+            .unwrap();
+        assert_eq!(start.status, 302);
+        let location = header(&start, "Location")[0].to_string();
+        let state = location.split("state=").nth(1).unwrap().split('&').next().unwrap().to_string();
+        let pending = header(&start, "Set-Cookie")[0].split(';').next().unwrap().to_string();
+        let back = gate
+            .route("GET", &format!("/api/auth/github/callback?code=ok&state={state}"), &headers(&[("cookie", &pending)]))
+            .unwrap();
+        assert_eq!(back.status, 302);
+        assert_eq!(header(&back, "Location")[0], format!("http://127.0.0.1:8080{next}"));
     }
 
     #[test]

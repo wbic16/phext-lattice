@@ -863,6 +863,7 @@ dependencies = [
  "memmap2",
  "ratatui",
  "rayon",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",

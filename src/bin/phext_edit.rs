@@ -1644,9 +1644,14 @@ fn mcp_arg_coord(args: &serde_json::Value) -> Result<libphext::phext::Coordinate
 // metadata, RFC 7591 dynamic client registration, authorization codes
 // with mandatory PKCE S256, rotating refresh tokens, and RFC 8707
 // resource indicators. Client ID Metadata Documents are accepted in the
-// same client-validation path as registered clients; ChatGPT's public
-// (`none`) CIMD authentication method is supported, while
-// `private_key_jwt` is not (see the design note).
+// same client-validation path as registered clients.
+// `private_key_jwt` client authentication (RFC 7523) is supported for
+// registered and CIMD clients alike, provided the client's metadata
+// carries key material the server can verify against — a `jwks_uri`
+// or an inline `jwks`. Assertions are RS256-verified against those
+// keys and each `jti` is single-use; a client that asks for
+// `private_key_jwt` without publishing keys is refused at
+// registration rather than waved through.
 //
 // The two scopes name this surface and nothing else. A token's stored
 // record is keyed by a domain-separated HMAC of the token under the
@@ -1702,6 +1707,13 @@ struct McpOAuthClient {
     token_endpoint_auth_methods: Vec<String>,
     #[serde(default)]
     client_secret_hash: Option<String>,
+    /// Where the client's `private_key_jwt` signing keys live: a
+    /// `jwks_uri` to fetch, and/or an inline `jwks` document, exactly
+    /// as published in the client's registration or CIMD metadata.
+    #[serde(default)]
+    jwks_uri: Option<String>,
+    #[serde(default)]
+    jwks: Option<serde_json::Value>,
     #[serde(default)]
     client_uri: Option<String>,
     #[serde(default)]
@@ -1765,6 +1777,11 @@ struct McpOAuthData {
     access_tokens: HashMap<String, McpOAuthAccess>,
     #[serde(default)]
     refresh_tokens: HashMap<String, McpOAuthRefresh>,
+    /// Digests of accepted `private_key_jwt` assertions
+    /// (client_id + jti), each kept until the assertion's own expiry:
+    /// presenting the same assertion twice is a replay.
+    #[serde(default)]
+    assertions: HashMap<String, i64>,
 }
 
 impl McpOAuthData {
@@ -1772,6 +1789,7 @@ impl McpOAuthData {
         self.codes.retain(|_, code| code.expires_at > now);
         self.access_tokens.retain(|_, token| token.expires_at > now);
         self.refresh_tokens.retain(|_, token| token.expires_at > now);
+        self.assertions.retain(|_, expires_at| *expires_at > now);
         self.cimd_clients
             .retain(|_, cached| now - cached.fetched_at <= MCP_OAUTH_CIMD_TTL * 10);
     }
@@ -1923,6 +1941,23 @@ impl McpOAuthStore {
             return false;
         }
         data.revoke_family(&record.family);
+        let _ = self.save(&data);
+        true
+    }
+
+    /// Record a verified `private_key_jwt` assertion's `jti` for this
+    /// client. Returns false when the same assertion was already
+    /// accepted once — assertions are single-use until they expire.
+    fn claim_assertion(&self, gate: &Gate, client_id: &str, jti: &str, expires_at: i64) -> bool {
+        let Some(hash) = oauth_hash(gate, "client-assertion", &format!("{client_id}\n{jti}")) else {
+            return false;
+        };
+        let mut data = self.inner.lock().unwrap();
+        data.cleanup(oauth_now());
+        if data.assertions.contains_key(&hash) {
+            return false;
+        }
+        data.assertions.insert(hash, expires_at);
         let _ = self.save(&data);
         true
     }
@@ -2094,6 +2129,27 @@ fn oauth_parse_scopes(raw: Option<&str>, default: &[String]) -> Result<Vec<Strin
     Ok(out)
 }
 
+/// Client-metadata scopes, read leniently (registration and CIMD):
+/// unsupported scope names a client asks for are dropped, not fatal —
+/// the client is registered for the subset this server can grant, and
+/// the authorize/token flows still refuse anything outside that subset
+/// with `invalid_scope`. An empty remainder means the read-only
+/// default.
+fn oauth_filter_scopes(raw: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(raw) = raw {
+        for scope in raw.split_whitespace() {
+            if MCP_OAUTH_SCOPES.contains(&scope) && !out.iter().any(|s: &String| s == scope) {
+                out.push(scope.to_string());
+            }
+        }
+    }
+    if out.is_empty() {
+        out.push(MCP_OAUTH_READ_SCOPE.to_string());
+    }
+    out
+}
+
 fn oauth_pkce_challenge(verifier: &str) -> String {
     oauth_base64url(&sha2::Sha256::digest(verifier.as_bytes()))
 }
@@ -2256,67 +2312,80 @@ fn oauth_client_from_metadata(
     if !metadata.is_object() {
         return Err("client metadata must be a JSON object".into());
     }
+    // Registration and CIMD metadata are read leniently throughout:
+    // real clients (ChatGPT, Claude, Cursor) routinely declare more
+    // than this server supports — extra grant types, hybrid response
+    // types, unrelated scopes, a redirect URI in a scheme the web
+    // flow cannot use. The registration is normalized to the supported
+    // subset instead of being refused whole; each field errors only
+    // when nothing usable remains in it.
     let redirect_uris = oauth_string_list(metadata, "redirect_uris")?
         .ok_or_else(|| "redirect_uris is required".to_string())?;
-    if redirect_uris.is_empty() || redirect_uris.len() > 10 {
-        return Err("redirect_uris must contain between one and ten URIs".into());
-    }
+    let mut valid_redirect_uris: Vec<String> = Vec::new();
     for uri in &redirect_uris {
-        if !oauth_valid_redirect_uri(uri) {
-            return Err(format!(
-                "invalid redirect_uri {uri:?}: https is required, except http on a loopback host"
-            ));
+        if oauth_valid_redirect_uri(uri) && !valid_redirect_uris.contains(uri) {
+            valid_redirect_uris.push(uri.clone());
         }
     }
-    let grant_types = oauth_string_list(metadata, "grant_types")?
-        .unwrap_or_else(|| vec!["authorization_code".into(), "refresh_token".into()]);
-    if grant_types.is_empty()
-        || !grant_types.iter().any(|g| g == "authorization_code")
-        || !grant_types
-            .iter()
-            .all(|g| matches!(g.as_str(), "authorization_code" | "refresh_token"))
-    {
-        return Err("grant_types must include authorization_code and may include refresh_token".into());
+    if valid_redirect_uris.is_empty() {
+        return Err(
+            "redirect_uris must contain at least one usable URI: https is required, except http on a loopback host"
+                .into(),
+        );
     }
-    let response_types = oauth_string_list(metadata, "response_types")?
-        .unwrap_or_else(|| vec!["code".into()]);
-    if response_types.len() != 1 || response_types[0] != "code" {
-        return Err("only response_types [\"code\"] is supported".into());
-    }
-    let scopes = oauth_parse_scopes(
-        metadata.get("scope").and_then(|v| v.as_str()),
-        &[MCP_OAUTH_READ_SCOPE.to_string()],
-    )?;
+    let redirect_uris = valid_redirect_uris.into_iter().take(10).collect::<Vec<_>>();
+    let grant_types = match oauth_string_list(metadata, "grant_types")? {
+        Some(declared) => {
+            let supported: Vec<String> = declared
+                .into_iter()
+                .filter(|g| matches!(g.as_str(), "authorization_code" | "refresh_token"))
+                .collect();
+            if !supported.iter().any(|g| g == "authorization_code") {
+                return Err(
+                    "grant_types must include authorization_code (unsupported grant types are ignored)"
+                        .into(),
+                );
+            }
+            supported
+        }
+        None => vec!["authorization_code".into(), "refresh_token".into()],
+    };
+    let response_types = match oauth_string_list(metadata, "response_types")? {
+        Some(declared) => {
+            // An entry is one response-type combination ("code",
+            // "code id_token", ...). Only the pure code flow is
+            // supported; hybrid entries are dropped, not fatal.
+            let supported: Vec<String> = declared
+                .into_iter()
+                .filter(|r| r.trim() == "code")
+                .collect();
+            if supported.is_empty() {
+                return Err(
+                    "response_types must include \"code\" (only the authorization-code flow is supported)"
+                        .into(),
+                );
+            }
+            supported
+        }
+        None => vec!["code".into()],
+    };
+    let scopes = oauth_filter_scopes(metadata.get("scope").and_then(|v| v.as_str()));
     let mut auth_methods = Vec::new();
     if let Some(method) = metadata.get("token_endpoint_auth_method").and_then(|v| v.as_str()) {
         auth_methods.push(method.to_string());
     }
-    if let Some(methods) = oauth_string_list(metadata, "token_endpoint_auth_methods_supported")? {
-        for method in methods {
-            if !auth_methods.contains(&method) {
-                auth_methods.push(method);
+    for field in ["token_endpoint_auth_methods", "token_endpoint_auth_methods_supported"] {
+        if let Some(methods) = oauth_string_list(metadata, field)? {
+            for method in methods {
+                if !auth_methods.contains(&method) {
+                    auth_methods.push(method);
+                }
             }
         }
     }
     if auth_methods.is_empty() {
         auth_methods.push("none".into());
     }
-    let auth_method = if cimd {
-        if auth_methods.iter().any(|m| m == "none") {
-            "none".to_string()
-        } else {
-            return Err(
-                "this authorization server supports CIMD clients with the public (none) authentication method; private_key_jwt is not supported"
-                    .into(),
-            );
-        }
-    } else {
-        let method = auth_methods[0].clone();
-        if !matches!(method.as_str(), "none" | "client_secret_basic" | "client_secret_post") {
-            return Err(format!("unsupported token_endpoint_auth_method: {method}"));
-        }
-        method
-    };
     let client_name = metadata
         .get("client_name")
         .and_then(|v| v.as_str())
@@ -2339,6 +2408,58 @@ fn oauth_client_from_metadata(
         }
         Ok(Some(value.to_string()))
     };
+    // `private_key_jwt` key material. The method is only ever granted
+    // when the client publishes keys the server can verify assertions
+    // against; asking for the method without keys is the one metadata
+    // combination that stays fatal, because accepting it would mean
+    // trusting assertions nobody can check.
+    let jwks_uri = optional_url("jwks_uri")?;
+    let jwks = match metadata.get("jwks") {
+        Some(value) if value.is_object() => Some(value.clone()),
+        Some(_) => return Err("jwks must be a JSON object (a JWK Set)".into()),
+        None => None,
+    };
+    let has_keys = jwks_uri.is_some() || jwks.is_some();
+    // Choose the method to run: the client's singular
+    // `token_endpoint_auth_method` speaks first, then the other
+    // methods it offered, strongest first. A method counts only when
+    // this server can actually run it — private_key_jwt needs the
+    // client's published keys, the rest always run — so a client
+    // whose first choice cannot run falls back to a later one
+    // instead of being refused whole.
+    let mut candidates: Vec<&str> = Vec::new();
+    if let Some(method) = metadata.get("token_endpoint_auth_method").and_then(|v| v.as_str()) {
+        candidates.push(method);
+    }
+    for method in ["private_key_jwt", "client_secret_basic", "client_secret_post", "none"] {
+        if auth_methods.iter().any(|m| m == method) && !candidates.contains(&method) {
+            candidates.push(method);
+        }
+    }
+    let auth_method = candidates
+        .into_iter()
+        .find(|method| {
+            matches!(
+                *method,
+                "private_key_jwt" | "client_secret_basic" | "client_secret_post" | "none"
+            ) && (*method != "private_key_jwt" || has_keys)
+        })
+        .map(str::to_string);
+    let auth_method = match auth_method {
+        Some(method) => method,
+        None if auth_methods.iter().any(|m| m == "private_key_jwt") => {
+            return Err(
+                "private_key_jwt requires a jwks_uri or an inline jwks so this server can verify client assertions"
+                    .into(),
+            );
+        }
+        None => {
+            return Err(format!(
+                "unsupported token_endpoint_auth_method: {}",
+                auth_methods[0]
+            ));
+        }
+    };
     Ok(McpOAuthClient {
         client_id: client_id.to_string(),
         client_name,
@@ -2349,6 +2470,8 @@ fn oauth_client_from_metadata(
         token_endpoint_auth_method: auth_method,
         token_endpoint_auth_methods: auth_methods,
         client_secret_hash: None,
+        jwks_uri,
+        jwks,
         client_uri: optional_url("client_uri")?,
         logo_uri: optional_url("logo_uri")?,
         cimd,
@@ -2599,6 +2722,23 @@ fn oauth_validate_authorize(
     })
 }
 
+/// The consent page's styling: the site's own palette and button
+/// shapes (the editor shell's `--bg`/`--panel`/`--coord` theme and
+/// `.auth-btn`), so the page an MCP client sends an editor to is
+/// recognizably part of Phext Edit rather than bare browser HTML.
+const MCP_CONSENT_STYLE: &str = "\
+body { margin: 0; background: #171717; color: #dedede; font: 15px/1.6 system-ui, sans-serif; } \
+main { max-width: 560px; margin: 48px auto; padding: 28px 24px 32px; background: #131313; border: 1px solid #2e2e2e; border-radius: 10px; } \
+h1 { color: #d4a855; font-size: 24px; line-height: 1.3; margin: 0 0 12px; } \
+code { color: #e8c547; overflow-wrap: anywhere; } \
+ul { margin: 8px 0 16px; padding-left: 22px; } \
+form { display: flex; gap: 12px; margin-top: 24px; } \
+button { font: inherit; font-size: 14px; padding: 10px 18px; border-radius: 6px; cursor: pointer; border: 1px solid #2e2e2e; background: #1c1c1c; color: #dedede; } \
+button.approve { background: #d4a855; border-color: #d4a855; color: #1a1408; font-weight: 600; } \
+button:hover { border-color: #d4a855; } \
+:focus-visible { outline: 2px solid #e8c547; outline-offset: 3px; } \
+@media (max-width: 760px) { main { margin: 16px; } }";
+
 fn oauth_handle_authorize(
     stream: &mut std::net::TcpStream,
     reader: &mut BufReader<std::net::TcpStream>,
@@ -2694,7 +2834,8 @@ fn oauth_handle_authorize(
             })
             .collect();
         let page = format!(
-            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Connect to Phext Edit</title></head><body><main><h1>Connect {} to Phext Edit?</h1><p>Signed in as {} (@{}).</p><p>This client will be able to use the MCP endpoint at <code>{}</code> with these scopes:</p><ul>{}</ul><p>It will return to <code>{}</code>.</p><form method=\"post\" action=\"/oauth/authorize\">{fields}<button type=\"submit\" name=\"decision\" value=\"approve\">Approve</button> <button type=\"submit\" name=\"decision\" value=\"deny\">Deny</button></form></main></body></html>",
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Connect to Phext Edit</title><link rel=\"icon\" href=\"/favicon.ico\" sizes=\"16x16 32x32 48x48\"><link rel=\"icon\" type=\"image/svg+xml\" href=\"/favicon.svg\"><style>{}</style></head><body><main><h1>Connect {} to Phext Edit?</h1><p>Signed in as {} (@{}).</p><p>This client will be able to use the MCP endpoint at <code>{}</code> with these scopes:</p><ul>{}</ul><p>It will return to <code>{}</code>.</p><form method=\"post\" action=\"/oauth/authorize\">{fields}<button type=\"submit\" class=\"approve\" name=\"decision\" value=\"approve\">Approve</button><button type=\"submit\" class=\"deny\" name=\"decision\" value=\"deny\">Deny</button></form></main></body></html>",
+            MCP_CONSENT_STYLE,
             html_escape(&request.client.client_name),
             html_escape(&session.name),
             html_escape(&session.handle),
@@ -2783,6 +2924,245 @@ fn oauth_handle_authorize(
     send_redirect(stream, &oauth_append_query(&request.redirect_uri, &pairs), headers);
 }
 
+/// Fetch a client's JWKS document from its `jwks_uri`, with the same
+/// SSRF posture as the CIMD fetch: https only, no redirects, a size
+/// cap, and the host must resolve exclusively to public addresses.
+fn oauth_fetch_jwks(jwks_uri: &str) -> Result<Vec<serde_json::Value>, String> {
+    let Some(url) = oauth_parse_url(jwks_uri) else {
+        return Err("the client's jwks_uri is not a valid HTTPS URL".into());
+    };
+    if url.scheme != "https" || oauth_loopback_host(&url.host) || url.host.ends_with(".local") {
+        return Err("the client's jwks_uri must be an https URL on a public DNS host".into());
+    }
+    if oauth_ip_literal(&url.host) {
+        let ip: std::net::IpAddr = url.host.parse().map_err(|_| "bad jwks_uri host")?;
+        if !oauth_ip_is_public(ip) {
+            return Err("the client's jwks_uri host is not a public address".into());
+        }
+    } else {
+        use std::net::ToSocketAddrs;
+        let port = url.port.unwrap_or(443);
+        let addresses: Vec<std::net::SocketAddr> = (url.host.as_str(), port)
+            .to_socket_addrs()
+            .map(|iter| iter.collect())
+            .unwrap_or_default();
+        if addresses.is_empty() || addresses.iter().any(|addr| !oauth_ip_is_public(addr.ip())) {
+            return Err("the client's jwks_uri hostname does not resolve to a public address".into());
+        }
+    }
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(5))
+        .redirects(0)
+        .build();
+    let response = agent
+        .get(jwks_uri)
+        .set("Accept", "application/json")
+        .call()
+        .map_err(|e| format!("could not fetch the client's JWKS: {e}"))?;
+    if response.status() != 200 {
+        return Err(format!("the client's JWKS returned HTTP {}", response.status()));
+    }
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(65_537)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("could not read the client's JWKS: {e}"))?;
+    if bytes.len() > 65_536 {
+        return Err("the client's JWKS is larger than 64 KiB".into());
+    }
+    let document: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("the client's JWKS is not valid JSON: {e}"))?;
+    oauth_jwks_keys(&document).ok_or_else(|| "the client's JWKS holds no keys".to_string())
+}
+
+/// The key list of a JWK Set document (or a lone JWK, wrapped).
+fn oauth_jwks_keys(document: &serde_json::Value) -> Option<Vec<serde_json::Value>> {
+    if let Some(keys) = document.get("keys").and_then(|v| v.as_array()) {
+        if !keys.is_empty() {
+            return Some(keys.clone());
+        }
+        return None;
+    }
+    if document.get("kty").and_then(|v| v.as_str()) == Some("RSA") {
+        return Some(vec![document.clone()]);
+    }
+    None
+}
+
+/// Every RSA key a client publishes: the inline `jwks` from its
+/// metadata plus the document behind its `jwks_uri`, when it has one.
+fn oauth_client_jwks(client: &McpOAuthClient) -> Result<Vec<serde_json::Value>, McpOAuthError> {
+    let mut keys = Vec::new();
+    if let Some(document) = &client.jwks {
+        if let Some(inline) = oauth_jwks_keys(document) {
+            keys.extend(inline);
+        }
+    }
+    if let Some(uri) = &client.jwks_uri {
+        let fetched = oauth_fetch_jwks(uri).map_err(|message| {
+            McpOAuthError::new(401, "invalid_client", message)
+        })?;
+        keys.extend(fetched);
+    }
+    if keys.is_empty() {
+        return Err(McpOAuthError::new(
+            401,
+            "invalid_client",
+            "this client publishes no signing keys to verify its assertions against",
+        ));
+    }
+    Ok(keys)
+}
+
+/// Verify an RFC 7523 `private_key_jwt` client assertion: an RS256
+/// JWT, signed with a key from the client's own published JWKS,
+/// naming the client as issuer and subject, this token endpoint (or
+/// the issuer) as audience, with a future expiry and a `jti` that is
+/// accepted exactly once. Nothing is trusted before the signature
+/// checks out — claims are read only to be compared, never believed.
+fn oauth_verify_client_assertion(
+    gate: &Gate,
+    store: &McpOAuthStore,
+    client: &McpOAuthClient,
+    form: &HashMap<String, String>,
+    issuer: &str,
+) -> Result<(), McpOAuthError> {
+    let invalid = |message: &str| McpOAuthError::new(401, "invalid_client", message.to_string());
+    if form.get("client_assertion_type").map(String::as_str)
+        != Some("urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+    {
+        return Err(invalid(
+            "client_assertion_type must be urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        ));
+    }
+    let Some(assertion) = form.get("client_assertion").filter(|s| !s.is_empty()) else {
+        return Err(invalid("client_assertion is required for private_key_jwt"));
+    };
+    let parts: Vec<&str> = assertion.split('.').collect();
+    if parts.len() != 3 || parts.iter().any(|p| p.is_empty()) {
+        return Err(invalid("client_assertion is not a well-formed JWT"));
+    }
+    let decode_json = |part: &str| -> Option<serde_json::Value> {
+        serde_json::from_slice(&oauth_base64_decode(part)?).ok()
+    };
+    let Some(header) = decode_json(parts[0]) else {
+        return Err(invalid("client_assertion header is not valid JSON"));
+    };
+    if header.get("alg").and_then(|v| v.as_str()) != Some("RS256") {
+        return Err(invalid("client_assertion must be signed with RS256"));
+    }
+    let Some(claims) = decode_json(parts[1]) else {
+        return Err(invalid("client_assertion claims are not valid JSON"));
+    };
+    if claims.get("iss").and_then(|v| v.as_str()) != Some(client.client_id.as_str()) {
+        return Err(invalid("client_assertion iss must be the client_id"));
+    }
+    if claims.get("sub").and_then(|v| v.as_str()) != Some(client.client_id.as_str()) {
+        return Err(invalid("client_assertion sub must be the client_id"));
+    }
+    let token_endpoint = format!("{issuer}/oauth/token");
+    let audience_ok = match claims.get("aud") {
+        Some(serde_json::Value::String(aud)) => aud == &token_endpoint || aud == issuer,
+        Some(serde_json::Value::Array(auds)) => auds
+            .iter()
+            .filter_map(|v| v.as_str())
+            .any(|aud| aud == token_endpoint || aud == issuer),
+        _ => false,
+    };
+    if !audience_ok {
+        return Err(invalid("client_assertion aud must name this token endpoint"));
+    }
+    let now = oauth_now();
+    let Some(exp) = claims.get("exp").and_then(|v| v.as_i64()) else {
+        return Err(invalid("client_assertion exp is required"));
+    };
+    if exp <= now - 60 {
+        return Err(invalid("client_assertion has expired"));
+    }
+    if let Some(iat) = claims.get("iat").and_then(|v| v.as_i64()) {
+        if iat > now + 300 {
+            return Err(invalid("client_assertion iat is in the future"));
+        }
+    }
+    if let Some(nbf) = claims.get("nbf").and_then(|v| v.as_i64()) {
+        if nbf > now + 60 {
+            return Err(invalid("client_assertion is not yet valid"));
+        }
+    }
+    let Some(jti) = claims.get("jti").and_then(|v| v.as_str()).filter(|s| !s.is_empty() && s.len() <= 200) else {
+        return Err(invalid("client_assertion jti is required"));
+    };
+    let Some(signature) = oauth_base64_decode(parts[2]) else {
+        return Err(invalid("client_assertion signature is not valid base64url"));
+    };
+    let signed = format!("{}.{}", parts[0], parts[1]);
+    let kid = header.get("kid").and_then(|v| v.as_str());
+    let keys = oauth_client_jwks(client)?;
+    let mut verified = false;
+    for key in &keys {
+        if key.get("kty").and_then(|v| v.as_str()) != Some("RSA") {
+            continue;
+        }
+        if let Some(want) = kid {
+            if key.get("kid").and_then(|v| v.as_str()) != Some(want) {
+                continue;
+            }
+        }
+        if let Some(use_) = key.get("use").and_then(|v| v.as_str()) {
+            if use_ != "sig" {
+                continue;
+            }
+        }
+        if let Some(alg) = key.get("alg").and_then(|v| v.as_str()) {
+            if alg != "RS256" {
+                continue;
+            }
+        }
+        let (Some(n), Some(e)) = (
+            key.get("n").and_then(|v| v.as_str()),
+            key.get("e").and_then(|v| v.as_str()),
+        ) else {
+            continue;
+        };
+        let (Some(mut n_bytes), Some(e_bytes)) =
+            (oauth_base64_decode(n), oauth_base64_decode(e))
+        else {
+            continue;
+        };
+        // JWK integers are unsigned big-endian without a sign byte;
+        // drop a stray leading zero so the components read as the
+        // magnitude ring expects.
+        if n_bytes.len() > 1 && n_bytes[0] == 0 {
+            n_bytes.remove(0);
+        }
+        let components = ring::signature::RsaPublicKeyComponents {
+            n: &n_bytes[..],
+            e: &e_bytes[..],
+        };
+        if components
+            .verify(
+                &ring::signature::RSA_PKCS1_2048_8192_SHA256,
+                signed.as_bytes(),
+                &signature,
+            )
+            .is_ok()
+        {
+            verified = true;
+            break;
+        }
+    }
+    if !verified {
+        return Err(invalid(
+            "client_assertion signature does not verify against the client's published keys",
+        ));
+    }
+    if !store.claim_assertion(gate, &client.client_id, jti, exp) {
+        return Err(invalid("client_assertion was already used (jti replay)"));
+    }
+    Ok(())
+}
+
 fn oauth_basic_credentials(
     headers: &HashMap<String, String>,
 ) -> Option<(String, String)> {
@@ -2796,6 +3176,8 @@ fn oauth_basic_credentials(
 
 fn oauth_authenticate_client(
     gate: &Gate,
+    store: &McpOAuthStore,
+    issuer: &str,
     headers: &HashMap<String, String>,
     form: &HashMap<String, String>,
     client: &McpOAuthClient,
@@ -2862,6 +3244,14 @@ fn oauth_authenticate_client(
             };
             verify_secret(secret)
         }
+        "private_key_jwt" => {
+            if basic.is_some() || form.contains_key("client_secret") {
+                return Err(invalid(
+                    "this client authenticates with a signed client_assertion, not a secret",
+                ));
+            }
+            oauth_verify_client_assertion(gate, store, client, form, issuer)
+        }
         _ => Err(McpOAuthError::new(
             401,
             "invalid_client",
@@ -2926,7 +3316,7 @@ fn oauth_handle_token(
             return;
         }
     };
-    if let Err(error) = oauth_authenticate_client(gate, headers, &form, &client) {
+    if let Err(error) = oauth_authenticate_client(gate, &store, &issuer, headers, &form, &client) {
         send_oauth_error(stream, headers, &error);
         return;
     }
@@ -3181,7 +3571,16 @@ fn handle_mcp_oauth(
             send_response(stream, 200, "application/json", text.as_bytes(), CacheClass::NoStore, headers, method == "HEAD");
             true
         }
-        "/.well-known/oauth-authorization-server" => {
+        // The same authorization-server metadata under every
+        // well-known name clients construct for it: the bare RFC 8414
+        // location, the RFC 8414 §3.1 path-suffixed form (issuer path
+        // `/mcp` inserted after the well-known segment), and the
+        // OpenID Connect discovery aliases OIDC-flavored clients try
+        // first. All four serve the identical document.
+        "/.well-known/oauth-authorization-server"
+        | "/.well-known/oauth-authorization-server/mcp"
+        | "/.well-known/openid-configuration"
+        | "/.well-known/openid-configuration/mcp" => {
             if !matches!(method, "GET" | "HEAD") {
                 send_oauth_error(stream, headers, &McpOAuthError::new(405, "invalid_request", "GET is required"));
                 return true;
@@ -3196,7 +3595,8 @@ fn handle_mcp_oauth(
                 "response_modes_supported": ["query"],
                 "grant_types_supported": ["authorization_code", "refresh_token"],
                 "code_challenge_methods_supported": ["S256"],
-                "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post"],
+                "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "client_secret_post", "private_key_jwt"],
+                "token_endpoint_auth_signing_alg_values_supported": ["RS256"],
                 "client_id_metadata_document_supported": true,
                 "authorization_response_iss_parameter_supported": true,
             });
@@ -3236,9 +3636,14 @@ fn handle_mcp_oauth(
                     return true;
                 }
             };
-            let raw_secret = if client.token_endpoint_auth_method == "none" {
-                None
-            } else {
+            // A secret is issued only for the secret-based methods:
+            // `none` is a public client and `private_key_jwt`
+            // authenticates with its published keys, so neither gets
+            // (or needs) a secret here.
+            let raw_secret = if matches!(
+                client.token_endpoint_auth_method.as_str(),
+                "client_secret_basic" | "client_secret_post"
+            ) {
                 match oauth_random("", 32) {
                     Ok(secret) => {
                         let Some(hash) = oauth_hash(gate, "client-secret", &secret) else {
@@ -3253,6 +3658,8 @@ fn handle_mcp_oauth(
                         return true;
                     }
                 }
+            } else {
+                None
             };
             let store = state.lock().unwrap().mcp_oauth.clone();
             if let Err(message) = store.register_client(client.clone()) {
@@ -3269,6 +3676,9 @@ fn handle_mcp_oauth(
                 "scope": oauth_scope_string(&client.scopes),
                 "token_endpoint_auth_method": client.token_endpoint_auth_method,
             });
+            if let Some(jwks_uri) = &client.jwks_uri {
+                response["jwks_uri"] = serde_json::Value::String(jwks_uri.clone());
+            }
             if let Some(secret) = raw_secret {
                 response["client_secret"] = serde_json::Value::String(secret);
                 response["client_secret_expires_at"] = serde_json::json!(0);
@@ -6492,6 +6902,12 @@ body {
 }
 #status-bar .bar-link.first { margin-left: auto; }
 #status-bar .bar-link:hover { color: var(--coord); text-decoration: underline; }
+#status-bar .mcp-endpoint { margin-left: 14px; color: var(--coord); white-space: nowrap; }
+#status-bar .mcp-endpoint code { color: var(--active); }
+.welcome .mcp-callout { border: 1px solid var(--coord); background: var(--panel); border-radius: 8px; padding: 12px 14px; margin-top: 18px; text-align: left; }
+.welcome .mcp-callout h2 { color: var(--coord); font-size: 15px; margin: 0 0 6px; }
+.welcome .mcp-callout p { font-size: 13px; line-height: 1.55; margin: 0; }
+.welcome .mcp-callout code { color: var(--active); overflow-wrap: anywhere; }
 #status-bar { padding-bottom: env(safe-area-inset-bottom, 0px); }
 #status-bar .sponsor-offer { margin-left: 14px; white-space: nowrap; }
 #status-bar .sponsor-link { color: var(--dim); text-decoration: none; }
@@ -6726,8 +7142,8 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
 /* ── Landscape phones (701–1100px wide) ──
    Too wide for the small-screen rules above, too narrow for the
    desktop status bar: that bar is a single nowrap row measuring
-   ~1487px of content, so at 844/915px its tail — Preview, Mutable
-   OS, Claim dashboard, sign out — was clipped off-screen with no way
+   ~1487px of content, so at 844/915px its tail — Preview, the MCP
+   endpoint, Claim dashboard, sign out — was clipped off-screen with no way
    to scroll to it. Give this band the same wrap treatment as the
    small-screen rules so every item stays reachable. Portrait and
    full desktop widths are untouched. */
@@ -6802,7 +7218,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
   <a class="bar-link" href="/claim" title="If your X account is in the wavefront map, claim your space on this server">Claim your space</a>
   <a class="bar-link" href="/explore" title="Every placement in the wavefront, explorable in nine dimensions">Explore the map</a>
   <a class="bar-link" href="/phext-previewer.html" title="Open a phext file from your own device and preview it scroll by scroll — no sign-in needed">Preview a phext</a>
-  <a class="bar-link" href="/api/auth/sso/mutable" title="Mutable OS — documents and Caverns, with this same sign-in">Mutable OS</a>
+  <span class="mcp-endpoint" title="Connect an MCP client (ChatGPT, Claude, Cursor, …) to this endpoint and approve the sign-in: it can then read and write scrolls here">MCP: <code>https://edit.phext.io/mcp</code></span>
   <!--phext-sponsor-->
   <span class="build-stamp" title="The build this server is running — name it in a bug report"><!--phext-build--></span>
   <a class="bar-link" id="dashboard-link" href="/claim/dashboard" style="display:none" title="Who has claimed their wavefront space, and who has joined since the snapshot — the owner and editors">Claim dashboard</a>
@@ -6832,6 +7248,10 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
       <a class="auth-btn" data-provider="x" href="/api/auth/x?next=%2F">Sign in with X</a>
     </div>
     <div id="auth-error" role="alert" style="color:var(--danger);margin-top:8px;font-size:12px"></div>
+    <div class="mcp-callout">
+      <h2>Connect your AI — this site is an MCP server</h2>
+      <p>Point ChatGPT, Claude, Cursor, or any MCP client at <code>https://edit.phext.io/mcp</code> and approve the sign-in it offers you. Your assistant can then read and write scrolls in your phexts, with the same editor permissions as your account.</p>
+    </div>
     <p class="explain">Nine numbers name a scroll: library, shelf, series, collection, volume, book, chapter, section, scroll. The scroll is a page of lines and columns, which makes eleven. The file stays plain text.</p>
     <p class="hint">Sign in to save and edit your own files. The demo is a sample you can walk through; nothing in it is saved.</p>
     <p class="links"><a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · <a href="mailto:will+support@phext.io">Contact</a><br>
@@ -7471,14 +7891,28 @@ async function loadSession() {
   if (dl) dl.style.display = (session && session.signed_in &&
     (session.editor || ((session.who || '').startsWith('x:') && (session.handle || '').toLowerCase() === 'wbic16'))) ? '' : 'none';
 }
+// A `next` the shell will carry through sign-in: a same-site path.
+// A colon is refused in the path portion only — past the `?`, a
+ // query may carry URLs of its own (an OAuth authorize request names
+ // https redirect URIs and CIMD client_ids), and the server's
+ // safe_next applies this same rule when it seals the return.
+function nextOk(p) {
+  if (!p || !p.startsWith('/') || p.startsWith('//') || p.includes('\\')) return false;
+  const colon = p.indexOf(':');
+  if (colon < 0) return true;
+  const q = p.indexOf('?');
+  return q >= 0 && colon > q;
+}
 function paintProviders() {
   if (!session) return;
   const known = session.providers || [];
   // A `?next=` in the query wins: the Mutable SSO handoff sends signed-out
-  // visitors here with its endpoint as the next. Otherwise return to the
-  // scroll in the hash. Same-site paths only — safe_next re-checks server-side.
+  // visitors here with its endpoint as the next, and the MCP authorize
+  // endpoint sends them with the whole authorize request. Otherwise
+  // return to the scroll in the hash. Same-site paths only — safe_next
+  // re-checks server-side.
   const fromQuery = new URLSearchParams(location.search).get('next');
-  const nextPath = fromQuery && fromQuery.startsWith('/') && !fromQuery.includes(':') ? fromQuery : '/' + location.hash;
+  const nextPath = nextOk(fromQuery) ? fromQuery : '/' + location.hash;
   const next = encodeURIComponent(nextPath);
   document.querySelectorAll('#auth-providers [data-provider]').forEach(el => {
     const provider = el.getAttribute('data-provider');
@@ -7500,7 +7934,7 @@ async function showAuthScreen(message, sessionFresh) {
     // only — authorize_url's safe_next re-checks server-side.
     const fromQuery = new URLSearchParams(location.search).get('next');
     const here = location.pathname + location.search + location.hash;
-    const nextPath = fromQuery && fromQuery.startsWith('/') && !fromQuery.includes(':') ? fromQuery : here;
+    const nextPath = nextOk(fromQuery) ? fromQuery : here;
     const next = encodeURIComponent(nextPath);
     const label = { github: 'Sign in with GitHub', google: 'Sign in with Google', x: 'Sign in with X' };
     for (const p of (s.providers || []))
@@ -8048,20 +8482,33 @@ mod public_route_tests {
     }
 
     #[test]
-    fn mutable_os_is_linked_from_the_shell_status_bar() {
-        // The crossing's front door: the editor shell a signed-in user
-        // lands on links the SSO handoff, beside Submit/Claim/Explore —
-        // and the sign-in screen honours the ?next= the handoff sends
-        // signed-out visitors back with.
+    fn mutable_os_is_not_linked_from_the_shell_yet() {
+        // Will's ruling (2026-11-09): edit.phext.io must not link to
+        // mutable.phext.io yet. The SSO endpoint itself stays — only
+        // the user-facing link is gone — and the sign-in screen still
+        // honours the ?next= the handoff sends signed-out visitors
+        // back with.
         assert!(
-            INDEX_HTML.contains("class=\"bar-link\" href=\"/api/auth/sso/mutable\""),
-            "shell status bar link"
+            !INDEX_HTML.contains("href=\"/api/auth/sso/mutable\""),
+            "no shell link to Mutable"
         );
-        assert!(INDEX_HTML.contains(">Mutable OS</a>"), "link label");
+        assert!(!INDEX_HTML.contains(">Mutable OS</a>"), "no Mutable OS link label");
         assert!(
             INDEX_HTML.contains("URLSearchParams(location.search).get('next')"),
             "auth screen reads ?next="
         );
+    }
+
+    #[test]
+    fn mcp_endpoint_is_highlighted_on_the_homepage() {
+        // The MCP endpoint is the way AI clients connect: it is named,
+        // with its full URL, on the sign-in screen a signed-out
+        // visitor lands on and in the status bar a signed-in editor
+        // always sees — the main surfaces, not a sub-page.
+        assert!(INDEX_HTML.contains("class=\"mcp-callout\""), "sign-in screen MCP callout");
+        assert!(INDEX_HTML.contains("class=\"mcp-endpoint\""), "status bar MCP endpoint");
+        assert!(INDEX_HTML.contains("https://edit.phext.io/mcp"), "endpoint URL shown");
+        assert!(INDEX_HTML.contains("Connect your AI"), "callout heading");
     }
 
     #[test]
@@ -9509,6 +9956,16 @@ mod mcp_tests {
     /// A locked server (no --local) over a tempdir library of two phexts:
     /// note.phext is the editor's open file, other.phext sits beside it.
     fn serve(editors: Editors) -> (u16, tempfile::TempDir) {
+        let (port, dir, _state) = serve_with_state(editors);
+        (port, dir)
+    }
+
+    /// `serve`, but the caller keeps the AppState — the CIMD flow test
+    /// seeds the client-metadata cache the way a completed CIMD fetch
+    /// would, since a real fetch needs public DNS and HTTPS.
+    fn serve_with_state(
+        editors: Editors,
+    ) -> (u16, tempfile::TempDir, Arc<Mutex<AppState>>) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("note.phext");
         std::fs::write(&path, b"local note\n").unwrap();
@@ -9521,14 +9978,15 @@ mod mcp_tests {
         let demo = DemoCatalog::load();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let thread_state = Arc::clone(&state);
         std::thread::spawn(move || {
             for incoming in listener.incoming() {
                 let Ok(mut stream) = incoming else { break };
-                let state = Arc::clone(&state);
+                let state = Arc::clone(&thread_state);
                 handle_request(&mut stream, &state, &gate, &demo);
             }
         });
-        (port, dir)
+        (port, dir, state)
     }
 
     fn session_headers() -> String {
@@ -9972,6 +10430,31 @@ mod mcp_tests {
         assert_eq!(server["code_challenge_methods_supported"][0], "S256");
         assert_eq!(server["client_id_metadata_document_supported"], true);
         assert_eq!(server["authorization_response_iss_parameter_supported"], true);
+        let auth_methods = server["token_endpoint_auth_methods_supported"].as_array().unwrap();
+        assert!(
+            auth_methods.iter().any(|m| m == "private_key_jwt"),
+            "private_key_jwt advertised: {server}"
+        );
+        assert_eq!(server["token_endpoint_auth_signing_alg_values_supported"][0], "RS256");
+
+        // The same document under the RFC 8414 §3.1 path-suffixed name
+        // and the OpenID Connect discovery aliases.
+        for alias in [
+            "/.well-known/oauth-authorization-server/mcp",
+            "/.well-known/openid-configuration",
+            "/.well-known/openid-configuration/mcp",
+        ] {
+            let (code, raw) = http_request(port, "GET", alias, "", "", None);
+            assert_eq!(code, 200, "{alias}: {raw}");
+            let aliased: serde_json::Value =
+                serde_json::from_str(response_body(&raw)).unwrap();
+            assert_eq!(aliased["issuer"], OAUTH_ISSUER, "{alias}");
+            assert_eq!(
+                aliased["token_endpoint"],
+                format!("{OAUTH_ISSUER}/oauth/token"),
+                "{alias}"
+            );
+        }
 
         let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#;
         let (code, raw) = rpc(port, "", init);
@@ -10159,6 +10642,394 @@ mod mcp_tests {
         let location = location_of(&raw);
         assert!(location.contains("error=invalid_request"), "{location}");
         assert!(location.contains(&format!("iss={}", test_form_encode(OAUTH_ISSUER))), "{location}");
+    }
+
+    fn post_registration(
+        port: u16,
+        metadata: serde_json::Value,
+    ) -> (u16, serde_json::Value) {
+        let (code, raw) = http_request(
+            port,
+            "POST",
+            "/oauth/register",
+            "",
+            &metadata.to_string(),
+            Some("application/json"),
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(response_body(&raw)).unwrap_or(serde_json::Value::Null);
+        (code, value)
+    }
+
+    #[test]
+    fn oauth_registration_normalizes_unsupported_metadata() {
+        let (port, _dir) = serve(Editors::default());
+
+        // Real MCP clients declare more than this server supports:
+        // extra grant types, a hybrid response type alongside "code",
+        // unrelated scopes, one unusable redirect URI. The
+        // registration is normalized to the supported subset instead
+        // of being refused whole (the Claude/ChatGPT failure mode:
+        // `invalid_client_metadata` over grant_types alone).
+        let (code, reply) = post_registration(
+            port,
+            serde_json::json!({
+                "client_name": "Test MCP Client",
+                "redirect_uris": [
+                    "https://client.example/callback",
+                    "ftp://client.example/not-a-web-uri",
+                    "http://127.0.0.1:8765/callback",
+                ],
+                "grant_types": [
+                    "authorization_code",
+                    "refresh_token",
+                    "client_credentials",
+                    "urn:ietf:params:oauth:grant-type:device_code",
+                ],
+                "response_types": ["code", "code id_token"],
+                "scope": "openid phext:read profile",
+                "token_endpoint_auth_method": "none",
+            }),
+        );
+        assert_eq!(code, 201, "{reply}");
+        assert_eq!(reply["grant_types"], serde_json::json!(["authorization_code", "refresh_token"]));
+        assert_eq!(reply["response_types"], serde_json::json!(["code"]));
+        assert_eq!(reply["scope"], "phext:read");
+        assert_eq!(
+            reply["redirect_uris"],
+            serde_json::json!(["https://client.example/callback", "http://127.0.0.1:8765/callback"])
+        );
+
+        // A supported fallback auth method is chosen when the first
+        // method named cannot run: private_key_jwt without published
+        // keys falls back to client_secret_post rather than failing.
+        let (code, reply) = post_registration(
+            port,
+            serde_json::json!({
+                "client_name": "Fallback Client",
+                "redirect_uris": [OAUTH_REDIRECT],
+                "token_endpoint_auth_method": "private_key_jwt",
+                "token_endpoint_auth_methods": ["client_secret_post"],
+            }),
+        );
+        assert_eq!(code, 201, "{reply}");
+        assert_eq!(reply["token_endpoint_auth_method"], "client_secret_post");
+        assert!(reply["client_secret"].is_string(), "{reply}");
+
+        // What stays fatal: nothing usable left in a required field.
+        for (metadata, why) in [
+            (
+                serde_json::json!({"redirect_uris": [OAUTH_REDIRECT], "grant_types": ["client_credentials"]}),
+                "no authorization_code grant",
+            ),
+            (
+                serde_json::json!({"redirect_uris": [OAUTH_REDIRECT], "response_types": ["code id_token"]}),
+                "no pure code response type",
+            ),
+            (
+                serde_json::json!({"redirect_uris": ["ftp://client.example/callback"]}),
+                "no usable redirect uri",
+            ),
+            (
+                serde_json::json!({"redirect_uris": [OAUTH_REDIRECT], "token_endpoint_auth_method": "private_key_jwt"}),
+                "private_key_jwt without keys",
+            ),
+            (
+                serde_json::json!({"redirect_uris": [OAUTH_REDIRECT], "token_endpoint_auth_method": "tls_client_auth"}),
+                "an unsupported auth method alone",
+            ),
+        ] {
+            let (code, reply) = post_registration(port, metadata);
+            assert_eq!(code, 400, "{why}: {reply}");
+            assert_eq!(reply["error"], "invalid_client_metadata", "{why}: {reply}");
+        }
+    }
+
+    #[test]
+    fn oauth_authorize_login_return_and_consent_deny() {
+        let (port, _dir) = serve(Editors::default());
+        let (client_id, _) = register_oauth_client(port, "phext:read", "none");
+        let challenge = oauth_pkce_challenge(OAUTH_VERIFIER);
+        let query = format!(
+            "response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=phext:read&resource={}&state=state-1",
+            test_form_encode(&client_id),
+            test_form_encode(OAUTH_REDIRECT),
+            test_form_encode(&challenge),
+            test_form_encode(&format!("{OAUTH_ISSUER}/mcp")),
+        );
+        let authorize_path = format!("/oauth/authorize?{query}");
+
+        // Signed out: the authorize request is carried to the homepage
+        // as `next`, verbatim — the post-sign-in return path. (It used
+        // to be clamped away there, stranding the flow at `/`.)
+        let (code, raw) = http_request(port, "GET", &authorize_path, "", "", None);
+        assert_eq!(code, 302, "{raw}");
+        let location = location_of(&raw);
+        let prefix = format!("{OAUTH_ISSUER}/?next=");
+        assert!(location.starts_with(&prefix), "{location}");
+        assert_eq!(url_decode(location.strip_prefix(&prefix).unwrap()), authorize_path);
+
+        // Signed in: the consent page renders, styled like the site.
+        let headers = session_headers();
+        let (code, raw) = http_request(port, "GET", &authorize_path, &headers, "", None);
+        assert_eq!(code, 200, "{raw}");
+        let body = response_body(&raw);
+        assert!(body.contains("class=\"approve\""), "{body}");
+        assert!(body.contains("Test MCP Client"), "{body}");
+
+        // Deny: a redirect back to the client carrying access_denied,
+        // the client's state, and this issuer (RFC 9207).
+        let form = format!(
+            "response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=phext:read&resource={}&state=state-1&phext_csrf={}&decision=deny",
+            test_form_encode(&client_id),
+            test_form_encode(OAUTH_REDIRECT),
+            test_form_encode(&challenge),
+            test_form_encode(&format!("{OAUTH_ISSUER}/mcp")),
+            TEST_CSRF,
+        );
+        let cookie_only = format!("Cookie: phext_session={}\r\n", Oauth::test_session_cookie());
+        let (code, raw) = http_request(
+            port,
+            "POST",
+            "/oauth/authorize",
+            &cookie_only,
+            &form,
+            Some("application/x-www-form-urlencoded"),
+        );
+        assert_eq!(code, 302, "{raw}");
+        let location = location_of(&raw);
+        assert!(location.starts_with(OAUTH_REDIRECT), "{location}");
+        assert_eq!(query_value(&location, "error"), "access_denied");
+        assert_eq!(query_value(&location, "state"), "state-1");
+        assert_eq!(query_value(&location, "iss"), OAUTH_ISSUER);
+        assert!(query_value(&location, "code").is_empty(), "{location}");
+    }
+
+    // A throwaway RSA keypair generated for these tests only — it
+    // signs nothing outside this test suite and protects nothing.
+    // Components, not a DER blob: ring's PKCS#8 parser rejects the
+    // shape OpenSSL writes, while `from_components` takes the JWK
+    // numbers directly.
+    const TEST_JWK_N: &str = "uQAjLzWbmgz60-JflI_841lRrlA2gC2TfCf1Gk9or-SBYC0b3TmDzmaoAaBdBCj18VAmRW3g6L4-pjGKLSRZQYAAPPmPFgtnuMkO9asDYBuFhZjv3_OajWBpghdq4SyBmfn0ouSmoOqjVKrX7uZB8nvzhDxe-MhM6r_Yu_Y-uwOr_i-dE7u1DvNpFR3OVdhoFlf24mwYGp-_-YHaFpeA3GgIHJW9yHxVdakSUIgE672TJ8EySYOk1jOVAwwrUVgFzCEeyqQZ02QYTaZax1YddsECqyQCRU5T4PJddjQo3tO7eLgccI2gGAeOCz0Etl2jhHU-GRRCW1-qW_0UBnsm4Q";
+    const TEST_KEY_D: &str = "JoGh0Sy-U4VKHBotPNXvlD6-IqMthOZ3oUsL2EsZBitwxlz9RMG47pgtdhEz6y6_alf9b0wcmTUoAx2inhzHuztyUT68iqEbGLo4s-fBjxqLYzBfFWU2ESE1NM-8_ltuKmd9hP5EtI_CKVhaE663oUoteKO8PNosMFx4Nz9c9T3GZ3nLPdhnAkdZ6ixN6YcOu99ZvgP22Zw1r6Ewi201kI22yswKh7LZxEZL2iqq7h8dm8CZvf70AdBOFNZuEAPwhW03UlPv7Nbd6PKP9txDKIcVFgGcahQoRV-QDw6V_8lwF5DOX2Hdsbw1ZOAjIU_5TqAiH_DRlF0bCT0LC67gJQ";
+    const TEST_KEY_P: &str = "73fUKU1bM8493QvmqiSJkbm8s8Ae3GPXJQeuwDnfCL39-kj293vT7oCoSnowr2DPrC0ADRwiAPy331FZd1QssjnB1K8ryfbIyDbWYRVird5Uh6OFSsapni7eVijCdkrd2k4RLqgI0CQo8W8a6wI_R6GOhd_Jpm0JqmJd8Y2nFBc";
+    const TEST_KEY_Q: &str = "xcWxJb-qQwI--UmQK5I4l_aDP24WkVFsFCA4BsO_E0nV9R6nU4HC2tczL69VawjpNzEjHkKEyl0b2aFS3LRyf9ra6YDrVHHwccd-kOR8by-8t3BdMYXzp9-I8EOKtn5GxHP-xzHkCM4hjRG8WIuxT7IBTF5lD4z_ZtSOLsnKX8c";
+    const TEST_KEY_DP: &str = "hlkUDpf3svjifEFRB-O3yqoJ1E7VAZCCA6RrxiyxlJYDB4goBnDSVdyYjjA_YCVQXahhfvlpmmQuRHu_VdNDwDnnJQuh5Y0u2CTr4Uu-MQ2rHu3-uhT61GQ3GN-FOhiGnxNtUF-1khC3Z7yNvYtlNSrOaw1CdLx3z7-gNQTj18E";
+    const TEST_KEY_DQ: &str = "iF7m5cahmo8D6VUmSkULLQ3YNnasrQtd4QrOVyvGp4A0Pk8ixdwmBkx5iRn3ZlTAq0QAmS747akCOTCaOIFcqni4lmZE3vep-mq7BSHoA6sBD-Q0_p8FAe6LOFD6ZxfvqCrrtWLbgI7SZ7mhC9VXMELnzkcQnIZ23esXF4AhQaU";
+    const TEST_KEY_QINV: &str = "0z64Tktbx5z0i-JLBK8Q8xvHIGzlbu19aCvsvb1xOJcB7N_cNHOJLywy7ygsmXTymKGYaSICRakR9OV5JTo1QaSEYiDVY7KJet1MAQiDfmM-jPU9HkBiwA2ldKaVQheijK7dBuX-YLWOl20wXgBEFIRNbb56feCfND8uBSlBdUo";
+
+    fn test_key_pair() -> ring::signature::RsaKeyPair {
+        let decode = |s: &str| oauth_base64_decode(s).expect("test key component decodes");
+        ring::signature::RsaKeyPair::from_components(&ring::rsa::KeyPairComponents {
+            public_key: ring::rsa::PublicKeyComponents {
+                n: decode(TEST_JWK_N),
+                e: decode("AQAB"),
+            },
+            d: decode(TEST_KEY_D),
+            p: decode(TEST_KEY_P),
+            q: decode(TEST_KEY_Q),
+            dP: decode(TEST_KEY_DP),
+            dQ: decode(TEST_KEY_DQ),
+            qInv: decode(TEST_KEY_QINV),
+        })
+        .expect("test key assembles")
+    }
+
+    fn test_client_assertion(client_id: &str, audience: &str, jti: &str) -> String {
+        let key_pair = test_key_pair();
+        let header = serde_json::json!({"alg": "RS256", "typ": "JWT", "kid": "test-key-1"});
+        let claims = serde_json::json!({
+            "iss": client_id,
+            "sub": client_id,
+            "aud": audience,
+            "exp": oauth_now() + 300,
+            "iat": oauth_now(),
+            "jti": jti,
+        });
+        let signing_input = format!(
+            "{}.{}",
+            oauth_base64url(header.to_string().as_bytes()),
+            oauth_base64url(claims.to_string().as_bytes()),
+        );
+        let rng = ring::rand::SystemRandom::new();
+        let mut signature = vec![0u8; 256];
+        key_pair
+            .sign(
+                &ring::signature::RSA_PKCS1_SHA256,
+                &rng,
+                signing_input.as_bytes(),
+                &mut signature,
+            )
+            .expect("test signing works");
+        format!("{signing_input}.{}", oauth_base64url(&signature))
+    }
+
+    fn exchange_oauth_code_with_assertion(
+        port: u16,
+        client_id: &str,
+        auth_code: &str,
+        assertion: Option<&str>,
+    ) -> (u16, serde_json::Value) {
+        let mut form = format!(
+            "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}",
+            test_form_encode(auth_code),
+            test_form_encode(OAUTH_REDIRECT),
+            test_form_encode(client_id),
+            test_form_encode(OAUTH_VERIFIER),
+        );
+        if let Some(assertion) = assertion {
+            form.push_str(&format!(
+                "&client_assertion_type={}&client_assertion={}",
+                test_form_encode("urn:ietf:params:oauth:client-assertion-type:jwt-bearer"),
+                test_form_encode(assertion),
+            ));
+        }
+        let (code, raw) = http_request(
+            port,
+            "POST",
+            "/oauth/token",
+            "",
+            &form,
+            Some("application/x-www-form-urlencoded"),
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(response_body(&raw)).unwrap_or(serde_json::Value::Null);
+        (code, value)
+    }
+
+    #[test]
+    fn oauth_private_key_jwt_flow() {
+        let (port, _dir) = serve(Editors::default());
+        let (code, reply) = post_registration(
+            port,
+            serde_json::json!({
+                "client_name": "Test MCP Client",
+                "redirect_uris": [OAUTH_REDIRECT],
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+                "scope": "phext:read",
+                "token_endpoint_auth_method": "private_key_jwt",
+                "jwks": {"keys": [{
+                    "kty": "RSA", "kid": "test-key-1", "use": "sig", "alg": "RS256",
+                    "n": TEST_JWK_N, "e": "AQAB",
+                }]},
+            }),
+        );
+        assert_eq!(code, 201, "{reply}");
+        assert_eq!(reply["token_endpoint_auth_method"], "private_key_jwt");
+        assert!(reply.get("client_secret").is_none(), "no secret for a key client: {reply}");
+        let client_id = reply["client_id"].as_str().unwrap().to_string();
+        let token_endpoint = format!("{OAUTH_ISSUER}/oauth/token");
+
+        // No assertion at all: refused, and the code is not burned.
+        let auth_code = authorize_oauth_code(port, &client_id, "phext:read");
+        let (code, tokens) =
+            exchange_oauth_code_with_assertion(port, &client_id, &auth_code, None);
+        assert_eq!(code, 401, "{tokens}");
+        assert_eq!(tokens["error"], "invalid_client");
+
+        // An assertion for the wrong audience: refused.
+        let wrong_aud = test_client_assertion(&client_id, "https://elsewhere.example/token", "jti-wrong-aud");
+        let (code, tokens) =
+            exchange_oauth_code_with_assertion(port, &client_id, &auth_code, Some(&wrong_aud));
+        assert_eq!(code, 401, "{tokens}");
+
+        // A good assertion (audience = the token endpoint) exchanges.
+        let assertion = test_client_assertion(&client_id, &token_endpoint, "jti-good-1");
+        let (code, tokens) =
+            exchange_oauth_code_with_assertion(port, &client_id, &auth_code, Some(&assertion));
+        assert_eq!(code, 200, "{tokens}");
+        assert!(tokens["access_token"].is_string());
+
+        // The same assertion again, against a fresh code: jti replay.
+        let auth_code = authorize_oauth_code(port, &client_id, "phext:read");
+        let (code, tokens) =
+            exchange_oauth_code_with_assertion(port, &client_id, &auth_code, Some(&assertion));
+        assert_eq!(code, 401, "{tokens}");
+        assert_eq!(tokens["error"], "invalid_client");
+
+        // A fresh assertion naming the issuer as audience also works.
+        let assertion = test_client_assertion(&client_id, OAUTH_ISSUER, "jti-good-2");
+        let (code, tokens) =
+            exchange_oauth_code_with_assertion(port, &client_id, &auth_code, Some(&assertion));
+        assert_eq!(code, 200, "{tokens}");
+        assert!(tokens["access_token"].is_string());
+    }
+
+    #[test]
+    fn oauth_cimd_client_flow_end_to_end() {
+        // Metadata validation for CIMD clients: private_key_jwt is
+        // granted when the document publishes keys, refused without.
+        let with_keys = serde_json::json!({
+            "client_id": "https://client.example/signed.json",
+            "client_name": "Signed CIMD",
+            "redirect_uris": [OAUTH_REDIRECT],
+            "token_endpoint_auth_method": "private_key_jwt",
+            "jwks_uri": "https://client.example/jwks.json",
+        });
+        let client = oauth_client_from_metadata(&with_keys, "https://client.example/signed.json", true).unwrap();
+        assert_eq!(client.token_endpoint_auth_method, "private_key_jwt");
+        let without_keys = serde_json::json!({
+            "client_id": "https://client.example/keyless.json",
+            "client_name": "Keyless CIMD",
+            "redirect_uris": [OAUTH_REDIRECT],
+            "token_endpoint_auth_method": "private_key_jwt",
+        });
+        assert!(oauth_client_from_metadata(&without_keys, "https://client.example/keyless.json", true).is_err());
+
+        // The full flow over HTTP, with the metadata cache seeded the
+        // way a completed CIMD fetch leaves it (a live fetch needs
+        // public DNS + HTTPS, which a test cannot have).
+        let (port, _dir, state) = serve_with_state(Editors::default());
+        let client_id = "https://client.example/mcp-client.json";
+        let metadata = serde_json::json!({
+            "client_id": client_id,
+            "client_name": "CIMD Test Client",
+            "redirect_uris": [OAUTH_REDIRECT],
+            "grant_types": ["authorization_code", "refresh_token", "client_credentials"],
+            "token_endpoint_auth_method": "none",
+            "scope": "phext:read",
+        });
+        let client = oauth_client_from_metadata(&metadata, client_id, true).unwrap();
+        state.lock().unwrap().mcp_oauth.cache_cimd(client);
+
+        let challenge = oauth_pkce_challenge(OAUTH_VERIFIER);
+        let query = format!(
+            "response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=phext:read&resource={}&state=state-1",
+            test_form_encode(client_id),
+            test_form_encode(OAUTH_REDIRECT),
+            test_form_encode(&challenge),
+            test_form_encode(&format!("{OAUTH_ISSUER}/mcp")),
+        );
+        let headers = session_headers();
+        let (code, raw) = http_request(port, "GET", &format!("/oauth/authorize?{query}"), &headers, "", None);
+        assert_eq!(code, 200, "{raw}");
+        assert!(response_body(&raw).contains("CIMD Test Client"), "{raw}");
+
+        let form = format!(
+            "response_type=code&client_id={}&redirect_uri={}&code_challenge={}&code_challenge_method=S256&scope=phext:read&resource={}&state=state-1&phext_csrf={}&decision=approve",
+            test_form_encode(client_id),
+            test_form_encode(OAUTH_REDIRECT),
+            test_form_encode(&challenge),
+            test_form_encode(&format!("{OAUTH_ISSUER}/mcp")),
+            TEST_CSRF,
+        );
+        let cookie_only = format!("Cookie: phext_session={}\r\n", Oauth::test_session_cookie());
+        let (code, raw) = http_request(port, "POST", "/oauth/authorize", &cookie_only, &form, Some("application/x-www-form-urlencoded"));
+        assert_eq!(code, 302, "{raw}");
+        let auth_code = query_value(&location_of(&raw), "code");
+        assert!(!auth_code.is_empty(), "{raw}");
+
+        let (code, tokens) = exchange_oauth_code(port, client_id, None, &auth_code, Some(OAUTH_VERIFIER));
+        assert_eq!(code, 200, "{tokens}");
+        let access = tokens["access_token"].as_str().unwrap();
+        let bearer = format!("Authorization: Bearer {access}\r\n");
+        let (code, raw) = rpc(
+            port,
+            &bearer,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+        );
+        assert_eq!(code, 200, "{raw}");
     }
 
     #[test]
