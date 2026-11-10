@@ -231,6 +231,34 @@ webhook. A signed webhook handler for `checkout.session.completed` and
 effect (an email, a badge, access, or anything else that must happen because
 someone paid) is treated as done.
 
+## Images (v1.1.0)
+
+Editors can add images to a phext from the edit toolbar (file picker, or
+paste an image into the scroll being edited). An image is stored inside
+the phext itself as a canonical binary scroll (libphext's
+`phext-binary:1:base64` format) — no side files and no external store —
+under a reserved coordinate convention, the same in every phext:
+
+- payload (the binary scroll) at `9.9.9/9.9.9/1.1.n`
+- metadata (a JSON text scroll: name, content type, byte count) at
+  `9.9.9/9.9.9/1.2.n`
+
+with the smallest free slot n chosen at upload time. The editor inserts a
+markdown reference (`![name](/api/media/<coordinate>)`) at the cursor;
+reading views render it inline. `GET /api/media/<coordinate>` serves the
+decoded bytes (editors only; the demo serves its own picture at
+`/api/demo/media/<coordinate>`). Rules worth knowing when operating the
+site:
+
+- Uploads are editors-only, capped at 8 MiB per image (413 above that,
+  the same posture as submissions), and the type is sniffed from magic
+  bytes: PNG, JPEG, GIF, WebP, AVIF. Nothing else is accepted.
+- SVG is never accepted or served — it is a scriptable document, and
+  there is deliberately no inert-serving mode for it.
+- A binary scroll cannot be edited as text: the text save path (web and
+  MCP `write_scroll`) refuses to overwrite one, and opening one shows
+  the image and its metadata, never base64.
+
 ## What deploy.sh does
 
 Each run, in order:

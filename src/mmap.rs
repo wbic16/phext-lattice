@@ -123,14 +123,90 @@ impl MappedLattice {
         }
     }
 
+    /// The scroll's exact stored bytes: the overlay version if edited,
+    /// otherwise the mmap span, uninterpreted. This is the raw layer the
+    /// binary-scroll support is built on — a binary scroll's stored form
+    /// is text (header + base64), but payloads are recovered from these
+    /// bytes without any lossy conversion.
+    pub fn read_scroll_bytes(&self, coord: &Coordinate) -> Option<Vec<u8>> {
+        if let Some(entry) = self.overlay.get(coord) {
+            return match entry {
+                ScrollOverlay::Modified(s) | ScrollOverlay::Inserted(s) => {
+                    Some(s.clone().into_bytes())
+                }
+                ScrollOverlay::Deleted => None,
+            };
+        }
+        self.index
+            .get(coord)
+            .map(|span| self.bytes()[span.start..span.end].to_vec())
+    }
+
+    /// The payload a fetch of this scroll returns, mirroring
+    /// `libphext::binary::fetch_binary` exactly: a well-formed binary
+    /// scroll decodes to its payload; any other scroll (plain text,
+    /// malformed binary, unoccupied) yields its own stored bytes
+    /// verbatim — empty when the coordinate holds no scroll. Total:
+    /// never fails, never panics.
+    pub fn fetch_binary(&self, coord: &Coordinate) -> Vec<u8> {
+        let stored = self.read_scroll_bytes(coord).unwrap_or_default();
+        if let Ok(text) = std::str::from_utf8(&stored) {
+            if let Some(payload) = libphext::binary::decode_scroll(text) {
+                return payload;
+            }
+        }
+        stored
+    }
+
     /// Write content to a scroll at the given coordinate.
     /// If the coordinate already exists (in mmap or overlay), it's modified.
     /// If it's new, it's inserted.
-    pub fn write_scroll(&mut self, coord: Coordinate, content: String) {
+    ///
+    /// Binary-scroll guard: a well-formed binary scroll (an image, say)
+    /// cannot be replaced through the text path — its stored form is a
+    /// header plus base64, and a text edit would corrupt the payload
+    /// silently. Returns false when the write is refused for that reason;
+    /// the scroll is left exactly as it was. Writing the identical stored
+    /// form back is a no-op success. Byte payloads go through
+    /// `write_binary` / `write_bytes` instead.
+    pub fn write_scroll(&mut self, coord: Coordinate, content: String) -> bool {
+        if let Some(existing) = self.read_scroll(&coord) {
+            if crate::media::is_well_formed_binary_scroll(&existing) && existing != content {
+                return false;
+            }
+        }
+        self.write_scroll_raw(coord, content);
+        true
+    }
+
+    /// Store a scroll's stored form verbatim, with no binary guard. This
+    /// is the byte path: callers pass either canonical binary scrolls
+    /// (from `libphext::binary::encode_scroll`) or stored forms they have
+    /// already validated. Prefer `write_scroll` for text and
+    /// `write_binary` / `write_bytes` for payloads.
+    pub fn write_scroll_raw(&mut self, coord: Coordinate, content: String) {
         if self.index.contains(&coord) {
             self.overlay.insert(coord, ScrollOverlay::Modified(content));
         } else {
             self.overlay.insert(coord, ScrollOverlay::Inserted(content));
+        }
+    }
+
+    /// Store `payload` at `coord` as a canonical binary scroll (header +
+    /// base64 of the exact bytes), whatever the payload holds.
+    pub fn write_binary(&mut self, coord: Coordinate, payload: &[u8]) {
+        self.write_scroll_raw(coord, libphext::binary::encode_scroll(payload));
+    }
+
+    /// Store `payload` at `coord` under the format's ingestion rule
+    /// (libphext's `stored_form`, behind `insert_bytes`/`replace_bytes`):
+    /// valid UTF-8 is stored as ordinary text; anything else becomes a
+    /// binary scroll holding the exact bytes. Ingestion never rejects a
+    /// payload.
+    pub fn write_bytes(&mut self, coord: Coordinate, payload: &[u8]) {
+        match std::str::from_utf8(payload) {
+            Ok(text) => self.write_scroll_raw(coord, text.to_string()),
+            Err(_) => self.write_binary(coord, payload),
         }
     }
 
