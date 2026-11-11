@@ -26,6 +26,7 @@ use phext_lattice::sponsor::{self, SponsorOffer};
 use phext_lattice::submissions::{self, Submission, SubmissionStatus};
 use phext_lattice::wavefront;
 use sha2::Digest;
+use xxhash_rust::xxh3::xxh3_128;
 
 // ── API Types ──────────────────────────────────────────────────────────
 
@@ -151,6 +152,41 @@ struct ApiBinaryScroll {
 struct ApiOk {
     ok: bool,
     message: String,
+}
+
+/// One seed-cache entry: a populated coordinate and the xxh3_128 of its
+/// scroll's stored bytes, hex of the 16-byte digest, high half first
+/// (the byte order of `u128::to_be_bytes`).
+#[derive(Serialize)]
+struct ApiSeedEntry {
+    coordinate: String,
+    hash: String,
+}
+
+/// The seed cache the editor shell loads before its first scroll: every
+/// populated coordinate of the open phext with its scroll's hash, and
+/// nothing else — no content, no tree serialization. The payload is a
+/// fixed constant per scroll (O(N) in scroll count), independent of how
+/// large any scroll or the whole document is, and the client builds its
+/// tree, navigation, and search structure from the coordinates alone.
+/// Each hash doubles as the sync precondition for the cache-aware
+/// scroll fetch (`GET /api/scroll/<coord>?hash=…&have=1`).
+#[derive(Serialize)]
+struct ApiSeed {
+    file: String,
+    scrolls: usize,
+    entries: Vec<ApiSeedEntry>,
+}
+
+/// The cache-aware fetch's small answer: the client already holds this
+/// scroll at the server's current hash, so no content crosses the wire.
+/// The full answer is the ordinary `ApiScroll`, which gains nothing
+/// here — its scroll's hash is already the client's seed entry.
+#[derive(Serialize)]
+struct ApiScrollUnchanged {
+    coordinate: String,
+    hash: String,
+    unchanged: bool,
 }
 
 /// Available phext file metadata
@@ -432,6 +468,39 @@ fn scroll_view(
         payload_bytes: None,
         media_url: None,
     }
+}
+
+/// The seed-cache hash of one scroll: xxh3_128 over its stored bytes
+/// (Will's ruling, 2026-11-10 — this feature hashes with xxh3_128, not
+/// SHA-256; the SyncBook precedent elsewhere is untouched), encoded as
+/// hex of the 16-byte digest, high half first (`u128::to_be_bytes`).
+/// The stored bytes are hashed — for a binary scroll that is its stored
+/// form (header + base64), the same bytes a fetch returns — so a client
+/// can verify any fetched scroll against the seed before trusting it.
+fn scroll_hash(lattice: &MappedLattice, coord: &libphext::phext::Coordinate) -> String {
+    let stored = lattice.read_scroll_bytes(coord).unwrap_or_default();
+    xxh3_128(&stored).to_be_bytes().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The seed envelope for the open phext: one entry per populated
+/// coordinate, in the lattice's sorted coordinate order. A scroll
+/// exists when it holds at least a byte, so coordinates whose stored
+/// form is empty (a cleared scroll) carry no entry.
+fn seed_view(lattice: &MappedLattice, file: &str) -> ApiSeed {
+    let entries = lattice
+        .populated_coordinates()
+        .iter()
+        .filter(|coord| lattice.read_scroll_bytes(coord).map(|b| !b.is_empty()).unwrap_or(false))
+        .map(|coord| ApiSeedEntry { coordinate: format!("{}", coord), hash: scroll_hash(lattice, coord) })
+        .collect::<Vec<_>>();
+    ApiSeed { file: file.to_string(), scrolls: entries.len(), entries }
+}
+
+/// The editor shell's per-catalog seed (demo / example wiki), served by
+/// the same handler shape as the signed-in one, against a catalog's own
+/// lattice — never the editor's open phext.
+fn catalog_seed(catalog: &DemoCatalog) -> ApiSeed {
+    seed_view(&catalog.lattice, catalog.file_name)
 }
 
 /// The short preview zoom views show for one scroll. A binary scroll's
@@ -788,6 +857,7 @@ fn serve_catalog(
             serde_json::to_string(&nav).unwrap_or_else(|_| "{}".into())
         }
         "/tree" => serde_json::to_string(&catalog.tree()).unwrap_or_else(|_| "{}".into()),
+        "/seed" => serde_json::to_string(&catalog_seed(catalog)).unwrap_or_else(|_| "{}".into()),
         "/status" => serde_json::to_string(&catalog.status()).unwrap_or_else(|_| "{}".into()),
         "/search" => {
             let hits = catalog.search(q.get("q").map(String::as_str).unwrap_or(""));
@@ -1416,6 +1486,7 @@ fn handle_request(
             });
         }
         ("GET", "/api/tree") => { json_response(stream, &headers, &state.tree_json()); }
+        ("GET", "/api/seed") => { json_response(stream, &headers, &seed_view(&state.lattice, &state.file_path)); }
 
         // ── Images (binary scrolls) ──
         ("POST", "/api/images") => {
@@ -1518,10 +1589,30 @@ fn handle_request(
             else { send_response(stream, 400, "text/plain", b"expected /api/zoom/x/z.z.z/y.y.y", CacheClass::NoStore, &headers, false); }
         }
 
-        // Scroll read
+        // Scroll read. Cache-aware form (the seed cache's fetch):
+        // `?hash=<xxh3_128 hex>&have=1` carries the client's current
+        // hash for the scroll and its has-content flag. When the client
+        // holds the content AND its hash is the server's current hash,
+        // the answer is the small unchanged confirmation — no content
+        // bytes cross the wire. Otherwise (no content held, or a stale
+        // hash) the fetch runs as normal: the full scroll view, whose
+        // current hash is the client's seed entry for the coordinate.
+        // No parameters stays the plain read it has always been.
         ("GET", p) if p.starts_with("/api/scroll/") => {
-            let coord_str = &p["/api/scroll/".len()..];
+            let (coord_str, query) = p["/api/scroll/".len()..].split_once('?').unwrap_or((&p["/api/scroll/".len()..], ""));
             if let Some(coord) = parse_coordinate(coord_str) {
+                let q = query_pairs(query);
+                let client_hash = q.get("hash").map(String::as_str).unwrap_or("");
+                let have = q.get("have").map(String::as_str) == Some("1");
+                if have && !client_hash.is_empty() {
+                    let current = scroll_hash(&state.lattice, &coord);
+                    if client_hash == current {
+                        json_response(stream, &headers, &ApiScrollUnchanged {
+                            coordinate: format!("{}", coord), hash: current, unchanged: true,
+                        });
+                        return;
+                    }
+                }
                 json_response(stream, &headers, &scroll_view(&state.lattice, &coord, "/api/media"));
             } else {
                 send_response(stream, 400, "text/plain", b"invalid coordinate", CacheClass::NoStore, &headers, false);
@@ -6396,6 +6487,130 @@ mod local_mode_tests {
         assert!(response_body(&nav).contains("local note"), "{nav}");
     }
 
+    /// Write a two-scroll phext into `dir` and open it: "local note" at
+    /// 1.1.1/1.1.1/1.1.1 and "second scroll" one scroll break later, at
+    /// 1.1.1/1.1.1/1.1.2. The breaks follow demo_bytes' convention.
+    fn open_two_scroll_phext(port: u16, dir: &std::path::Path, headers: &str) {
+        let path = dir.join("seed.phext");
+        std::fs::write(&path, b"local note\n\x17second scroll\n").unwrap();
+        let (code, opened) = open_phext(port, &path, headers);
+        assert_eq!(code, 200, "{opened}");
+        assert!(response_body(&opened).contains("\"ok\":true"), "{opened}");
+    }
+
+    #[test]
+    fn seed_lists_populated_coordinates_with_xxh3_128_hashes() {
+        let (port, dir) = serve(true);
+        open_two_scroll_phext(port, dir.path(), "");
+        let (code, seed) = http(port, "GET", "/api/seed", "");
+        assert_eq!(code, 200, "{seed}");
+        let body = response_body(&seed);
+        let note = xxh3_128(b"local note\n").to_be_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let second = xxh3_128(b"second scroll\n").to_be_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
+        assert!(body.contains("\"scrolls\":2"), "{body}");
+        assert!(body.contains(&format!("\"coordinate\":\"1.1.1/1.1.1/1.1.1\",\"hash\":\"{note}\"")), "{body}");
+        assert!(body.contains(&format!("\"coordinate\":\"1.1.1/1.1.1/1.1.2\",\"hash\":\"{second}\"")), "{body}");
+        // The envelope carries hashes and nothing else: no scroll content.
+        assert!(!body.contains("local note"), "{body}");
+        assert!(!body.contains("second scroll"), "{body}");
+    }
+
+    #[test]
+    fn seed_excludes_coordinates_holding_no_bytes() {
+        let (port, dir) = serve(true);
+        open_two_scroll_phext(port, dir.path(), "");
+        let session = "";
+        // Clear the second scroll through the editor's own write path:
+        // the coordinate then holds no bytes, and a scroll exists only
+        // when it holds at least a byte.
+        let (code, updated) = http_with_body(
+            port, "POST", "/api/update",
+            "Content-Type: application/json\r\n",
+            "{\"coordinate\":\"1.1.1/1.1.1/1.1.2\",\"content\":\"\"}",
+        );
+        assert_eq!(code, 200, "{updated}");
+        let (code, seed) = http(port, "GET", "/api/seed", session);
+        assert_eq!(code, 200, "{seed}");
+        let body = response_body(&seed);
+        assert!(body.contains("\"scrolls\":1"), "{body}");
+        assert!(body.contains("1.1.1/1.1.1/1.1.1"), "{body}");
+        assert!(!body.contains("1.1.1/1.1.1/1.1.2"), "{body}");
+    }
+
+    #[test]
+    fn seed_requires_the_editor_gate() {
+        let (port, _dir) = serve(false);
+        let (code, _) = http(port, "GET", "/api/seed", "");
+        assert_eq!(code, 401);
+    }
+
+    #[test]
+    fn cache_aware_fetch_small_answer_only_when_held_and_current() {
+        let (port, dir) = serve(true);
+        open_two_scroll_phext(port, dir.path(), "");
+        let hash = xxh3_128(b"local note\n").to_be_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let coord = "1.1.1/1.1.1/1.1.1";
+
+        // (a) has content + hash matches → the small confirmation, and
+        // it carries no content bytes.
+        let (code, raw) = http(port, "GET", &format!("/api/scroll/{coord}?hash={hash}&have=1"), "");
+        assert_eq!(code, 200, "{raw}");
+        let body = response_body(&raw);
+        assert!(body.contains("\"unchanged\":true"), "{body}");
+        assert!(body.contains(&format!("\"hash\":\"{hash}\"")), "{body}");
+        assert!(!body.contains("local note"), "{body}");
+        assert_eq!(body.len(), 93, "small answer was {} bytes: {body}", body.len());
+
+        // (b) has_content=false → the full scroll, even with the
+        // matching hash the seed gave the client.
+        let (code, raw) = http(port, "GET", &format!("/api/scroll/{coord}?hash={hash}&have=0"), "");
+        assert_eq!(code, 200, "{raw}");
+        let body = response_body(&raw);
+        assert!(body.contains("local note"), "{body}");
+        assert!(!body.contains("unchanged"), "{body}");
+
+        // (c) stale hash → the full scroll; the current hash is the one
+        // the seed carries for the coordinate.
+        let stale = "00000000000000000000000000000000";
+        let (code, raw) = http(port, "GET", &format!("/api/scroll/{coord}?hash={stale}&have=1"), "");
+        assert_eq!(code, 200, "{raw}");
+        let body = response_body(&raw);
+        assert!(body.contains("local note"), "{body}");
+        let (code, seed) = http(port, "GET", "/api/seed", "");
+        assert_eq!(code, 200, "{seed}");
+        assert!(response_body(&seed).contains(&format!("\"hash\":\"{hash}\"")), "{seed}");
+    }
+
+    #[test]
+    fn seed_and_cache_wiring_ships_in_the_shell() {
+        assert!(INDEX_HTML.contains("await loadSeed()") || INDEX_HTML.contains("loadSeed()"), "shell loads the seed");
+        assert!(INDEX_HTML.contains("function fetchScrollCached"), "cache-aware fetch ships");
+        assert!(INDEX_HTML.contains("function xxh3_128"), "vendored xxh3_128 ships");
+        assert!(INDEX_HTML.contains("&have="), "fetch sends the has-content flag");
+        assert!(INDEX_HTML.contains("function serveScrollFromCache"), "navigation consults the cache");
+        assert!(INDEX_HTML.contains("/api/demo/seed"), "demo seed route wired");
+        assert!(INDEX_HTML.contains("/api/wiki/seed"), "wiki seed route wired");
+    }
+
+    /// The vendored xxh3_128 in the shell must agree with the crate the
+    /// server hashes with. The expected values below are xxhash-rust's
+    /// own outputs (cross-checked against python-xxhash), and the same
+    /// vectors are asserted of the JS in the standalone node check kept
+    /// with this change's verification notes.
+    #[test]
+    fn xxh3_128_known_vectors() {
+        let hex = |bytes: &[u8]| xxh3_128(bytes).to_be_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
+        assert_eq!(hex(b""), "99aa06d3014798d86001c324468d497f");
+        assert_eq!(hex(b"a"), "a96faf705af16834e6c632b61e964e1f");
+        assert_eq!(hex(b"abc"), "06b05ab6733a618578af5f94892f3950");
+        assert_eq!(hex(b"local note\n"), "27e522aca3790fe6d160333dcab7144b");
+        assert_eq!(hex(b"hello world"), "df8d09e93f874900a99b8775cc15b6c7");
+        assert_eq!(hex(&[b'A'; 24]), "0a80d4caae6542922fdd0fbc03985d94");
+        assert_eq!(hex(&[b'B'; 100]), "f5afa1da2aa01c0cca95ae365eef5544");
+        assert_eq!(hex(&[b'C'; 200]), "01f30d6b4290107da23143a9131ccbb3");
+        assert_eq!(hex(&[b'D'; 1000]), "0363d43949c3e62e78a553c6a981eb40");
+    }
+
     #[test]
     fn switching_phexts_changes_nav_when_local_and_when_signed_in() {
         assert!(INDEX_HTML.contains("p.file"));
@@ -8425,6 +8640,20 @@ function render(nav, skipHash) {
     nav.scroll.bytes = nav.scroll.content.length;
     nav.position.has_scroll = nav.scroll.content.length > 0;
   }
+  // Cache awareness: when the scroll on screen was just served by the
+  // server and the seed vouches for its hash, it joins the streamed
+  // cache, so a later visit to this coordinate is served locally (see
+  // serveScrollFromCache). Local demo edits are not server state and
+  // never enter the cache.
+  if (nav && nav.position && nav.scroll && (nav.scroll.kind || 'text') === 'text'
+      && typeof nav.scroll.content === 'string' && !demoMode) {
+    const coord = nav.position.coordinate;
+    const seedHash = seedCache.hashes.get(coord);
+    if (seedHash !== undefined
+        && xxh3_128(new TextEncoder().encode(nav.scroll.content)) === seedHash) {
+      scrollCache.set(coord, { hash: seedHash, content: nav.scroll.content, view: nav.scroll });
+    }
+  }
   lastNav = nav;
   const p = nav.position;
   const indicator = p.has_scroll ? '●' : '○';
@@ -8513,6 +8742,209 @@ function renderContent(nav) {
     el.textContent = '○ empty coordinate';
     el.className = 'empty';
   }
+}
+
+// ── Seed cache & streamed scroll cache ──
+// On load the shell fetches the seed: every populated coordinate of the
+// open phext with the xxh3_128 of its scroll, and nothing else (see
+// /api/seed). Scrolls then stream into this cache as they are viewed.
+// A navigation whose scroll the cache already holds at the seed's hash
+// is served locally — no roundtrip at all. A cache miss or a stale
+// entry goes through the cache-aware fetch: the request carries the
+// cached entry's hash and a has-content flag, and the server answers
+// with a small unchanged confirmation when the held copy is current,
+// or the full scroll otherwise. Fetched text scrolls are verified
+// against the seed hash (vendored xxh3_128 below) before they are
+// cached or shown, so a streamed scroll is never trusted on arrival
+// alone. Binary scrolls are served from their media URL, never as
+// text, and stay out of this cache.
+const seedCache = { file: '', hashes: new Map() };
+const scrollCache = new Map();
+let seedFile = '';
+
+async function loadSeed() {
+  try {
+    const seed = await api('GET', '/api/seed');
+    if (!seed || !Array.isArray(seed.entries)) return false;
+    if (seed.file !== seedFile) { scrollCache.clear(); seedFile = seed.file; }
+    seedCache.file = seed.file;
+    seedCache.hashes = new Map(seed.entries.map(e => [e.coordinate, e.hash]));
+    // Entries whose server hash moved are stale: drop them so the next
+    // view refetches instead of serving old text under a fresh seed.
+    for (const [coord, entry] of scrollCache) {
+      if (seedCache.hashes.get(coord) !== entry.hash) scrollCache.delete(coord);
+    }
+    return true;
+  } catch { return false; }
+}
+
+async function fetchScrollCached(coord) {
+  const seedHash = seedCache.hashes.get(coord);
+  const held = scrollCache.get(coord);
+  if (held && seedHash !== undefined && held.hash === seedHash) return held.view;
+  const entry = held || { hash: seedHash || '', content: null };
+  const have = entry.content !== null && entry.content !== undefined ? '1' : '0';
+  const url = '/api/scroll/' + coord + '?hash=' + encodeURIComponent(entry.hash) + '&have=' + have;
+  const res = await api('GET', url);
+  if (res && res.unchanged) {
+    // The server confirms the held copy is current; trust the cache and
+    // reconcile the entry to the confirmed hash.
+    if (held) {
+      held.hash = res.hash;
+      if (held.view) return held.view;
+    }
+    return null;
+  }
+  if (!res || typeof res.content !== 'string') return res;
+  // Verify before caching or showing: the fetched scroll must hash to
+  // the seed's entry for its coordinate. Binary scrolls carry no text
+  // content (their stored form is never exposed), so only text scrolls
+  // verify here; a mismatch keeps the scroll uncached and unshown
+  // rather than trusting bytes the seed does not vouch for.
+  if (seedHash !== undefined && (res.kind || 'text') === 'text') {
+    if (xxh3_128(new TextEncoder().encode(res.content)) !== seedHash) return null;
+  }
+  if ((res.kind || 'text') === 'text') {
+    scrollCache.set(coord, { hash: seedHash !== undefined ? seedHash : entry.hash, content: res.content, view: res });
+  }
+  return res;
+}
+
+// ── xxh3_128, vendored ──
+// A compact scalar xxHash3 128-bit implementation (seed 0, default
+// secret), transliterated from the public reference algorithm so the
+// shell can verify fetched scrolls against the seed. BigInt arithmetic
+// throughout; scrolls are small and fetches are per-view, so clarity
+// wins over speed. Validated against the xxhash-rust vectors the
+// server side is tested with (see the phext_edit.rs unit tests).
+const XXH_SECRET = new Uint8Array([
+  0xb8,0xfe,0x6c,0x39,0x23,0xa4,0x4b,0xbe,0x7c,0x01,0x81,0x2c,0xf7,0x21,0xad,0x1c,
+  0xde,0xd4,0x6d,0xe9,0x83,0x90,0x97,0xdb,0x72,0x40,0xa4,0xa4,0xb7,0xb3,0x67,0x1f,
+  0xcb,0x79,0xe6,0x4e,0xcc,0xc0,0xe5,0x78,0x82,0x5a,0xd0,0x7d,0xcc,0xff,0x72,0x21,
+  0xb8,0x08,0x46,0x74,0xf7,0x43,0x24,0x8e,0xe0,0x35,0x90,0xe6,0x81,0x3a,0x26,0x4c,
+  0x3c,0x28,0x52,0xbb,0x91,0xc3,0x00,0xcb,0x88,0xd0,0x65,0x8b,0x1b,0x53,0x2e,0xa3,
+  0x71,0x64,0x48,0x97,0xa2,0x0d,0xf9,0x4e,0x38,0x19,0xef,0x46,0xa9,0xde,0xac,0xd8,
+  0xa8,0xfa,0x76,0x3f,0xe3,0x9c,0x34,0x3f,0xf9,0xdc,0xbb,0xc7,0xc7,0x0b,0x4f,0x1d,
+  0x8a,0x51,0xe0,0x4b,0xcd,0xb4,0x59,0x31,0xc8,0x9f,0x7e,0xc9,0xd9,0x78,0x73,0x64,
+  0xea,0xc5,0xac,0x83,0x34,0xd3,0xeb,0xc3,0xc5,0x81,0xa0,0xff,0xfa,0x13,0x63,0xeb,
+  0x17,0x0d,0xdd,0x51,0xb7,0xf0,0xda,0x49,0xd3,0x16,0x55,0x26,0x29,0xd4,0x68,0x9e,
+  0x2b,0x16,0xbe,0x58,0x7d,0x47,0xa1,0xfc,0x8f,0xf8,0xb8,0xd1,0x7a,0xd0,0x31,0xce,
+  0x45,0xcb,0x3a,0x8f,0x95,0x16,0x04,0x28,0xaf,0xd7,0xfb,0xca,0xbb,0x4b,0x40,0x7e]);
+const XXH_M64 = (1n << 64n) - 1n;
+const XXH_P1 = 0x9E3779B185EBCA87n, XXH_P2 = 0xC2B2AE3D27D4EB4Fn, XXH_P3 = 0x165667B19E3779F9n;
+const XXH_P4 = 0x85EBCA77C2B2AE63n, XXH_P5 = 0x27D4EB2F165667C5n;
+const XXH_MX1 = 0x165667919E3779F9n, XXH_MX2 = 0x9FB21C651E98DF25n;
+function xxhR64(b, o) { let v = 0n; for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(b[o + i]); return v; }
+function xxhR32(b, o) { let v = 0; for (let i = 3; i >= 0; i--) v = ((v << 8) | b[o + i]) >>> 0; return v; }
+function xxhFold(lo, hi) { const p = lo * hi; return ((p & XXH_M64) ^ (p >> 64n)) & XXH_M64; }
+function xxhAvalanche(h) { h ^= h >> 37n; h = (h * XXH_MX1) & XXH_M64; h ^= h >> 32n; return h; }
+function xxhAvalanche64(h) { h ^= h >> 33n; h = (h * XXH_P2) & XXH_M64; h ^= h >> 29n; h = (h * XXH_P3) & XXH_M64; h ^= h >> 32n; return h; }
+function xxhMix16(b, o, so) { return xxhFold(xxhR64(b, o) ^ xxhR64(XXH_SECRET, so), xxhR64(b, o + 8) ^ xxhR64(XXH_SECRET, so + 8)); }
+function xxhSwap64(x) { let r = 0n; for (let i = 0; i < 8; i++) r = (r << 8n) | ((x >> BigInt(8 * i)) & 0xffn); return r; }
+// XXH128_mix32B: one 32-byte mix step of the mid-size paths. acc is a
+// two-element array [low, high], updated in place.
+function xxhMix32(acc, b, o1, o2, so) {
+  acc[0] = (acc[0] + xxhMix16(b, o1, so)) & XXH_M64;
+  acc[0] ^= (xxhR64(b, o2) + xxhR64(b, o2 + 8)) & XXH_M64;
+  acc[1] = (acc[1] + xxhMix16(b, o2, so + 16)) & XXH_M64;
+  acc[1] ^= (xxhR64(b, o1) + xxhR64(b, o1 + 8)) & XXH_M64;
+}
+function xxh3_128(bytes) {
+  const len = bytes.length, S = XXH_SECRET;
+  let lo, hi;
+  if (len === 0) {
+    lo = xxhAvalanche64(xxhR64(S, 64) ^ xxhR64(S, 72));
+    hi = xxhAvalanche64(xxhR64(S, 80) ^ xxhR64(S, 88));
+  } else if (len <= 3) {
+    const combinedl = (BigInt(bytes[0]) << 16n) | (BigInt(bytes[len >> 1]) << 24n) | BigInt(bytes[len - 1]) | (BigInt(len) << 8n);
+    const sw = ((combinedl & 0xffn) << 24n) | ((combinedl & 0xff00n) << 8n) | ((combinedl >> 8n) & 0xff00n) | ((combinedl >> 24n) & 0xffn);
+    const combinedh = ((sw << 13n) | (sw >> 19n)) & 0xffffffffn;
+    lo = xxhAvalanche64(combinedl ^ BigInt((xxhR32(S, 0) ^ xxhR32(S, 4)) >>> 0));
+    hi = xxhAvalanche64(combinedh ^ BigInt((xxhR32(S, 8) ^ xxhR32(S, 12)) >>> 0));
+  } else if (len <= 8) {
+    const input64 = BigInt(xxhR32(bytes, 0)) + (BigInt(xxhR32(bytes, len - 4)) << 32n);
+    const keyed = input64 ^ ((xxhR64(S, 16) ^ xxhR64(S, 24)) & XXH_M64);
+    const p = keyed * (XXH_P1 + BigInt(len << 2));
+    lo = p & XXH_M64; hi = (p >> 64n) & XXH_M64;
+    hi = (hi + ((lo << 1n) & XXH_M64)) & XXH_M64;
+    lo ^= hi >> 3n;
+    lo ^= lo >> 35n; lo = (lo * XXH_MX2) & XXH_M64; lo ^= lo >> 28n;
+    hi = xxhAvalanche(hi);
+  } else if (len <= 16) {
+    const bitflipl = (xxhR64(S, 32) ^ xxhR64(S, 40)) & XXH_M64;
+    const bitfliph = (xxhR64(S, 48) ^ xxhR64(S, 56)) & XXH_M64;
+    const inLo = xxhR64(bytes, 0);
+    let inHi = xxhR64(bytes, len - 8);
+    const p = ((inLo ^ inHi ^ bitflipl) & XXH_M64) * XXH_P1;
+    lo = p & XXH_M64; hi = (p >> 64n) & XXH_M64;
+    lo = (lo + (BigInt(len - 1) << 54n)) & XXH_M64;
+    inHi ^= bitfliph;
+    hi = (hi + inHi + ((inHi & 0xffffffffn) * 0x85EBCA76n)) & XXH_M64;
+    let swHi = xxhSwap64(hi);
+    lo ^= swHi;
+    const q = lo * XXH_P2;
+    let hlo = q & XXH_M64, hhi = (q >> 64n) & XXH_M64;
+    hhi = (hhi + hi * XXH_P2) & XXH_M64;
+    lo = xxhAvalanche(hlo); hi = xxhAvalanche(hhi);
+  } else if (len <= 128) {
+    const acc = [(BigInt(len) * XXH_P1) & XXH_M64, 0n];
+    if (len > 32) {
+      if (len > 64) {
+        if (len > 96) xxhMix32(acc, bytes, 48, len - 64, 96);
+        xxhMix32(acc, bytes, 32, len - 48, 64);
+      }
+      xxhMix32(acc, bytes, 16, len - 32, 32);
+    }
+    xxhMix32(acc, bytes, 0, len - 16, 0);
+    lo = xxhAvalanche((acc[0] + acc[1]) & XXH_M64);
+    const h = (acc[0] * XXH_P1 + acc[1] * XXH_P4 + BigInt(len) * XXH_P2) & XXH_M64;
+    hi = (0n - xxhAvalanche(h)) & XXH_M64;
+  } else if (len <= 240) {
+    const acc = [(BigInt(len) * XXH_P1) & XXH_M64, 0n];
+    for (let i = 32; i < 160; i += 32) xxhMix32(acc, bytes, i - 32, i - 16, i - 32);
+    acc[0] = xxhAvalanche(acc[0]); acc[1] = xxhAvalanche(acc[1]);
+    for (let i = 160; i <= len; i += 32) xxhMix32(acc, bytes, i - 32, i - 16, 3 + i - 160);
+    xxhMix32(acc, bytes, len - 16, len - 32, 119 - 16);
+    lo = xxhAvalanche((acc[0] + acc[1]) & XXH_M64);
+    const h = (acc[0] * XXH_P1 + acc[1] * XXH_P4 + BigInt(len) * XXH_P2) & XXH_M64;
+    hi = (0n - xxhAvalanche(h)) & XXH_M64;
+  } else {
+    const acc = [0xC2B2AE3Dn, XXH_P1, XXH_P2, XXH_P3, XXH_P4, 0x85EBCA77n, XXH_P5, 0x9E3779B1n];
+    const accumulate = (off, soff) => {
+      for (let i = 0; i < 8; i++) {
+        const data = xxhR64(bytes, off + 8 * i);
+        const key = data ^ xxhR64(S, soff + 8 * i);
+        acc[i ^ 1] = (acc[i ^ 1] + data) & XXH_M64;
+        acc[i] = (acc[i] + ((key & 0xffffffffn) * (key >> 32n))) & XXH_M64;
+      }
+    };
+    const scramble = () => {
+      for (let i = 0; i < 8; i++) {
+        acc[i] ^= acc[i] >> 47n;
+        acc[i] ^= xxhR64(S, 128 + 8 * i);
+        acc[i] = (acc[i] * 0x9E3779B1n) & XXH_M64;
+      }
+    };
+    const blocks = Math.floor((len - 1) / 1024);
+    for (let b = 0; b < blocks; b++) {
+      for (let s = 0; s < 16; s++) accumulate(b * 1024 + s * 64, s * 8);
+      scramble();
+    }
+    const rem = Math.floor((len - 1 - blocks * 1024) / 64);
+    for (let s = 0; s < rem; s++) accumulate(blocks * 1024 + s * 64, s * 8);
+    accumulate(len - 64, 121);
+    const merge = (secretOff, start) => {
+      let r = start;
+      for (let i = 0; i < 4; i++) {
+        r = (r + xxhFold(acc[2 * i] ^ xxhR64(S, secretOff + 16 * i), acc[2 * i + 1] ^ xxhR64(S, secretOff + 16 * i + 8))) & XXH_M64;
+      }
+      return xxhAvalanche(r);
+    };
+    lo = merge(11, (BigInt(len) * XXH_P1) & XXH_M64);
+    hi = merge(192 - 64 - 11, (~((BigInt(len) * XXH_P2) & XXH_M64)) & XXH_M64);
+  }
+  const hex = v => v.toString(16).padStart(16, '0');
+  return hex(hi) + hex(lo);
 }
 
 // ── Navtree ──
@@ -8607,7 +9039,7 @@ function toggleY(zk, yk) {
 }
 
 async function treeNav(coord) {
-  render(await api('POST', '/api/goto', coord));
+  await renderNav(api('POST', '/api/goto', coord));
   if (drawerNarrow()) setDrawer(false);
 }
 
@@ -8620,13 +9052,40 @@ function highlightTreeNode(coord) {
 }
 
 // ── Navigation ──
+// When the destination coordinate's scroll is in the streamed cache at
+// the seed's hash, the navigation is served locally: the cached view
+// replaces the fresh nav payload's scroll, so returning to a viewed
+// scroll costs no content roundtrip (the nav call itself still runs —
+// the cursor is the server's — but its scroll payload is the one part
+// the cache makes redundant, and a stale destination drops its cache
+// entry here and refetches through fetchScrollCached instead).
+async function serveScrollFromCache(nav) {
+  if (!nav || !nav.position || !nav.scroll || demoMode || wikiMode) return;
+  const coord = nav.position.coordinate;
+  const seedHash = seedCache.hashes.get(coord);
+  const held = scrollCache.get(coord);
+  if (held && seedHash !== undefined && held.hash === seedHash && held.view) {
+    nav.scroll = held.view;
+    return;
+  }
+  if (held && (seedHash === undefined || held.hash !== seedHash)) scrollCache.delete(coord);
+  if (seedHash !== undefined && (nav.scroll.kind || 'text') !== 'text') {
+    const view = await fetchScrollCached(coord);
+    if (view && view.coordinate === coord) nav.scroll = view;
+  }
+}
+async function renderNav(navPromise, skipHash) {
+  const nav = await navPromise;
+  await serveScrollFromCache(nav);
+  render(nav, skipHash);
+}
 async function selectDim(d) { render(await api('POST', '/api/dim', String(d))); }
-async function moveForward() { render(await api('POST', '/api/forward')); }
-async function moveBackward() { render(await api('POST', '/api/backward')); }
-async function nextPop() { render(await api('POST', '/api/next')); }
-async function prevPop() { render(await api('POST', '/api/prev')); }
-async function jumpBase() { render(await api('POST', '/api/base')); showMsg('⌂ BASE'); }
-async function gotoCoord(coord) { render(await api('POST', '/api/goto', coord)); }
+async function moveForward() { await renderNav(api('POST', '/api/forward')); }
+async function moveBackward() { await renderNav(api('POST', '/api/backward')); }
+async function nextPop() { await renderNav(api('POST', '/api/next')); }
+async function prevPop() { await renderNav(api('POST', '/api/prev')); }
+async function jumpBase() { await renderNav(api('POST', '/api/base')); showMsg('⌂ BASE'); }
+async function gotoCoord(coord) { await renderNav(api('POST', '/api/goto', coord)); }
 
 // ── Edit ──
 function enterEdit() {
@@ -8677,9 +9136,14 @@ async function saveScroll() {
     dirty = true;
     showMsg('scroll saved to memory');
     setMode('lattice');
+    // The write moved this scroll (and may have moved others): drop
+    // its cache entry and refresh the seed before rendering, so the
+    // cache never serves the pre-edit text as current.
+    scrollCache.delete(coord);
+    await loadSeed();
     // Refresh tree if it was loaded
     if (treeData) loadTree();
-    render(await api('GET', '/api/nav'));
+    await renderNav(api('GET', '/api/nav'));
   } else { showMsg('save failed: ' + res.message); }
 }
 async function saveToDisk() {
@@ -9027,9 +9491,9 @@ async function openFromLocation(fromHistory) {
       history.replaceState(null, '', sharePath(name) + location.search + canonical);
     }
     if (opened === 'same' && lastNav && lastNav.position.coordinate === parsed.coord) return;
-    render(await api('POST', '/api/goto', parsed.coord), true);
-  } else if (!name && !fromHistory) render(await api('POST', '/api/home'));
-  else render(await api('GET', '/api/nav'));
+    await renderNav(api('POST', '/api/goto', parsed.coord), true);
+  } else if (!name && !fromHistory) await renderNav(api('POST', '/api/home'));
+  else await renderNav(api('GET', '/api/nav'));
 }
 
 async function initApp() {
@@ -9048,6 +9512,14 @@ async function demoGet(url) {
 }
 async function demoApi(method, path, body) {
   if (path === '/api/tree') return demoGet('/api/demo/tree');
+  if (path === '/api/seed') return demoGet('/api/demo/seed');
+  if (path.startsWith('/api/scroll/')) {
+    // The demo catalog has no per-scroll route; its nav answers carry
+    // the scroll. A cache-aware fetch against the demo resolves from
+    // the position the demo cursor already holds.
+    const nav = await demoApi('GET', '/api/nav');
+    return nav.scroll;
+  }
   if (path === '/api/status') return demoGet('/api/demo/status');
   if (path === '/api/phexts') return [{ name: 'demo.phext', path: 'demo.phext', bytes: 0 }];
   if (path === '/api/open') return { ok: true, message: 'opened demo.phext' };
@@ -9083,6 +9555,13 @@ async function wikiGet(url) {
 }
 async function wikiApi(method, path, body) {
   if (path === '/api/tree') return wikiGet('/api/wiki/tree');
+  if (path === '/api/seed') return wikiGet('/api/wiki/seed');
+  if (path.startsWith('/api/scroll/')) {
+    // As in the demo: no per-scroll catalog route; the wiki nav
+    // answer carries the scroll at its cursor.
+    const nav = await wikiApi('GET', '/api/nav');
+    return nav.scroll;
+  }
   if (path === '/api/status') return wikiGet('/api/wiki/status');
   if (path === '/api/phexts') return [{ name: 'wiki.phext', path: 'wiki.phext', bytes: 0 }];
   if (path === '/api/open') return { ok: true, message: 'opened wiki.phext' };
@@ -9159,7 +9638,11 @@ function bootEditor() {
   $('demo-banner').style.display = 'none';
   const hash = coordHash();
   const load = hash ? api('POST', '/api/goto', hash) : api('POST', '/api/home');
-  return load.then(nav => { render(nav); initApp(); });
+  // The seed lands before the first scroll renders: from here on,
+  // navigation can serve viewed scrolls from the streamed cache.
+  return loadSeed()
+    .then(() => load)
+    .then(async nav => { await serveScrollFromCache(nav); render(nav); initApp(); });
 }
 
 // Initial load. Signed-out visitors stay on the intro and do not call the editor API.
