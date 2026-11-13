@@ -20,6 +20,14 @@ use libphext::phext::COORDINATE_MINIMUM;
 /// --------------------------------------------------------------------------------------------------------
 /// Dimension enum for editor navigation.
 /// Maps 1-9 keys to the nine phext dimensions (scroll=innermost, library=outermost).
+///
+/// NOTE: this index counts from the scroll outward — it is a key/wire
+/// index, NOT the canonical dimension number. Canonical numbering follows
+/// the written address (Library.Shelf.Series / Collection.Volume.Book /
+/// Chapter.Section.Scroll): Library is dimension 1, Scroll is dimension 9
+/// (Will's ruling, 2026-11-10). Teaching surfaces state the canonical
+/// number; this enum's values remain the key/wire convention, and
+/// renumbering them is a behavioral change, not a display change.
 /// --------------------------------------------------------------------------------------------------------
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]

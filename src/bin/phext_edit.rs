@@ -542,6 +542,13 @@ fn nav_view(lattice: &MappedLattice, nav: &Navigator, total_scrolls: usize, file
             forward: axon.forward_count,
         });
     }
+    // NOTE (canonical numbering, Will's ruling 2026-11-10): this row's
+    // `dimension: 9` is Scroll's canonical address position (Library=1 …
+    // Scroll=9), while every axon above carries the Dimension enum's
+    // key/wire index (where Library is also 9). The two conventions
+    // collide in this payload: the panel renders both rows "9", and
+    // selectDim(9) selects Library. Unifying them is the behavioral
+    // renumber, not a display change — see coordinate_ext.rs.
     axons.push(ApiAxon {
         dimension: 9,
         name: "Scroll".into(),
@@ -613,16 +620,16 @@ fn tree_view(lattice: &MappedLattice) -> ApiTree {
 // files the signed-in editor serves.
 
 const DEMO_SCROLLS: &[(&str, &str)] = &[
-    ("1.1.1/1.1.1/1.1.1", "Welcome to the sample phext.\n\nYou are at 1.1.1/1.1.1/1.1.1, the origin scroll. A phext is one plain-text file. Nine numbers name a scroll: library, shelf, series, collection, volume, book, chapter, section, scroll. The scroll itself is a page of lines and columns. That is eleven dimensions, and the file is still just text.\n\nPress j to step to the next scroll that has words. Press k to step back. Keys 1 through 9 pick a dimension (1 is Scroll, 9 is Library); h and l move along it.\n\nNothing you change here is saved. Sign in to edit your own files."),
-    ("1.1.1/1.1.1/1.1.2", "Scroll, dimension 1, and the page.\n\nThis is the next scroll in the same section. A scroll is one page. Lines run down it and characters run across it: those two directions are the tenth and eleventh dimensions. Press 1, then l, to move by scroll. Press t and open the Nav tab to see this page under its address."),
-    ("1.1.1/1.1.1/1.2.1", "Section, dimension 2.\n\nA section holds scrolls. This one sits beside the welcome section, not after it. Press 2, then l or h, to move by section. Moving along a higher dimension resets the numbers inside it, the same way a delimiter does, so the scroll goes back to 1."),
-    ("1.1.1/1.1.1/2.1.1", "Chapter, dimension 3.\n\nChapters group sections. This scroll is chapter 2, section 1, scroll 1 of the same book. Press 3 to select Chapter, then l to step forward. The left panel shows how many neighbors each dimension has from here."),
-    ("1.1.1/1.1.2/1.1.1", "Book, dimension 4.\n\nA book gathers chapters. This is book 2 of volume 1. Its only page is this note. The address reads 1.1.1/1.1.2/1.1.1: the middle group is collection, volume, book."),
+    ("1.1.1/1.1.1/1.1.1", "Welcome to the sample phext.\n\nYou are at 1.1.1/1.1.1/1.1.1, the origin scroll. A phext is one plain-text file. Nine numbers name a scroll: library, shelf, series, collection, volume, book, chapter, section, scroll. Counted in the order the address is written, those are dimensions 1 through 9: Library is dimension 1, Scroll is dimension 9. The scroll itself is a page of lines and columns. That is eleven dimensions, and the file is still just text.\n\nPress j to step to the next scroll that has words. Press k to step back. Keys 1 through 9 pick a dimension to move along — the keys count from the scroll outward, so key 1 picks Scroll and key 9 picks Library; h and l move along the dimension you picked.\n\nNothing you change here is saved. Sign in to edit your own files."),
+    ("1.1.1/1.1.1/1.1.2", "Scroll, dimension 9, and the page.\n\nThis is the next scroll in the same section. A scroll is one page. Lines run down it and characters run across it: those two directions are the tenth and eleventh dimensions. Press 1, then l, to move by scroll. Press t and open the Nav tab to see this page under its address."),
+    ("1.1.1/1.1.1/1.2.1", "Section, dimension 8.\n\nA section holds scrolls. This one sits beside the welcome section, not after it. Press 2, then l or h, to move by section. Moving along a higher dimension resets the numbers inside it, the same way a delimiter does, so the scroll goes back to 1."),
+    ("1.1.1/1.1.1/2.1.1", "Chapter, dimension 7.\n\nChapters group sections. This scroll is chapter 2, section 1, scroll 1 of the same book. Press 3 to select Chapter, then l to step forward. The left panel shows how many neighbors each dimension has from here."),
+    ("1.1.1/1.1.2/1.1.1", "Book, dimension 6.\n\nA book gathers chapters. This is book 2 of volume 1. Its only page is this note. The address reads 1.1.1/1.1.2/1.1.1: the middle group is collection, volume, book."),
     ("1.1.1/1.2.1/1.1.1", "Volume, dimension 5.\n\nVolumes stack books. This is volume 2 of collection 1. Press t for the tree. 11D is the whole file, 7D is one library-shelf-series group, and 4D is the scrolls inside one book."),
-    ("1.1.1/2.1.1/1.1.1", "Collection, dimension 6.\n\nA collection holds volumes. This is collection 2, still in series 1 of shelf 1. The coordinate bar at the top is the full address. Click a dimension name on the left to select it."),
-    ("1.1.2/1.1.1/1.1.1", "Series, dimension 7.\n\nSeries is the third number of the outer group. This scroll lives in series 2, on shelf 1 of library 1, so the address starts 1.1.2. Press 7, then h, to walk back to series 1."),
-    ("1.2.1/1.1.1/1.1.1", "Shelf, dimension 8.\n\nShelves hold series. You are on shelf 2 of library 1. The coordinate bar should start with 1.2.1. One file can hold many shelves; they are just another number in the address."),
-    ("2.1.1/1.1.1/1.1.1", "Library, dimension 9.\n\nLibraries are the outermost dimension. This is library 2, a second building in the same file. Press 9 and the left panel marks Library. j and k still walk every scroll that has text, in file order, ignoring the empty space between them."),
+    ("1.1.1/2.1.1/1.1.1", "Collection, dimension 4.\n\nA collection holds volumes. This is collection 2, still in series 1 of shelf 1. The coordinate bar at the top is the full address. Click a dimension name on the left to select it."),
+    ("1.1.2/1.1.1/1.1.1", "Series, dimension 3.\n\nSeries is the third number of the outer group. This scroll lives in series 2, on shelf 1 of library 1, so the address starts 1.1.2. Press 7, then h, to walk back to series 1."),
+    ("1.2.1/1.1.1/1.1.1", "Shelf, dimension 2.\n\nShelves hold series. You are on shelf 2 of library 1. The coordinate bar should start with 1.2.1. One file can hold many shelves; they are just another number in the address."),
+    ("2.1.1/1.1.1/1.1.1", "Library, dimension 1.\n\nLibraries are the outermost dimension. This is library 2, a second building in the same file. Press 9 and the left panel marks Library. j and k still walk every scroll that has text, in file order, ignoring the empty space between them."),
     ("2.1.1/1.1.1/1.1.2", "Your own files.\n\nThis sample is read-only. Edits stay in this browser tab and are thrown away when you leave. Signing in enables the editor: you can change scrolls and save them into the phext files on the server. There is no private format and no lock-in. A phext is plain text, and you can take the file with you.\n\nFollow 1.1.1/1.1.1/1.1.1 to return to the welcome scroll."),
     ("1.1.1/1.1.1/1.1.3", "Media, kept inside the file.\n\n![pixel.gif](/api/demo/media/9.9.9/9.9.9/1.1.1)\n\nThat picture is a scroll like any other. Its bytes live at 9.9.9/9.9.9/1.1.1, stored as a binary scroll — a header line and base64 — with its name and type in the metadata scroll beside it. No side files, no media library outside the phext. Images an editor adds live under 9.9.9/9.9.9: the picture at 1.1.n, its metadata at 1.2.n. Open the Nav tab: in the tree the image scroll is labelled with its type and size, never dumped as base64."),
 ];
