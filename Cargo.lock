@@ -708,9 +708,9 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "libphext"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8f8df75a786bc56bc7261e068e26cfa089341a26feb7d0c2a299ef2a6b4da8c"
+checksum = "f2cf51017d5c2a6cabc1a26575fa1a93e9003799a285f99f9c5a8182f964de4f"
 dependencies = [
  "base64",
  "xxhash-rust",
@@ -854,7 +854,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phext-lattice"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "criterion",
  "crossterm",
