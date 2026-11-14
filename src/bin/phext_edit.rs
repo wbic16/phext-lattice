@@ -1450,6 +1450,8 @@ fn public_document(path: &str) -> Option<PublicDocument> {
         "/tts-demo.html" => ("text/html; charset=utf-8", TTS_DEMO_HTML),
         "/learn-you-phext.html" => ("text/html; charset=utf-8", LEARN_YOU_PHEXT_HTML),
         "/learn-you-phext.phext" => ("text/plain; charset=utf-8", LEARN_YOU_PHEXT),
+        "/ascii-map.html" => ("text/html; charset=utf-8", ASCII_MAP_HTML),
+        "/ascii-map.phext" => ("text/plain; charset=utf-8", ASCII_MAP),
         "/singular.html" => ("text/html; charset=utf-8", SINGULAR_HTML),
         "/phext-previewer.html" => ("text/html; charset=utf-8", PREVIEWER_HTML),
         "/zeros" => ("text/html; charset=utf-8", ZERO_INDEX_HTML),
@@ -7993,6 +7995,8 @@ with those files from a browser:</p>
   <li><a href="tts-demo.html">Coordinate TTS demo</a>: hear phext coordinates spoken aloud.</li>
   <li><a href="learn-you-phext.html">Learn You Phext</a>: an introduction to phext that is
   itself a phext, scroll by scroll.</li>
+  <li><a href="ascii-map.html">The Map With Pages Behind It</a>: a game map whose squares
+  drawn once per section (ground, things, what happened), every square still one letter — simple enough for a child.</li>
   <li><a href="singular.html">Singular</a>: an Up Goer Five variant whose word list is one
   person's Twitter archive — read, write, and read/write with only those words.</li>
   <li><a href="phext-previewer.html">Phext Previewer</a>: open a phext file from your
@@ -8215,6 +8219,17 @@ const LEARN_YOU_PHEXT_HTML: &str = include_str!("../../web/learn-you-phext.html"
 // takes the static cache class.
 const LEARN_YOU_PHEXT: &str = include_str!("../../web/learn-you-phext.phext");
 
+// The ASCII map example page likewise lives as a file under web/ and is
+// compiled in: a free example of simple phext usage — a game map whose
+// sections (down, section, across) — one section per kind of thing, using
+// only the three dimensions it needs.
+const ASCII_MAP_HTML: &str = include_str!("../../web/ascii-map.html");
+
+// The example's phext itself likewise lives as a file under web/ and is
+// compiled in, served raw so a visitor can take the file the page
+// teaches from and open it in any text editor.
+const ASCII_MAP: &str = include_str!("../../web/ascii-map.phext");
+
 // The Singular page likewise lives as a file under web/ and is compiled in:
 // an Up Goer Five variant whose word list is one person's Twitter archive.
 // Its modes pick which list flags the text: Read (what he read), Write
@@ -8283,6 +8298,7 @@ const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>https://edit.phext.io/up-goer-five.html</loc></url>
   <url><loc>https://edit.phext.io/tts-demo.html</loc></url>
   <url><loc>https://edit.phext.io/learn-you-phext.html</loc></url>
+  <url><loc>https://edit.phext.io/ascii-map.html</loc></url>
   <url><loc>https://edit.phext.io/singular.html</loc></url>
   <url><loc>https://edit.phext.io/phext-previewer.html</loc></url>
   <url><loc>https://edit.phext.io/submit</loc></url>
@@ -8919,7 +8935,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
     <p class="explain">Nine numbers name a scroll: library, shelf, series, collection, volume, book, chapter, section, scroll. The scroll is a page of lines and columns, which makes eleven. The file stays plain text.</p>
     <p class="hint">Sign in to save and edit your own files. The demo is a sample you can walk through; nothing in it is saved.</p>
     <p class="links"><a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · <a href="mailto:will+support@phext.io">Contact</a><br>
-      No sign-in needed: <a href="/up-goer-five.html">Up Goer Five</a> · <a href="/tts-demo.html">Coordinate TTS demo</a> · <a href="/learn-you-phext.html">Learn You Phext</a> · <a href="/singular.html">Singular</a> · <a href="/phext-previewer.html">Phext Previewer</a> · <a href="/wiki/">Example wiki</a> · <a href="/zeros">The Zero Index</a><br>
+      No sign-in needed: <a href="/up-goer-five.html">Up Goer Five</a> · <a href="/tts-demo.html">Coordinate TTS demo</a> · <a href="/learn-you-phext.html">Learn You Phext</a> · <a href="/ascii-map.html">The Map With Pages Behind It</a> · <a href="/singular.html">Singular</a> · <a href="/phext-previewer.html">Phext Previewer</a> · <a href="/wiki/">Example wiki</a> · <a href="/zeros">The Zero Index</a><br>
       Have a phext of your own? <a href="/submit">Upload it for review</a> — if an editor accepts it, you become an editor too. Signing in with X makes you an editor at once.<br>
       Placed in the wavefront map? <a href="/claim">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="/explore">explore the map</a> first. No ads, ever.<!--phext-sponsor--><br>
       Running build: <!--phext-build--></p>
