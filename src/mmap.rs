@@ -16,7 +16,96 @@ use memmap2::Mmap;
 use libphext::phext::Coordinate;
 use crate::index::{LatticeIndex, ScrollSpan};
 
+/// One member phext (a "universe") of a chain file: its content byte
+/// range within the whole buffer, chain separators excluded.
+#[derive(Debug, Clone, Copy)]
+struct MemberSpan {
+    start: usize,
+    end: usize,
+}
+
+/// Split a phext stream into member ranges, byte-exactly as libphext's
+/// `parse_chains` splits text: CHAIN_CLOSE (0x03) separates chains,
+/// CHAIN_BREAK (0x02) separates the member phexts inside a chain, and a
+/// trailing CHAIN_CLOSE does not start a new chain. Returns the member
+/// ranges in stream order (members of successive chains flattened), the
+/// chain count, and whether the stream ended closed. A plain phext
+/// yields exactly one member covering the whole buffer, one chain,
+/// unclosed — every pre-chain phext reads this way.
+fn split_chain(bytes: &[u8]) -> (Vec<MemberSpan>, usize, bool) {
+    use libphext::phext::{CHAIN_BREAK_U8, CHAIN_CLOSE_U8};
+    let ends_closed = bytes.last() == Some(&CHAIN_CLOSE_U8);
+    let mut segments: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0usize;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == CHAIN_CLOSE_U8 {
+            segments.push((start, i));
+            start = i + 1;
+        }
+    }
+    if !ends_closed {
+        segments.push((start, bytes.len()));
+    }
+    if segments.is_empty() {
+        segments.push((0, 0));
+    }
+    let chains = segments.len();
+    let mut members = Vec::new();
+    for &(s, e) in &segments {
+        let mut member_start = s;
+        for i in s..e {
+            if bytes[i] == CHAIN_BREAK_U8 {
+                members.push(MemberSpan { start: member_start, end: i });
+                member_start = i + 1;
+            }
+        }
+        members.push(MemberSpan { start: member_start, end: e });
+    }
+    (members, chains, ends_closed)
+}
+
+/// A file is chain-class when its stream structure is anything other
+/// than the plain-phext shape (one chain, one member, unclosed).
+fn is_chain_layout(members: &[MemberSpan], chains: usize, closed: bool) -> bool {
+    !(chains == 1 && members.len() == 1 && !closed)
+}
+
+/// Build one member's index over the whole buffer: the member's slice is
+/// scanned on its own (coordinates restart at each member, exactly as
+/// libphext reads a member phext), then its spans are shifted to
+/// absolute offsets into the buffer.
+fn member_index(bytes: &[u8], span: MemberSpan) -> LatticeIndex {
+    let raw = LatticeIndex::build(&bytes[span.start..span.end]);
+    if span.start == 0 {
+        return raw;
+    }
+    let entries: Vec<(Coordinate, ScrollSpan)> = raw
+        .coordinates()
+        .iter()
+        .copied()
+        .zip(raw.spans().iter().map(|s| ScrollSpan {
+            start: s.start + span.start,
+            end: s.end + span.start,
+        }))
+        .collect();
+    LatticeIndex::from_entries(entries, bytes.len())
+}
+
+/// The chain layout of a buffer: member ranges, one index per member,
+/// and the chain-class flag.
+fn chain_layout(bytes: &[u8]) -> (Vec<MemberSpan>, Vec<LatticeIndex>, bool) {
+    let (members, chains, closed) = split_chain(bytes);
+    let chain_class = is_chain_layout(&members, chains, closed);
+    let indexes = members.iter().map(|m| member_index(bytes, *m)).collect();
+    (members, indexes, chain_class)
+}
+
 /// A memory-mapped phext document with copy-on-write editing.
+///
+/// The document may be a chain (a multiverse): several member phexts —
+/// universes — in one file. All read/write methods operate on the
+/// *active* universe (see `universe` / `set_universe`); a plain phext
+/// is a chain of one universe and behaves exactly as it always has.
 pub struct MappedLattice {
     /// The underlying memory-mapped file (read-only).
     ///
@@ -25,13 +114,26 @@ pub struct MappedLattice {
     mmap: Option<Mmap>,
     /// Path to the backing file.
     path: PathBuf,
-    /// The coordinate → byte-span index built over the mmap.
+    /// The active universe's coordinate → byte-span index.
+    /// Mirrors `member_indexes[active_member]`.
     index: LatticeIndex,
     /// Copy-on-write overlay: edited scrolls stored as owned Strings.
     /// If a coordinate is in the overlay, it supersedes the mmap span.
+    /// The overlay belongs to the active universe; switching universes
+    /// is refused while it is non-empty.
     overlay: HashMap<Coordinate, ScrollOverlay>,
     /// Temp file handle kept alive for from_bytes mmap backing.
     _temp_file: Option<PathBuf>,
+    /// Member ranges of the chain this file holds; exactly one entry
+    /// covering the whole buffer for a plain (chain-free) phext.
+    members: Vec<MemberSpan>,
+    /// Every member's index, parallel to `members`.
+    member_indexes: Vec<LatticeIndex>,
+    /// The active member (0-based); universes are numbered from 1.
+    active_member: usize,
+    /// True when the file's stream structure is a real chain (see
+    /// `is_chain_layout`). Chain files are read-only through `save`.
+    chain_class: bool,
 }
 
 /// An overlay entry for a scroll that has been modified.
@@ -58,7 +160,8 @@ impl MappedLattice {
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<MappedLattice> {
         let path = path.as_ref().to_path_buf();
         let mmap = map_file(&path)?;
-        let index = LatticeIndex::build(&mmap);
+        let (members, member_indexes, chain_class) = chain_layout(&mmap);
+        let index = member_indexes[0].clone();
 
         Ok(MappedLattice {
             mmap: Some(mmap),
@@ -66,12 +169,18 @@ impl MappedLattice {
             index,
             overlay: HashMap::new(),
             _temp_file: None,
+            members,
+            member_indexes,
+            active_member: 0,
+            chain_class,
         })
     }
 
     /// Open a phext file with an index built elsewhere (e.g. loaded from a
     /// `sidecar`), skipping the O(n) scan. Fails if the index was built for a
-    /// buffer of a different length.
+    /// buffer of a different length. A chain-class file ignores the
+    /// supplied index — a persisted span table describes one universe,
+    /// not a chain — and is opened with a fresh scan instead.
     pub fn open_with_index<P: AsRef<Path>>(path: P, index: LatticeIndex) -> io::Result<MappedLattice> {
         let path = path.as_ref().to_path_buf();
         let file = std::fs::File::open(&path).map_err(|err| io_at("open", &path, err))?;
@@ -80,12 +189,21 @@ impl MappedLattice {
             return Err(io::Error::new(io::ErrorKind::InvalidData, format!(
                 "index covers {} bytes but {} has {}", index.buffer_len(), path.display(), mmap.len())));
         }
+        let (members, chains, closed) = split_chain(&mmap);
+        if is_chain_layout(&members, chains, closed) {
+            drop(mmap);
+            return MappedLattice::open(&path);
+        }
         Ok(MappedLattice {
             mmap: Some(mmap),
             path,
-            index,
+            index: index.clone(),
             overlay: HashMap::new(),
             _temp_file: None,
+            members,
+            member_indexes: vec![index],
+            active_member: 0,
+            chain_class: false,
         })
     }
 
@@ -156,6 +274,79 @@ impl MappedLattice {
             }
         }
         stored
+    }
+
+    // ── Universes (chain members) ────────────────────────────────────
+
+    /// True when this file is a chain: more structure than a plain
+    /// phext's single unclosed member.
+    pub fn is_chain(&self) -> bool {
+        self.chain_class
+    }
+
+    /// How many universes (member phexts) this file holds. A plain
+    /// phext holds exactly one.
+    pub fn universe_count(&self) -> usize {
+        self.members.len()
+    }
+
+    /// The active universe, numbered from 1.
+    pub fn universe(&self) -> usize {
+        self.active_member + 1
+    }
+
+    /// Per-universe (scroll count, content bytes), in universe order.
+    pub fn member_stats(&self) -> Vec<(usize, usize)> {
+        self.members
+            .iter()
+            .zip(self.member_indexes.iter())
+            .map(|(m, idx)| (idx.scroll_count(), m.end - m.start))
+            .collect()
+    }
+
+    /// Make `universe` (numbered from 1) the active universe. Refused
+    /// while the overlay holds unsaved edits — an edit never straddles
+    /// a switch — and when the universe is out of range.
+    pub fn set_universe(&mut self, universe: usize) -> io::Result<()> {
+        if universe < 1 || universe > self.members.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "universe ${} out of range: {} holds {} universe(s)",
+                    universe,
+                    self.path.display(),
+                    self.members.len()
+                ),
+            ));
+        }
+        if !self.overlay.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsaved changes; save or discard them before switching universes",
+            ));
+        }
+        self.active_member = universe - 1;
+        self.index = self.member_indexes[self.active_member].clone();
+        Ok(())
+    }
+
+    /// A scroll's exact stored bytes in `universe` (numbered from 1),
+    /// without switching the active universe. The overlay applies only
+    /// when `universe` is the active one.
+    pub fn read_scroll_bytes_in(&self, universe: usize, coord: &Coordinate) -> Option<Vec<u8>> {
+        if universe == self.universe() {
+            return self.read_scroll_bytes(coord);
+        }
+        let idx = self.member_indexes.get(universe.checked_sub(1)?)?;
+        idx.get(coord)
+            .map(|span| self.bytes()[span.start..span.end].to_vec())
+    }
+
+    /// A scroll's content in `universe` (numbered from 1), without
+    /// switching the active universe.
+    pub fn read_scroll_in(&self, universe: usize, coord: &Coordinate) -> Option<String> {
+        self.read_scroll_bytes_in(universe, coord)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// Write content to a scroll at the given coordinate.
@@ -274,6 +465,22 @@ impl MappedLattice {
     /// Save to the backing file. Reconstructs the phext from mmap + overlay.
     /// Uses atomic rename via NamedTempFile to prevent partial-write corruption.
     pub fn save(&mut self) -> io::Result<()> {
+        if self.chain_class {
+            // The editor's save is a whole-file rewrite of one universe;
+            // applied to a chain it would silently flatten every member
+            // into a single phext. Multiversal writes follow the WAL
+            // append path (floor coordinate, appends above it, prior
+            // scrolls immutable), which this save is not — so chain
+            // files are read-only here, with the reason named.
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "chain files are read-only in the editor: {} holds {} universes, and a rewrite save would flatten them into one phext",
+                    self.path.display(),
+                    self.members.len()
+                ),
+            ));
+        }
         if self.path.as_os_str().is_empty() {
             return Err(io::Error::new(io::ErrorKind::Other, "save: no backing file path"));
         }
@@ -332,6 +539,9 @@ impl MappedLattice {
             LatticeIndex::build(self.bytes())
         };
         self.index = index;
+        // Single-member files only reach here (save refuses chains), so
+        // the active index is the one and only member index.
+        self.member_indexes[0] = self.index.clone();
         self.overlay.clear();
 
         Ok(())
@@ -466,7 +676,8 @@ impl Drop for MappedLattice {
 }
 
 fn mapped_from_bytes(bytes: &[u8]) -> io::Result<MappedLattice> {
-    let index = LatticeIndex::build(bytes);
+    let (members, member_indexes, chain_class) = chain_layout(bytes);
+    let index = member_indexes[0].clone();
     // Map the handle we just wrote. Re-opening by path is a separate lookup
     // and, on Windows, fails with "The system cannot find the file specified.
     // (os error 2)" when the temp path does not resolve.
@@ -478,6 +689,10 @@ fn mapped_from_bytes(bytes: &[u8]) -> io::Result<MappedLattice> {
         index,
         overlay: HashMap::new(),
         _temp_file: Some(tmp),
+        members,
+        member_indexes,
+        active_member: 0,
+        chain_class,
     })
 }
 
@@ -715,5 +930,104 @@ mod tests {
         // The insert is still in the overlay; the disk replace did not land.
         assert!(lat.is_dirty());
         assert_eq!(lat.read_scroll(&inserted).as_deref(), Some("brand new scroll"));
+    }
+
+    /// A three-universe closed chain, built with libphext's own Chain
+    /// serialization — the same bytes teixml-to-mutable writes.
+    fn chain_bytes() -> Vec<u8> {
+        let chain = libphext::phext::Chain {
+            members: vec![
+                "index scroll\x17original one".to_string(),
+                "universe two root".to_string(),
+                "universe three root\x17universe three scroll two".to_string(),
+            ],
+            closed: true,
+        };
+        chain.serialize().into_bytes()
+    }
+
+    #[test]
+    fn split_chain_matches_libphext_parse_chains() {
+        let bytes = chain_bytes();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        let parsed = libphext::phext::parse_chains(&text);
+        assert_eq!(parsed.len(), 1);
+        let (members, chains, closed) = split_chain(&bytes);
+        assert_eq!(chains, 1);
+        assert!(closed);
+        assert_eq!(members.len(), parsed[0].members.len());
+        for (span, member) in members.iter().zip(parsed[0].members.iter()) {
+            assert_eq!(&bytes[span.start..span.end], member.as_bytes());
+        }
+        // A plain phext: one member, whole buffer, unclosed.
+        let (members, chains, closed) = split_chain(&test_phext());
+        assert_eq!((members.len(), chains, closed), (1, 1, false));
+        assert_eq!((members[0].start, members[0].end), (0, test_phext().len()));
+    }
+
+    #[test]
+    fn chain_opens_with_universes_and_reads_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chain.phext");
+        std::fs::write(&path, chain_bytes()).unwrap();
+        let mut lat = MappedLattice::open(&path).unwrap();
+        assert!(lat.is_chain());
+        assert_eq!(lat.universe_count(), 3);
+        assert_eq!(lat.universe(), 1);
+        let base = to_coordinate("1.1.1/1.1.1/1.1.1");
+        let second = to_coordinate("1.1.1/1.1.1/1.1.2");
+        // $1: two scrolls; addresses restart in every universe.
+        assert_eq!(lat.read_scroll(&base).as_deref(), Some("index scroll"));
+        assert_eq!(lat.read_scroll(&second).as_deref(), Some("original one"));
+        // Read-through into another universe without switching.
+        assert_eq!(lat.read_scroll_in(2, &base).as_deref(), Some("universe two root"));
+        assert_eq!(lat.read_scroll_in(3, &second).as_deref(), Some("universe three scroll two"));
+        assert!(lat.read_scroll_in(4, &base).is_none());
+        // Switch and read through the ordinary path.
+        lat.set_universe(3).unwrap();
+        assert_eq!(lat.universe(), 3);
+        assert_eq!(lat.read_scroll(&base).as_deref(), Some("universe three root"));
+        assert_eq!(lat.scroll_count(), 2);
+        let stats = lat.member_stats();
+        assert_eq!(stats.len(), 3);
+        assert_eq!(stats[0].0, 2);
+        assert_eq!(stats[1].0, 1);
+    }
+
+    #[test]
+    fn plain_phext_is_not_a_chain_and_stays_editable() {
+        let lat = MappedLattice::from_bytes(&test_phext());
+        assert!(!lat.is_chain());
+        assert_eq!(lat.universe_count(), 1);
+        assert_eq!(lat.universe(), 1);
+    }
+
+    #[test]
+    fn set_universe_refuses_with_unsaved_edits_and_out_of_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chain.phext");
+        std::fs::write(&path, chain_bytes()).unwrap();
+        let mut lat = MappedLattice::open(&path).unwrap();
+        assert!(lat.set_universe(4).is_err());
+        assert!(lat.set_universe(0).is_err());
+        lat.write_scroll(to_coordinate("1.1.1/1.1.1/1.1.1"), "edited".into());
+        let err = lat.set_universe(2).unwrap_err();
+        assert!(err.to_string().contains("unsaved changes"), "{err}");
+        assert_eq!(lat.universe(), 1);
+    }
+
+    #[test]
+    fn save_refuses_chain_files_and_names_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chain.phext");
+        std::fs::write(&path, chain_bytes()).unwrap();
+        let mut lat = MappedLattice::open(&path).unwrap();
+        lat.write_scroll(to_coordinate("1.1.1/1.1.1/1.1.1"), "edited".into());
+        let err = lat.save().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("read-only"), "{msg}");
+        assert!(msg.contains("3 universes"), "{msg}");
+        // The file on disk is byte-identical: nothing was flattened.
+        assert_eq!(std::fs::read(&path).unwrap(), chain_bytes());
     }
 }
