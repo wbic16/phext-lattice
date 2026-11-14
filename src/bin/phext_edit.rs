@@ -38,6 +38,10 @@ struct ApiStatus {
     /// File selected by `/` and `/#coordinate`. Named URLs do not change it.
     default_file: String,
     dirty: bool,
+    /// Active universe (1-based) of the open file, and how many
+    /// universes it holds. A plain phext reports 1 of 1.
+    universe: usize,
+    universes: usize,
 }
 
 #[derive(Serialize)]
@@ -49,6 +53,17 @@ struct ApiPosition {
     total_scrolls: usize,
     /// Open phext. The file switcher matches this against `/api/phexts`.
     file: String,
+    /// Active universe (1-based) and the open file's universe count.
+    universe: usize,
+    universes: usize,
+}
+
+/// One universe of a chain file, for the universe switcher.
+#[derive(Serialize)]
+struct ApiUniverse {
+    n: usize,
+    scrolls: usize,
+    bytes: usize,
 }
 
 #[derive(Serialize)]
@@ -174,6 +189,10 @@ struct ApiSeedEntry {
 #[derive(Serialize)]
 struct ApiSeed {
     file: String,
+    /// The universe these entries belong to (1-based). The shell's
+    /// cache key is file+universe: a universe switch must not serve
+    /// another universe's scrolls from cache.
+    universe: usize,
     scrolls: usize,
     entries: Vec<ApiSeedEntry>,
 }
@@ -195,6 +214,10 @@ struct PhextFile {
     name: String,
     path: String,
     bytes: u64,
+    /// What opening this item does: "phext" opens the file itself;
+    /// "tei" converts a TEI-XML file to a chain and opens that;
+    /// "tei-dir" converts a directory of TEI-XML likewise.
+    kind: String,
 }
 
 // ── State ──────────────────────────────────────────────────────────────
@@ -266,6 +289,7 @@ impl AppState {
                         .file_name().unwrap_or_default().to_string_lossy().to_string(),
                     path: self.file_path.clone(),
                     bytes: meta.map(|m| m.len()).unwrap_or(0),
+                    kind: "phext".to_string(),
                 }];
             }
         };
@@ -279,7 +303,37 @@ impl AppState {
                         name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
                         path: path.to_string_lossy().to_string(),
                         bytes: meta.map(|m| m.len()).unwrap_or(0),
+                        kind: "phext".to_string(),
                     });
+                } else if is_tei_xml(&path) && path.is_file() {
+                    // A TEI-XML file in the library: opening it converts
+                    // it to a chain (originals in $1) and opens that.
+                    let meta = std::fs::metadata(&path).ok();
+                    files.push(PhextFile {
+                        name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                        path: path.to_string_lossy().to_string(),
+                        bytes: meta.map(|m| m.len()).unwrap_or(0),
+                        kind: "tei".to_string(),
+                    });
+                } else if path.is_dir() {
+                    // A directory holding TEI-XML anywhere under it is a
+                    // corpus item: one chain per input directory is the
+                    // converter's native shape.
+                    if let Ok(xml) = teixml_to_mutable::collect_xml_files(&path) {
+                        if !xml.is_empty() {
+                            let bytes = xml
+                                .iter()
+                                .filter_map(|p| std::fs::metadata(p).ok())
+                                .map(|m| m.len())
+                                .sum();
+                            files.push(PhextFile {
+                                name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                                path: path.to_string_lossy().to_string(),
+                                bytes,
+                                kind: "tei-dir".to_string(),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -333,16 +387,114 @@ impl AppState {
         let lattice = MappedLattice::open(path).map_err(|e| e.to_string())?;
         let buf = lattice.to_phext_bytes();
         self.overview = LatticeOverview::build(&buf, lattice.index());
-        self.nav = Navigator::new();
-        if lattice.has_scroll(&libphext::phext::default_coordinate()) {
-            self.nav.goto(libphext::phext::default_coordinate());
-        } else {
-            self.nav.next_populated(lattice.index());
-        }
         self.lattice = lattice;
         self.file_path = path.to_string();
         self.dirty = false;
+        self.goto_start();
         Ok(())
+    }
+
+    /// Reset the cursor to the open universe's first scroll: the
+    /// default coordinate when it holds one, else the next populated
+    /// coordinate. Shared by file opens and universe switches.
+    fn goto_start(&mut self) {
+        self.nav = Navigator::new();
+        if self.lattice.has_scroll(&libphext::phext::default_coordinate()) {
+            self.nav.goto(libphext::phext::default_coordinate());
+        } else {
+            self.nav.next_populated(self.lattice.index());
+        }
+    }
+
+    /// Switch the active universe of the open chain file. Unsaved
+    /// edits block the switch, exactly as they block a file switch.
+    fn set_universe(&mut self, universe: usize) -> Result<(), String> {
+        if self.dirty {
+            return Err("unsaved changes; not switching universes".into());
+        }
+        self.lattice.set_universe(universe).map_err(|e| e.to_string())?;
+        let buf = self.lattice.to_phext_bytes();
+        self.overview = LatticeOverview::build(&buf, self.lattice.index());
+        self.goto_start();
+        Ok(())
+    }
+
+    /// Convert a TEI-XML file or directory inside the library into a
+    /// phext chain — teixml-to-mutable does the conversion; the
+    /// originals land in $1 — and open the chain. When the output
+    /// already exists it is opened only if its $1 index proves it is
+    /// this source's own chain (same files, same SHA-256); anything
+    /// else is refused rather than overwritten. Per-file conversion
+    /// failures do not fail the open: the crate keeps each original in
+    /// $1 and names the failure in the $1 index, and the returned
+    /// message reports the counts.
+    fn open_tei(&mut self, target: &std::path::Path) -> Result<String, String> {
+        let Some(dir) = self.phext_dir.clone() else {
+            return Err("TEI-XML loading needs a library directory (--dir)".into());
+        };
+        let library = std::path::PathBuf::from(&dir);
+        let dir_canon = std::fs::canonicalize(&library)
+            .map_err(|e| format!("canonicalize {}: {e}", library.display()))?;
+        let target = std::fs::canonicalize(target)
+            .map_err(|e| format!("canonicalize {}: {e}", target.display()))?;
+        if !target.starts_with(&dir_canon) {
+            return Err("TEI source is outside the library directory".into());
+        }
+        if target.is_dir() && teixml_to_mutable::collect_xml_files(&target)?.is_empty() {
+            return Err("no TEI-XML files under that directory".into());
+        }
+        let stem = if target.is_dir() {
+            target.file_name().unwrap_or_default().to_string_lossy().to_string()
+        } else {
+            target.file_stem().unwrap_or_default().to_string_lossy().to_string()
+        };
+        if stem.is_empty() {
+            return Err("that TEI source has no usable file name".into());
+        }
+        let out_name = format!("{stem}.phext");
+        let out_path = dir_canon.join(&out_name);
+        if out_path.exists() {
+            if !existing_chain_matches(&out_path, &target) {
+                return Err(format!(
+                    "{out_name} already exists in the library and is not the chain converted from this TEI source; not overwriting it"
+                ));
+            }
+            self.open_phext(&out_path.to_string_lossy())?;
+            return Ok(format!("opened {out_name} (already converted from this TEI source)"));
+        }
+        let summary = if target.is_dir() {
+            teixml_to_mutable::convert_dir(&target, &out_path)
+        } else {
+            // The converter's input is a directory; a single file is
+            // the degenerate directory of one. Stage the file under its
+            // own name so the chain's $1 index records it faithfully.
+            let staged = (|| -> Result<teixml_to_mutable::ConversionSummary, String> {
+                let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
+                let name = target.file_name().unwrap_or_default();
+                std::fs::copy(&target, staging.path().join(name)).map_err(|e| e.to_string())?;
+                teixml_to_mutable::convert_dir(staging.path(), &out_path)
+            })();
+            staged
+        };
+        let summary = match summary {
+            Ok(s) => s,
+            Err(e) => {
+                // A failed conversion must not leave a partial chain
+                // behind to poison the next open's provenance check.
+                let _ = std::fs::remove_file(&out_path);
+                return Err(e);
+            }
+        };
+        let failed = summary.entries.iter().filter(|e| e.error.is_some()).count();
+        let converted = summary.entries.len() - failed;
+        self.open_phext(&out_path.to_string_lossy())?;
+        Ok(if failed == 0 {
+            format!("converted {converted} TEI file(s) into {out_name}")
+        } else {
+            format!(
+                "converted {converted} TEI file(s) into {out_name}; {failed} failed — each failure is named in the $1 index, originals kept"
+            )
+        })
     }
 
     fn tree_json(&self) -> ApiTree {
@@ -482,6 +634,70 @@ fn scroll_hash(lattice: &MappedLattice, coord: &libphext::phext::Coordinate) -> 
     xxh3_128(&stored).to_be_bytes().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The seed-cache hash of one scroll in a named universe, without
+/// switching the active universe.
+fn scroll_hash_in(lattice: &MappedLattice, universe: usize, coord: &libphext::phext::Coordinate) -> String {
+    let stored = lattice.read_scroll_bytes_in(universe, coord).unwrap_or_default();
+    xxh3_128(&stored).to_be_bytes().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `scroll_view` for a scroll in a non-active universe: same shape,
+/// read through the member index. A binary scroll there is reported
+/// with its kind and payload size but no media URL — the media route
+/// serves the active universe, and a URL that served another
+/// universe's bytes under this coordinate would be a lie.
+fn scroll_view_in(
+    lattice: &MappedLattice,
+    universe: usize,
+    coord: &libphext::phext::Coordinate,
+) -> ApiScroll {
+    if universe == lattice.universe() {
+        return scroll_view(lattice, coord, "/api/media");
+    }
+    let stored = lattice.read_scroll_in(universe, coord).unwrap_or_default();
+    let coordinate = format!("{}", coord);
+    if phext_lattice::media::is_well_formed_binary_scroll(&stored) {
+        let payload = libphext::binary::decode_scroll(&stored).unwrap_or_default();
+        let sniffed = phext_lattice::media::sniff_image(&payload);
+        return ApiScroll {
+            coordinate,
+            content: String::new(),
+            bytes: stored.len(),
+            kind: if sniffed.is_some() { "image" } else { "binary" }.into(),
+            content_type: sniffed.map(|k| k.content_type.to_string()),
+            name: None,
+            payload_bytes: Some(payload.len()),
+            media_url: None,
+        };
+    }
+    ApiScroll {
+        coordinate,
+        bytes: stored.len(),
+        content: stored,
+        kind: "text".into(),
+        content_type: None,
+        name: None,
+        payload_bytes: None,
+        media_url: None,
+    }
+}
+
+/// Parse a multiverse address: `$N:coord`, or a bare coordinate
+/// (the active universe). The coordinate part goes through the same
+/// parser every other route uses.
+fn parse_multiverse_address(s: &str) -> Option<(Option<usize>, libphext::phext::Coordinate)> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix('$') {
+        let (num, coord_part) = rest.split_once(':')?;
+        let n: usize = num.parse().ok()?;
+        if n < 1 {
+            return None;
+        }
+        return parse_coordinate(coord_part).map(|c| (Some(n), c));
+    }
+    parse_coordinate(s).map(|c| (None, c))
+}
+
 /// The seed envelope for the open phext: one entry per populated
 /// coordinate, in the lattice's sorted coordinate order. A scroll
 /// exists when it holds at least a byte, so coordinates whose stored
@@ -493,7 +709,7 @@ fn seed_view(lattice: &MappedLattice, file: &str) -> ApiSeed {
         .filter(|coord| lattice.read_scroll_bytes(coord).map(|b| !b.is_empty()).unwrap_or(false))
         .map(|coord| ApiSeedEntry { coordinate: format!("{}", coord), hash: scroll_hash(lattice, coord) })
         .collect::<Vec<_>>();
-    ApiSeed { file: file.to_string(), scrolls: entries.len(), entries }
+    ApiSeed { file: file.to_string(), universe: lattice.universe(), scrolls: entries.len(), entries }
 }
 
 /// The editor shell's per-catalog seed (demo / example wiki), served by
@@ -558,6 +774,8 @@ fn nav_view(lattice: &MappedLattice, nav: &Navigator, total_scrolls: usize, file
             has_scroll: lattice.has_scroll(&pos),
             total_scrolls,
             file: file.to_string(),
+            universe: lattice.universe(),
+            universes: lattice.universe_count(),
         },
         sentron: ApiSentron {
             center: format!("{}", sentron.center),
@@ -723,6 +941,8 @@ impl DemoCatalog {
             file: self.file_name.into(),
             default_file: self.file_name.into(),
             dirty: false,
+            universe: self.lattice.universe(),
+            universes: self.lattice.universe_count(),
         }
     }
 
@@ -1457,10 +1677,12 @@ fn handle_request(
         ("POST", "/api/open") => {
             let body = read_body(&mut reader, &headers);
             let requested = body.trim();
-            // A bare library name (`jonas`) resolves only to `<dir>/jonas.phext`.
+            // A bare library name (`jonas`) resolves only to `<dir>/jonas.phext`
+            // (or, failing that, `<dir>/jonas.xml` — a TEI file to convert).
             // Anything else stays on the existing path check inside open_phext.
             let path_str = if phext_name_ok(requested) {
-                match state.hosted_phext(requested) {
+                match state.hosted_phext(requested)
+                    .or_else(|| hosted_tei_file(state.phext_dir.as_deref(), requested)) {
                     Some(path) => path.to_string_lossy().into_owned(),
                     None => {
                         json_response(stream, &headers, &ApiOk { ok: false, message: "phext not found".into() });
@@ -1470,9 +1692,22 @@ fn handle_request(
             } else {
                 requested.to_string()
             };
-            match state.open_phext(&path_str) {
-                Ok(()) => json_response(stream, &headers, &ApiOk { ok: true, message: format!("opened {}", state.file_path) }),
-                Err(e) => json_response(stream, &headers, &ApiOk { ok: false, message: e }),
+            // TEI targets — an .xml file or a directory of them inside
+            // the library — convert to a chain and open that; every
+            // other target opens exactly as it always has.
+            let target = std::path::Path::new(&path_str);
+            let tei = state.phext_dir.is_some()
+                && ((target.is_file() && is_tei_xml(target)) || target.is_dir());
+            if tei {
+                match state.open_tei(target) {
+                    Ok(message) => json_response(stream, &headers, &ApiOk { ok: true, message }),
+                    Err(e) => json_response(stream, &headers, &ApiOk { ok: false, message: e }),
+                }
+            } else {
+                match state.open_phext(&path_str) {
+                    Ok(()) => json_response(stream, &headers, &ApiOk { ok: true, message: format!("opened {}", state.file_path) }),
+                    Err(e) => json_response(stream, &headers, &ApiOk { ok: false, message: e }),
+                }
             }
         }
 
@@ -1484,7 +1719,26 @@ fn handle_request(
                 file: state.file_path.clone(),
                 default_file: state.default_file.clone(),
                 dirty: state.dirty,
+                universe: state.lattice.universe(),
+                universes: state.lattice.universe_count(),
             });
+        }
+        ("GET", "/api/universes") => {
+            let universes: Vec<ApiUniverse> = state.lattice.member_stats()
+                .into_iter().enumerate()
+                .map(|(i, (scrolls, bytes))| ApiUniverse { n: i + 1, scrolls, bytes })
+                .collect();
+            json_response(stream, &headers, &universes);
+        }
+        ("POST", "/api/universe") => {
+            let body = read_body(&mut reader, &headers);
+            match body.trim().trim_start_matches('$').parse::<usize>() {
+                Ok(n) => match state.set_universe(n) {
+                    Ok(()) => json_response(stream, &headers, &state.nav_json()),
+                    Err(e) => json_response(stream, &headers, &ApiOk { ok: false, message: e }),
+                },
+                Err(_) => json_response(stream, &headers, &ApiOk { ok: false, message: "invalid universe".into() }),
+            }
         }
         ("GET", "/api/tree") => { json_response(stream, &headers, &state.tree_json()); }
         ("GET", "/api/seed") => { json_response(stream, &headers, &seed_view(&state.lattice, &state.file_path)); }
@@ -1522,7 +1776,22 @@ fn handle_request(
         }
         ("POST", "/api/goto") => {
             let body = read_body(&mut reader, &headers);
-            if let Some(coord) = parse_coordinate(body.trim()) { state.nav.goto(coord); }
+            match parse_multiverse_address(body.trim()) {
+                // `$N:coord` switches universe first (unsaved edits
+                // block the switch, as they block a file switch), then
+                // moves within the now-active universe.
+                Some((Some(n), coord)) => {
+                    if n != state.lattice.universe() {
+                        if let Err(e) = state.set_universe(n) {
+                            json_response(stream, &headers, &ApiOk { ok: false, message: e });
+                            return;
+                        }
+                    }
+                    state.nav.goto(coord);
+                }
+                Some((None, coord)) => { state.nav.goto(coord); }
+                None => {}
+            }
             json_response(stream, &headers, &state.nav_json());
         }
         ("POST", "/api/home") => {
@@ -1540,22 +1809,43 @@ fn handle_request(
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
                 let coord_str = val.get("coordinate").and_then(|v| v.as_str()).unwrap_or("");
                 let content = val.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                if let Some(coord) = parse_coordinate(coord_str) {
-                    if !state.lattice.write_scroll(coord, content.to_string()) {
-                        json_response(stream, &headers, &ApiOk { ok: false, message: "that scroll holds an image (a binary scroll); images cannot be edited as text".into() });
-                        return;
+                if state.lattice.is_chain() {
+                    // Chain files are read-only in the editor: writes
+                    // to a multiverse follow the WAL append path, not
+                    // this overlay-and-rewrite save.
+                    json_response(stream, &headers, &ApiOk { ok: false, message: format!(
+                        "chain files are read-only in the editor: this file holds {} universes; multiversal writes follow the WAL append path, not the editor's rewrite save",
+                        state.lattice.universe_count()) });
+                    return;
+                }
+                match parse_multiverse_address(coord_str) {
+                    Some((Some(n), _)) if n != state.lattice.universe() => {
+                        json_response(stream, &headers, &ApiOk { ok: false, message: format!(
+                            "that scroll is in universe ${n}; switch universes before editing it") });
                     }
-                    state.dirty = true;
-                    state.rebuild_overview();
-                    json_response(stream, &headers, &ApiOk { ok: true, message: "scroll updated".into() });
-                } else {
-                    json_response(stream, &headers, &ApiOk { ok: false, message: "invalid coordinate".into() });
+                    Some((_, coord)) => {
+                        if !state.lattice.write_scroll(coord, content.to_string()) {
+                            json_response(stream, &headers, &ApiOk { ok: false, message: "that scroll holds an image (a binary scroll); images cannot be edited as text".into() });
+                            return;
+                        }
+                        state.dirty = true;
+                        state.rebuild_overview();
+                        json_response(stream, &headers, &ApiOk { ok: true, message: "scroll updated".into() });
+                    }
+                    None => {
+                        json_response(stream, &headers, &ApiOk { ok: false, message: "invalid coordinate".into() });
+                    }
                 }
             } else {
                 json_response(stream, &headers, &ApiOk { ok: false, message: "invalid json".into() });
             }
         }
         ("POST", "/api/save") => {
+            if state.lattice.is_chain() {
+                json_response(stream, &headers, &ApiOk { ok: false, message:
+                    "chain files are read-only in the editor: a save would flatten this file's universes into one phext".into() });
+                return;
+            }
             match state.lattice.save() {
                 Ok(()) => { state.dirty = false; json_response(stream, &headers, &ApiOk { ok: true, message: "saved".into() }); }
                 Err(e) => { json_response(stream, &headers, &ApiOk { ok: false, message: format!("save failed: {}", e) }); }
@@ -1601,12 +1891,16 @@ fn handle_request(
         // No parameters stays the plain read it has always been.
         ("GET", p) if p.starts_with("/api/scroll/") => {
             let (coord_str, query) = p["/api/scroll/".len()..].split_once('?').unwrap_or((&p["/api/scroll/".len()..], ""));
-            if let Some(coord) = parse_coordinate(coord_str) {
+            if let Some((universe_opt, coord)) = parse_multiverse_address(coord_str) {
+                // A `$N:` address reads that universe without switching
+                // the editor's active one; a bare coordinate reads the
+                // active universe, as it always has.
+                let universe = universe_opt.unwrap_or_else(|| state.lattice.universe());
                 let q = query_pairs(query);
                 let client_hash = q.get("hash").map(String::as_str).unwrap_or("");
                 let have = q.get("have").map(String::as_str) == Some("1");
                 if have && !client_hash.is_empty() {
-                    let current = scroll_hash(&state.lattice, &coord);
+                    let current = scroll_hash_in(&state.lattice, universe, &coord);
                     if client_hash == current {
                         json_response(stream, &headers, &ApiScrollUnchanged {
                             coordinate: format!("{}", coord), hash: current, unchanged: true,
@@ -1614,7 +1908,7 @@ fn handle_request(
                         return;
                     }
                 }
-                json_response(stream, &headers, &scroll_view(&state.lattice, &coord, "/api/media"));
+                json_response(stream, &headers, &scroll_view_in(&state.lattice, universe, &coord));
             } else {
                 send_response(stream, 400, "text/plain", b"invalid coordinate", CacheClass::NoStore, &headers, false);
             }
@@ -5489,6 +5783,63 @@ fn hosted_phext_file(
     canon.is_file().then_some(canon)
 }
 
+/// `<name>.xml` inside the hosting directory, and nowhere else — the
+/// TEI sibling of `hosted_phext_file`, with the same symlink discipline:
+/// a link that resolves outside the directory is not a hosted file.
+fn hosted_tei_file(dir: Option<&str>, name: &str) -> Option<std::path::PathBuf> {
+    if !phext_name_ok(name) || reserved_phext_name(name) {
+        return None;
+    }
+    let dir = dir?;
+    let dir_canon = std::fs::canonicalize(dir).ok()?;
+    let candidate = dir_canon.join(format!("{name}.xml"));
+    if candidate.parent() != Some(dir_canon.as_path()) {
+        return None;
+    }
+    let file_canon = std::fs::canonicalize(&candidate).ok()?;
+    if !file_canon.starts_with(&dir_canon) {
+        return None;
+    }
+    file_canon.is_file().then_some(file_canon)
+}
+
+/// Provenance check for a converted chain: does `chain`'s $1 index name
+/// exactly the TEI sources under `target`, each with a matching
+/// SHA-256? Read with the converter's own reader and index parser —
+/// never a hand parse of the chain or the index scroll.
+fn existing_chain_matches(chain: &std::path::Path, target: &std::path::Path) -> bool {
+    let Ok(reader) = teixml_to_mutable::ChainReader::open(chain) else {
+        return false;
+    };
+    let Some(index_scroll) = reader.get(1, &teixml_to_mutable::coord(1)) else {
+        return false;
+    };
+    let (entries, _failures) = teixml_to_mutable::parse_index(index_scroll);
+    let want: Vec<(String, String)> = if target.is_dir() {
+        let Ok(files) = teixml_to_mutable::collect_xml_files(target) else {
+            return false;
+        };
+        files
+            .iter()
+            .map(|p| {
+                let sha = std::fs::read(p)
+                    .map(|b| teixml_to_mutable::sha256_hex(&b))
+                    .unwrap_or_default();
+                (teixml_to_mutable::rel_of(target, p), sha)
+            })
+            .collect()
+    } else {
+        let sha = std::fs::read(target)
+            .map(|b| teixml_to_mutable::sha256_hex(&b))
+            .unwrap_or_default();
+        vec![(target.file_name().unwrap_or_default().to_string_lossy().to_string(), sha)]
+    };
+    entries.len() == want.len()
+        && entries
+            .iter()
+            .all(|e| want.iter().any(|(rel, sha)| &e.rel == rel && &e.sha256 == sha))
+}
+
 fn send_not_found(
     stream: &mut std::net::TcpStream,
     method: &str,
@@ -5595,6 +5946,14 @@ fn io_context(op: &str, path: &Path, err: impl std::fmt::Display) -> String {
 fn is_phext(path: &Path) -> bool {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some(ext) => ext.eq_ignore_ascii_case("phext"),
+        None => false,
+    }
+}
+
+/// `.xml` files, compared without case, like `is_phext`.
+fn is_tei_xml(path: &Path) -> bool {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => ext.eq_ignore_ascii_case("xml"),
         None => false,
     }
 }
@@ -6497,6 +6856,156 @@ mod local_mode_tests {
         let (code, opened) = open_phext(port, &path, headers);
         assert_eq!(code, 200, "{opened}");
         assert!(response_body(&opened).contains("\"ok\":true"), "{opened}");
+    }
+
+    /// A three-universe chain in the library, written with libphext's
+    /// own Chain serialization — the bytes teixml-to-mutable produces.
+    fn write_chain_fixture(dir: &std::path::Path) -> (std::path::PathBuf, Vec<u8>) {
+        let chain = libphext::phext::Chain {
+            members: vec![
+                "chain index\x17original A".to_string(),
+                "universe two root".to_string(),
+                "universe three root".to_string(),
+            ],
+            closed: true,
+        };
+        let bytes = chain.serialize().into_bytes();
+        let path = dir.join("chain.phext");
+        std::fs::write(&path, &bytes).unwrap();
+        (path, bytes)
+    }
+
+    #[test]
+    fn chain_opens_reads_and_switches_universes() {
+        let (port, dir) = serve(true);
+        let (chain, chain_bytes) = write_chain_fixture(dir.path());
+        let (code, opened) = open_phext(port, &chain, "");
+        assert_eq!(code, 200, "{opened}");
+        assert!(response_body(&opened).contains("\"ok\":true"), "{opened}");
+
+        let (code, status) = http(port, "GET", "/api/status", "");
+        assert_eq!(code, 200, "{status}");
+        let body = response_body(&status);
+        assert!(body.contains("\"universe\":1"), "{body}");
+        assert!(body.contains("\"universes\":3"), "{body}");
+
+        // $1 reads through the nav payload.
+        let (code, nav) = http(port, "GET", "/api/nav", "");
+        assert_eq!(code, 200, "{nav}");
+        assert!(response_body(&nav).contains("chain index"), "{nav}");
+
+        // Read-through into $3 without switching.
+        let (code, scroll) = http(port, "GET", "/api/scroll/$3:1.1.1/1.1.1/1.1.1", "");
+        assert_eq!(code, 200, "{scroll}");
+        assert!(response_body(&scroll).contains("universe three root"), "{scroll}");
+        let (code, status) = http(port, "GET", "/api/status", "");
+        assert_eq!(code, 200, "{status}");
+        assert!(response_body(&status).contains("\"universe\":1"), "read-through must not switch");
+
+        // Goto with a $2 address switches and lands.
+        let (code, nav) = http_with_body(port, "POST", "/api/goto", "", "$2:1.1.1/1.1.1/1.1.1");
+        assert_eq!(code, 200, "{nav}");
+        let body = response_body(&nav);
+        assert!(body.contains("universe two root"), "{body}");
+        assert!(body.contains("\"universe\":2"), "{body}");
+
+        // The seed now describes $2.
+        let (code, seed) = http(port, "GET", "/api/seed", "");
+        assert_eq!(code, 200, "{seed}");
+        let body = response_body(&seed);
+        assert!(body.contains("\"universe\":2"), "{body}");
+        assert!(body.contains("\"scrolls\":1"), "{body}");
+
+        // The switcher listing reports all three universes.
+        let (code, universes) = http(port, "GET", "/api/universes", "");
+        assert_eq!(code, 200, "{universes}");
+        assert!(response_body(&universes).contains("\"n\":3"), "{universes}");
+
+        // Writes are refused, with the reason named.
+        let (code, upd) = http_with_body(
+            port, "POST", "/api/update", "",
+            "{\"coordinate\":\"1.1.1/1.1.1/1.1.1\",\"content\":\"edited\"}",
+        );
+        assert_eq!(code, 200, "{upd}");
+        assert!(response_body(&upd).contains("\"ok\":false"), "{upd}");
+        assert!(response_body(&upd).contains("read-only"), "{upd}");
+        let (code, saved) = http(port, "POST", "/api/save", "");
+        assert_eq!(code, 200, "{saved}");
+        assert!(response_body(&saved).contains("\"ok\":false"), "{saved}");
+
+        // The file on disk is byte-identical: nothing was flattened.
+        assert_eq!(std::fs::read(&chain).unwrap(), chain_bytes);
+    }
+
+    const TEI_FIXTURE: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<TEI xmlns=\"http://www.tei-c.org/ns/1.0\"><teiHeader><fileDesc><titleStmt><title>Fixture</title></titleStmt></fileDesc></teiHeader><text><body><p>Hello chain</p></body></text></TEI>";
+
+    #[test]
+    fn tei_file_opens_by_converting_to_a_chain() {
+        let (port, dir) = serve(true);
+        let xml = dir.path().join("fixture.xml");
+        std::fs::write(&xml, TEI_FIXTURE).unwrap();
+
+        // The picker lists it as a TEI item.
+        let (code, list) = http(port, "GET", "/api/phexts", "");
+        assert_eq!(code, 200, "{list}");
+        let body = response_body(&list);
+        assert!(body.contains("fixture.xml"), "{body}");
+        assert!(body.contains("\"kind\":\"tei\""), "{body}");
+
+        // Opening it converts and lands on the chain.
+        let (code, opened) = open_phext(port, &xml, "");
+        assert_eq!(code, 200, "{opened}");
+        let body = response_body(&opened);
+        assert!(body.contains("\"ok\":true"), "{body}");
+        assert!(body.contains("converted 1 TEI file(s) into fixture.phext"), "{body}");
+        assert!(dir.path().join("fixture.phext").is_file());
+
+        // Status: the chain is open, at $1 of several universes.
+        let (code, status) = http(port, "GET", "/api/status", "");
+        assert_eq!(code, 200, "{status}");
+        let body = response_body(&status);
+        assert!(body.contains("fixture.phext"), "{body}");
+        assert!(body.contains("\"universe\":1"), "{body}");
+        assert!(!body.contains("\"universes\":1"), "{body}");
+
+        // The $1 index names the source file.
+        let (code, scroll) = http(port, "GET", "/api/scroll/1.1.1/1.1.1/1.1.1", "");
+        assert_eq!(code, 200, "{scroll}");
+        assert!(response_body(&scroll).contains("fixture.xml"), "{scroll}");
+
+        // A converted universe holds the element structure.
+        let (code, scroll) = http(port, "GET", "/api/scroll/$2:1.1.1/1.1.1/1.1.1", "");
+        assert_eq!(code, 200, "{scroll}");
+        assert!(response_body(&scroll).contains("@element"), "{scroll}");
+
+        // Re-opening is idempotent: the proven chain is reused, never
+        // rewritten.
+        let bytes_before = std::fs::read(dir.path().join("fixture.phext")).unwrap();
+        let (code, opened) = open_phext(port, &xml, "");
+        assert_eq!(code, 200, "{opened}");
+        assert!(response_body(&opened).contains("already converted"), "{opened}");
+        assert_eq!(std::fs::read(dir.path().join("fixture.phext")).unwrap(), bytes_before);
+    }
+
+    #[test]
+    fn tei_malformed_file_opens_with_failure_named_in_index() {
+        let (port, dir) = serve(true);
+        let xml = dir.path().join("broken.xml");
+        std::fs::write(&xml, b"<TEI><unclosed></TEI>").unwrap();
+        let (code, opened) = open_phext(port, &xml, "");
+        assert_eq!(code, 200, "{opened}");
+        let body = response_body(&opened);
+        assert!(body.contains("\"ok\":true"), "{body}");
+        assert!(body.contains("1 failed"), "{body}");
+        // The $1 index names the failure; the original is kept.
+        let (code, scroll) = http(port, "GET", "/api/scroll/1.1.1/1.1.1/1.1.1", "");
+        assert_eq!(code, 200, "{scroll}");
+        let body = response_body(&scroll);
+        assert!(body.contains("broken.xml"), "{body}");
+        assert!(body.contains("failures:"), "{body}");
+        let (code, scroll) = http(port, "GET", "/api/scroll/1.1.1/1.1.1/1.1.2", "");
+        assert_eq!(code, 200, "{scroll}");
+        assert!(response_body(&scroll).contains("<unclosed>"), "{scroll}");
     }
 
     #[test]
@@ -8073,6 +8582,19 @@ body {
 #search-results .hit .hit-ctx,
 #phext-list .hit .hit-ctx { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #phext-list .hit[aria-current="true"] { background: #ffffff10; }
+#universe-list .hit {
+  padding: 4px 8px; cursor: pointer; border-radius: 3px; display: flex; gap: 10px;
+  transition: background var(--trans-fast);
+  text-decoration: none; color: inherit;
+}
+#universe-list .hit:hover { background: #ffffff10; }
+#universe-list .hit .hit-coord {
+  color: var(--coord); min-width: 160px; cursor: pointer;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+#universe-list .hit:hover .hit-coord { color: var(--active); }
+#universe-list .hit .hit-ctx { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#universe-list .hit[aria-current="true"] { background: #ffffff10; }
 .auth-btn { display:block; background:var(--panel); border:1px solid var(--border); color:var(--text);
   font-family:inherit; font-size:14px; padding:10px 14px; border-radius:6px; text-decoration:none; cursor:pointer; }
 .auth-btn:hover { border-color:var(--coord); }
@@ -8347,8 +8869,9 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
   <div id="more-sheet-head"><span>≡ More</span><button type="button" onclick="toggleMoreSheet()">✕ Close</button></div>
   <span class="mode lattice" id="mode-label">LATTICE</span>
   <button type="button" id="active-file" style="color:var(--dim);cursor:pointer" onclick="openPhextPicker()" title="Click to switch phext"></button>
+  <button type="button" id="universe-btn" style="display:none;color:var(--dim);cursor:pointer" onclick="openUniversePicker()" title="This file is a chain of universes — click to switch universe (keys: [ and ])"></button>
   <span class="touch-actions"><button type="button" onclick="enterEdit()" title="Edit the current scroll (key: e)">✎ Edit</button><button type="button" onclick="openSearch()" title="Search scrolls (key: /)">⌕ Search</button><button type="button" onclick="openGoto()" title="Go to a coordinate (key: g)">⌖ Goto</button></span>
-  <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  u:UG5  t:tree  /:search  g:goto  Home:BASE</span>
+  <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  u:UG5  t:tree  /:search  g:goto  [/]:universe  Home:BASE</span>
   <span class="msg" id="status-msg" role="status" aria-live="polite"></span>
   <a class="bar-link first" href="/submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
   <a class="bar-link" href="/claim" title="If your X account is in the wavefront map, claim your space on this server">Claim your space</a>
@@ -8366,11 +8889,15 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
   <div id="search-results" aria-live="polite"></div>
 </div>
 <div class="overlay" id="goto-overlay" role="dialog" aria-label="Go to coordinate">
-  <input id="goto-input" aria-label="Go to coordinate" placeholder="z.z.z/y.y.y/x.x.x" autocomplete="off" />
+  <input id="goto-input" aria-label="Go to coordinate" placeholder="z.z.z/y.y.y/x.x.x or $N:z.z.z/y.y.y/x.x.x" autocomplete="off" />
 </div>
 <div class="overlay" id="phext-overlay" role="dialog" aria-label="Switch phext" style="max-height:500px">
   <div style="color:var(--dim);font-size:11px;margin-bottom:6px">Select a phext file:</div>
   <div id="phext-list" style="max-height:400px;overflow-y:auto"></div>
+</div>
+<div class="overlay" id="universe-overlay" role="dialog" aria-label="Switch universe" style="max-height:500px">
+  <div style="color:var(--dim);font-size:11px;margin-bottom:6px">This file is a chain — select a universe:</div>
+  <div id="universe-list" style="max-height:400px;overflow-y:auto"></div>
 </div>
 <div id="auth-screen" data-open="1" style="display:flex;position:fixed;inset:0;padding:env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);z-index:100;justify-content:center;overflow:auto" role="dialog" aria-modal="true" aria-labelledby="auth-prompt">
   <div class="welcome">
@@ -8588,10 +9115,15 @@ function normalizeCoord(raw) {
   if (!raw) return null;
   let s = String(raw).trim();
   try { s = decodeURIComponent(s.replace(/\+/g, '%2B')); } catch { return null; }
-  if (/^\d{1,4}(?:\/\d{1,4}){8}$/.test(s)) return canonicalCoord(s.split('/').map(n => Number(n)));
+  // An optional `$N:` multiverse prefix rides through untouched; the
+  // server's goto parses it and switches universes.
+  let prefix = '';
+  const m = /^\$(\d+):(.*)$/.exec(s);
+  if (m) { prefix = '$' + Number(m[1]) + ':'; s = m[2]; }
+  if (/^\d{1,4}(?:\/\d{1,4}){8}$/.test(s)) return prefix + canonicalCoord(s.split('/').map(n => Number(n)));
   s = s.replace(/;/g, '/');
   if (!/^\d{1,4}(?:\.\d{1,4}){2}\/\d{1,4}(?:\.\d{1,4}){2}\/\d{1,4}(?:\.\d{1,4}){2}$/.test(s)) return null;
-  return canonicalCoord(s.split(/[./]/).map(n => Number(n)));
+  return prefix + canonicalCoord(s.split(/[./]/).map(n => Number(n)));
 }
 
 function readFragment() {
@@ -8672,12 +9204,23 @@ function render(nav, skipHash) {
   lastNav = nav;
   const p = nav.position;
   const indicator = p.has_scroll ? '●' : '○';
-  $('coord-text').textContent = `💎 ${p.coordinate} ◆ ${p.dimension} ${indicator}`;
+  const addr = (p.universes > 1 ? '$' + p.universe + ':' : '') + p.coordinate;
+  $('coord-text').textContent = `💎 ${addr} ◆ ${p.dimension} ${indicator}`;
   $('scroll-count').textContent = `[${p.total_scrolls} scrolls]`;
   $('dirty-flag').textContent = dirty ? '● unsaved' : '';
   if (p.file) $('active-file').textContent = '📂 ' + p.file.split('/').pop();
+  const ub = $('universe-btn');
+  if (ub) {
+    if (p.universes > 1) {
+      ub.style.display = '';
+      ub.textContent = '⛓ $' + p.universe + ' of ' + p.universes;
+      ub.setAttribute('aria-label', 'Switch universe, currently universe ' + p.universe + ' of ' + p.universes);
+    } else {
+      ub.style.display = 'none';
+    }
+  }
 
-  if (!skipHash && p.coordinate) publishCoord(p.coordinate);
+  if (!skipHash && p.coordinate) publishCoord(addr);
 
   renderSentron(nav);
   renderContent(nav);
@@ -8776,12 +9319,19 @@ function renderContent(nav) {
 const seedCache = { file: '', hashes: new Map() };
 const scrollCache = new Map();
 let seedFile = '';
+let seedUniverse = 1;
 
 async function loadSeed() {
   try {
     const seed = await api('GET', '/api/seed');
     if (!seed || !Array.isArray(seed.entries)) return false;
-    if (seed.file !== seedFile) { scrollCache.clear(); seedFile = seed.file; }
+    // The cache key is file+universe: coordinates repeat across a
+    // chain's universes, so a switch must not serve the previous
+    // universe's scrolls under the same coordinate.
+    const universe = seed.universe || 1;
+    if (seed.file !== seedFile || universe !== seedUniverse) {
+      scrollCache.clear(); seedFile = seed.file; seedUniverse = universe;
+    }
     seedCache.file = seed.file;
     seedCache.hashes = new Map(seed.entries.map(e => [e.coordinate, e.hash]));
     // Entries whose server hash moved are stale: drop them so the next
@@ -9105,6 +9655,10 @@ async function gotoCoord(coord) { await renderNav(api('POST', '/api/goto', coord
 // ── Edit ──
 function enterEdit() {
   if (!lastNav || !lastNav.scroll) return;
+  if (chainReadOnly()) {
+    showMsg('Chain files are read-only in the editor — multiversal writes follow the WAL append path, not the editor\u2019s rewrite save.');
+    return;
+  }
   if (lastNav.scroll.kind && lastNav.scroll.kind !== 'text') {
     showMsg('That scroll is an image — it has no text to edit.');
     return;
@@ -9251,7 +9805,8 @@ function closeOverlays() {
   $('search-overlay').className = 'overlay';
   $('goto-overlay').className = 'overlay';
   $('phext-overlay').className = 'overlay';
-  if (mode === 'search' || mode === 'goto' || mode === 'phext-pick') setMode('lattice');
+  $('universe-overlay').className = 'overlay';
+  if (mode === 'search' || mode === 'goto' || mode === 'phext-pick' || mode === 'universe-pick') setMode('lattice');
 }
 
 // ── Helpers ──
@@ -9274,6 +9829,7 @@ document.addEventListener('keydown', async (e) => {
   if (mode === 'edit') { if (e.key === 'Escape') { cancelEdit(); e.preventDefault(); } return; }
   if (mode === 'search') { if (e.key === 'Escape') { closeOverlays(); e.preventDefault(); } return; }
   if (mode === 'phext-pick') { if (e.key === 'Escape') { closeOverlays(); e.preventDefault(); } return; }
+  if (mode === 'universe-pick') { if (e.key === 'Escape') { closeOverlays(); e.preventDefault(); } return; }
   if (mode === 'goto') {
     if (e.key === 'Escape') { closeOverlays(); e.preventDefault(); }
     if (e.key === 'Enter') {
@@ -9310,6 +9866,8 @@ document.addEventListener('keydown', async (e) => {
   else if (k === 'g') { openGoto(); e.preventDefault(); }
   else if (k === 'e' || k === 'Enter') { enterEdit(); e.preventDefault(); }
   else if (k === 'u') { openUG5(); e.preventDefault(); }
+  else if (k === '[') { await stepUniverse(-1); e.preventDefault(); }
+  else if (k === ']') { await stepUniverse(1); e.preventDefault(); }
   else if (k === 't') { showPanel(activePanel === 'navtree' ? 'sentron' : 'navtree'); e.preventDefault(); }
   else if (k === 'Home') { await jumpBase(); e.preventDefault(); }
 });
@@ -9438,21 +9996,28 @@ async function openPhextPicker() {
     for (const f of files) {
       const kb = (f.bytes / 1024).toFixed(1);
       const stem = fileStem(f.name);
-      const isCurrent = lastNav && f.path === lastNav.position?.file;
-      const href = (PHEXT_NAME_RE.test(stem) && !RESERVED_PHEXT[stem]) ? '/' + stem + '/' : '#';
-      html += `<a class="hit" href="${escAttr(href)}"${isCurrent ? ' aria-current="true"' : ''} onclick="event.preventDefault();switchPhext('${escAttr(f.name)}','${escAttr(f.path)}')">
+      const kind = f.kind || 'phext';
+      const isCurrent = kind === 'phext' && lastNav && f.path === lastNav.position?.file;
+      const href = (kind === 'phext' && PHEXT_NAME_RE.test(stem) && !RESERVED_PHEXT[stem]) ? '/' + stem + '/' : '#';
+      const badge = kind === 'tei' ? 'TEI-XML · converts to a chain on open · '
+                  : kind === 'tei-dir' ? 'TEI-XML corpus · converts to a chain on open · ' : '';
+      html += `<a class="hit" href="${escAttr(href)}"${isCurrent ? ' aria-current="true"' : ''} onclick="event.preventDefault();switchPhext('${escAttr(f.name)}','${escAttr(f.path)}','${escAttr(kind)}')">
         <span class="hit-coord">${escHtml(f.name)}</span>
-        <span class="hit-ctx">${kb} KB</span></a>`;
+        <span class="hit-ctx">${badge}${kb} KB</span></a>`;
     }
     $('phext-list').innerHTML = html || '<div style="color:var(--dim);padding:8px">no phext files</div>';
     mode = 'phext-pick';
     $('phext-overlay').className = 'overlay visible';
   } catch(e) { showMsg('failed to list phexts'); }
 }
-async function switchPhext(name, path) {
+async function switchPhext(name, path, kind) {
   try {
     const stem = fileStem(name);
-    const target = (PHEXT_NAME_RE.test(stem) && !RESERVED_PHEXT[stem]) ? stem : path;
+    // TEI items open by path: the server converts them to a chain
+    // (originals in $1) and opens that. Phexts keep the name shortcut.
+    const target = (kind && kind !== 'phext')
+      ? path
+      : (PHEXT_NAME_RE.test(stem) && !RESERVED_PHEXT[stem]) ? stem : path;
     const res = await api('POST', '/api/open', target);
     if (res.ok) {
       closeOverlays();
@@ -9493,6 +10058,47 @@ async function ensurePhext(name) {
   $('active-file').textContent = '📂 ' + want + '.phext';
   $('active-file').setAttribute('aria-label', 'Switch phext, current file ' + want + '.phext');
   return switched ? 'switched' : 'same';
+}
+
+// ── Universe switcher (chain files) ──
+function chainReadOnly() {
+  return !!(lastNav && lastNav.position && lastNav.position.universes > 1);
+}
+async function openUniversePicker() {
+  try {
+    const universes = await api('GET', '/api/universes');
+    const current = lastNav?.position?.universe || 1;
+    let html = '';
+    for (const u of universes) {
+      const kb = (u.bytes / 1024).toFixed(1);
+      html += `<a class="hit" href="#"${u.n === current ? ' aria-current="true"' : ''} onclick="event.preventDefault();switchUniverse(${u.n})">
+        <span class="hit-coord">$${u.n}</span>
+        <span class="hit-ctx">${u.scrolls} scrolls · ${kb} KB</span></a>`;
+    }
+    $('universe-list').innerHTML = html || '<div style="color:var(--dim);padding:8px">no universes</div>';
+    mode = 'universe-pick';
+    $('universe-overlay').className = 'overlay visible';
+  } catch(e) { showMsg('failed to list universes'); }
+}
+async function switchUniverse(n) {
+  try {
+    const res = await api('POST', '/api/universe', String(n));
+    if (res && res.ok === false) { showMsg(res.message); return; }
+    closeOverlays();
+    treeData = null;
+    treeExpanded = {};
+    render(res, true);
+    if (activePanel === 'navtree') loadTree();
+    await loadSeed();
+    showMsg('⛓ universe $' + n);
+  } catch(e) { showMsg('failed to switch universe'); }
+}
+async function stepUniverse(delta) {
+  if (!chainReadOnly()) return;
+  const cur = lastNav.position.universe;
+  const total = lastNav.position.universes;
+  const next = Math.min(total, Math.max(1, cur + delta));
+  if (next !== cur) await switchUniverse(next);
 }
 
 async function openFromLocation(fromHistory) {
