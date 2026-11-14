@@ -102,7 +102,7 @@
   <footer>The whole level is one tiny text file — a <b>phext</b>.
   Each layer is one scroll: the map drawn as plain text, one line per row, a space where a square is empty.
   Open the file in any text editor and you can read every layer as a picture.
-  The kit zip has the level plus tiny reader/writers for Python, Rust, Node, browser JS, and C. Take the starting file here: <a href="ascii-map.phext">ascii-map.phext</a> (311 bytes).
+  The kit zip has the level plus tiny reader/writers for Python, Rust, Node, browser JS, and C. Take the starting file here: <a href="ascii-map.phext">ascii-map.phext</a> (314 bytes).
   A free example, built for a game maker who needed more room inside each square of an ASCII map.
   No sign-in, no ads, ever.</footer>
 </main>
@@ -111,7 +111,8 @@
 
 A level is a phext with one scroll per layer. Each scroll is the layer
 drawn as plain text: one line per row, one character per square, and a
-space where the square is empty. Layer 1 is scroll 1, layer 2 is
+space where the square is empty. Every row ends with a newline, so
+each layer starts on its own line. Layer 1 is scroll 1, layer 2 is
 scroll 2, and so on, so the file reads as a stack of pictures in any
 text editor.
 Pair it with the level editor at edit.phext.io/ascii-map.html.
@@ -171,7 +172,7 @@ class Level:
         table = {}
         if self.width and self.height:
             for li, grid in enumerate(self.layers):
-                page = "\n".join("".join(v or " " for v in row) for row in grid)
+                page = "".join("".join(v or " " for v in row) + "\n" for row in grid)
                 table[Coordinate(1, 1, 1, 1, 1, 1, 1, 1, li + 1)] = page
         return Phext().implode(table)
 
@@ -203,7 +204,8 @@ class Level:
 //!
 //! A level is a phext with one scroll per layer. Each scroll is the
 //! layer drawn as plain text: one line per row, one byte per square,
-//! and a space where the square is empty. Layer 1 is scroll 1, layer 2
+//! and a space where the square is empty. Every row ends with a
+//! newline, so each layer starts on its own line. Layer 1 is scroll 1, layer 2
 //! is scroll 2, and so on, so the file reads as a stack of pictures in
 //! any text editor.
 //! Pair it with the level editor at edit.phext.io/ascii-map.html.
@@ -286,13 +288,14 @@ impl Level {
         let mut table: HashMap<Coordinate, String> = HashMap::new();
         if self.width > 0 && self.height > 0 {
             for (li, grid) in self.layers.iter().enumerate() {
-                let page: Vec<String> = grid
-                    .iter()
-                    .map(|row| row.iter().map(|&v| if v == 0 { ' ' } else { v as char }).collect())
-                    .collect();
+                let mut page = String::new();
+                for row in grid {
+                    page.extend(row.iter().map(|&v| if v == 0 { ' ' } else { v as char }));
+                    page.push('\n');
+                }
                 let mut coord = Coordinate::new();
                 coord.x.scroll = li + 1;
-                table.insert(coord, page.join("\n"));
+                table.insert(coord, page);
             }
         }
         implode(table)
@@ -320,7 +323,8 @@ impl Level {
 // level.mjs — the ASCII-map level format, for Node.js.
 // A level is a phext with one scroll per layer. Each scroll is the
 // layer drawn as plain text: one line per row, one character per
-// square, and a space where the square is empty. Layer 1 is scroll 1,
+// square, and a space where the square is empty. Every row ends with
+// a newline, so each layer starts on its own line. Layer 1 is scroll 1,
 // layer 2 is scroll 2, and so on, so the file reads as a stack of
 // pictures in any text editor.
 // Pair it with the level editor at edit.phext.io/ascii-map.html.
@@ -396,7 +400,7 @@ export function serializeLevel(level) {
   const table = new Map();
   if (level.width && level.height) {
     level.layers.forEach((grid, li) => {
-      table.set(LAYERS + (li + 1), grid.map(row => row.map(v => v || " ").join("")).join("\n"));
+      table.set(LAYERS + (li + 1), grid.map(row => row.map(v => v || " ").join("") + "\n").join(""));
     });
   }
   return phext.implode(table);
@@ -414,7 +418,8 @@ export function saveLevel(level, path) {
 // level.js — the ASCII-map level format, for the browser.
 // A level is a phext with one scroll per layer. Each scroll is the
 // layer drawn as plain text: one line per row, one character per
-// square, and a space where the square is empty. Layer 1 is scroll 1,
+// square, and a space where the square is empty. Every row ends with
+// a newline, so each layer starts on its own line. Layer 1 is scroll 1,
 // layer 2 is scroll 2, and so on, so the file reads as a stack of
 // pictures in any text editor.
 // Pair it with the level editor at edit.phext.io/ascii-map.html.
@@ -491,7 +496,7 @@ export function serialize(level) {
   const table = new Map();
   if (level.width && level.height) {
     level.layers.forEach((grid, li) => {
-      table.set(LAYERS + (li + 1), grid.map(row => row.map(v => v || " ").join("")).join("\n"));
+      table.set(LAYERS + (li + 1), grid.map(row => row.map(v => v || " ").join("") + "\n").join(""));
     });
   }
   return phext.implode(table);
@@ -502,7 +507,8 @@ export function serialize(level) {
  *
  * A level is a phext with one scroll per layer. Each scroll is the
  * layer drawn as plain text: one line per row, one byte per square,
- * and a space where the square is empty. Layer 1 is scroll 1, layer 2
+ * and a space where the square is empty. Every row ends with a
+ * newline, so each layer starts on its own line. Layer 1 is scroll 1, layer 2
  * is scroll 2, and so on, so the file reads as a stack of pictures in
  * any text editor.
  * Pair it with the level editor at edit.phext.io/ascii-map.html.
@@ -616,18 +622,18 @@ static void level_set(Level *lv, int layer, int x, int y, char ch) {
 }
 
 static char *level_serialize(const Level *lv) {
-    /* one scroll per layer: height rows of width bytes, newlines between rows */
-    size_t cap = (size_t)lv->nlayers * lv->height * (lv->width + 1) + 1;
+    /* one scroll per layer: height rows of width bytes, a newline after each row */
+    size_t cap = (size_t)lv->nlayers * ((size_t)lv->height * (lv->width + 1) + 1) + 1;
     char *out = (char *)malloc(cap), *w = out;
     if (lv->width > 0 && lv->height > 0)
         for (int s = 0; s < lv->nlayers; s++) {
             if (s > 0) *w++ = 0x17;
             for (int r = 0; r < lv->height; r++) {
-                if (r > 0) *w++ = '\n';
                 for (int c = 0; c < lv->width; c++) {
                     char v = lv->cells[((size_t)s * lv->height + r) * lv->width + c];
                     *w++ = v ? v : ' ';
                 }
+                *w++ = '\n';
             }
         }
     *w = 0;
@@ -660,8 +666,9 @@ layer is a picture you can read. One scroll break (byte 0x17) sits
 between one layer and the next. To add a layer, add a scroll break
 and draw. To delete a layer, delete its picture and one scroll break.
 Space means empty, so a space cannot be a tile. Writers pad every row
-to the full width; readers also accept rows whose trailing spaces an
-editor trimmed, CRLF line endings, and a final newline.
+to the full width and end every row with a newline, so each layer
+starts on its own line. Readers also accept rows whose trailing spaces
+an editor trimmed, CRLF line endings, and a missing final newline.
 
 Canonical phext libraries (for phext itself, beyond this format):
   Rust        — libphext on crates.io · https://github.com/wbic16/libphext-rs
@@ -795,10 +802,11 @@ document.getElementById("delLayer").onclick = () => {
 // ---- phext serialization: one scroll per layer, each scroll 2D text ----
 // Layer N is the scroll at 1.1.1/1.1.1/1.1.N. Rows are lines, squares are
 // characters, and a space is an empty square. Every row is padded to the
-// full width so the level's size is written down in every layer.
+// full width so the level's size is written down in every layer, and
+// every row ends with a newline so each layer starts on its own line.
 const SCROLL_BREAK = "\x17";
 function layerText(L){
-  return L.grid.map(row => row.map(v => v === "" ? " " : v).join("")).join("\n");
+  return L.grid.map(row => row.map(v => v === "" ? " " : v).join("") + "\n").join("");
 }
 function serializePhext(){
   return layers.map(layerText).join(SCROLL_BREAK);
