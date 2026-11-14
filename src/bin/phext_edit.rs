@@ -7995,8 +7995,8 @@ with those files from a browser:</p>
   <li><a href="tts-demo.html">Coordinate TTS demo</a>: hear phext coordinates spoken aloud.</li>
   <li><a href="learn-you-phext.html">Learn You Phext</a>: an introduction to phext that is
   itself a phext, scroll by scroll.</li>
-  <li><a href="ascii-map.html">The Map With Pages Behind It</a>: a game map whose squares
-  drawn once per section (ground, things, what happened), every square still one letter — simple enough for a child.</li>
+  <li><a href="ascii-map.html">The Map With Pages Behind It</a>: a game map drawn
+  once per layer (ground, things, what happened). Each layer is one scroll of plain text you can read in any text editor — simple enough for a child.</li>
   <li><a href="singular.html">Singular</a>: an Up Goer Five variant whose word list is one
   person's Twitter archive — read, write, and read/write with only those words.</li>
   <li><a href="phext-previewer.html">Phext Previewer</a>: open a phext file from your
@@ -8220,9 +8220,10 @@ const LEARN_YOU_PHEXT_HTML: &str = include_str!("../../web/learn-you-phext.html"
 const LEARN_YOU_PHEXT: &str = include_str!("../../web/learn-you-phext.phext");
 
 // The ASCII map example page likewise lives as a file under web/ and is
-// compiled in: a free example of simple phext usage — a game map whose
-// sections (down, section, across) — one section per kind of thing, using
-// only the three dimensions it needs.
+// compiled in: a free example of simple phext usage — a game map with one
+// scroll per layer (ground, things, what happened). Each scroll is the
+// layer as ordinary 2D text: lines are rows, characters are squares, and
+// a space is an empty square. Only the scroll dimension is used.
 const ASCII_MAP_HTML: &str = include_str!("../../web/ascii-map.html");
 
 // The example's phext itself likewise lives as a file under web/ and is
