@@ -94,16 +94,528 @@
         <span class="addr" id="addr">—</span>
         <span class="stat" id="stat"></span>
         <button class="dl" id="dl">Download .phext</button>
+        <button class="dl" id="dlkit">Download the kit (.zip)</button>
       </div>
     </div>
   </div>
 
   <footer>The whole level is one tiny text file — a <b>phext</b>.
   Addresses are three numbers: down · layer · across.
-  Take the starting file here: <a href="ascii-map.phext">ascii-map.phext</a> (255 bytes).
+  The kit zip has the level plus tiny reader/writers for Python, Rust, Node, browser JS, and C. Take the starting file here: <a href="ascii-map.phext">ascii-map.phext</a> (255 bytes).
   A free example, built for a game maker who needed more room inside each square of an ASCII map.
   No sign-in, no ads, ever.</footer>
 </main>
+<script type="text/plain" id="kit-level.py">
+"""level.py — the ASCII-map level format, for Python.
+
+A level is a phext that uses three dimensions:
+    down (chapter) · layer (section) · across (scroll)
+Every square holds at most one character per layer; empty = no scroll.
+Pair it with the level editor at edit.phext.io/ascii-map.html.
+
+    from level import Level
+    level = Level.load("ascii-map.phext")
+    level.get(2, 10, 3)        # layer 2, across 10, down 3 -> "c"
+    level.set(2, 11, 3, "k")   # put a "k" next to it
+    level.save("ascii-map.phext")
+
+All phext reading and writing goes through the canonical library:
+`phext` on PyPI (https://github.com/wbic16/libphext-py), the Python
+port of libphext, the reference implementation. Install it with:
+
+    pip install phext
+"""
+
+from phext.phext import Phext
+from phext.coordinate import Coordinate
+
+
+class Level:
+    def __init__(self, width=0, height=0, layers=None):
+        self.width = width
+        self.height = height
+        self.layers = layers if layers is not None else []  # layers[l][y][x] -> "" or 1 char
+
+    # -- file in/out (canonical phext library) ---------------------------
+    @classmethod
+    def parse(cls, text):
+        table = Phext().explode(text)
+        cells = {}
+        for coord, scroll in table.items():
+            t = coord.as_tuple()
+            cells[(t[6], t[7], t[8])] = scroll[:1]
+        height = max((d for d, _, _ in cells), default=0)
+        nlayers = max((l for _, l, _ in cells), default=0)
+        width = max((a for _, _, a in cells), default=0)
+        layers = [[[""] * width for _ in range(height)] for _ in range(nlayers)]
+        for (d, l, a), ch in cells.items():
+            layers[l - 1][d - 1][a - 1] = ch
+        return cls(width, height, layers)
+
+    def serialize(self):
+        table = {}
+        for li, grid in enumerate(self.layers):
+            for yi, row in enumerate(grid):
+                for xi, v in enumerate(row):
+                    if v:
+                        table[Coordinate(1, 1, 1, 1, 1, 1, yi + 1, li + 1, xi + 1)] = v
+        table = dict(sorted(table.items(), key=lambda kv: kv[0].as_tuple()))
+        return Phext().implode(table)
+
+    @classmethod
+    def load(cls, path):
+        with open(path, encoding="utf-8") as f:
+            return cls.parse(f.read())
+
+    def save(self, path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(self.serialize())
+
+    # -- squares ----------------------------------------------------------
+    def get(self, layer, x, y):
+        """layer, x (across), y (down) are all 1-based, like phext addresses."""
+        return self.layers[layer - 1][y - 1][x - 1]
+
+    def set(self, layer, x, y, ch):
+        while len(self.layers) < layer:
+            self.add_layer()
+        self.layers[layer - 1][y - 1][x - 1] = ch[:1] if ch else ""
+
+    def add_layer(self):
+        self.layers.append([[""] * self.width for _ in range(self.height)])
+        return len(self.layers)
+</script>
+<script type="text/plain" id="kit-level.rs">
+//! level.rs — the ASCII-map level format, for Rust.
+//!
+//! A level is a phext that uses three dimensions:
+//!   down (chapter) · layer (section) · across (scroll)
+//! Every square holds at most one character per layer; empty = no scroll.
+//! Pair it with the level editor at edit.phext.io/ascii-map.html.
+//!
+//! All phext reading and writing goes through the canonical library:
+//! `libphext` on crates.io (https://github.com/wbic16/libphext-rs),
+//! the reference implementation of phext. Add it to your Cargo.toml:
+//!
+//!   [dependencies]
+//!   libphext = "0.6"
+//!
+//!   let mut level = Level::parse(&text);
+//!   level.get(2, 10, 3);        // layer 2, across 10, down 3 -> b'c'
+//!   level.set(2, 11, 3, b'k');  // put a 'k' next to it
+//!   let text = level.serialize();
+
+use libphext::phext::{explode, implode, Coordinate};
+use std::collections::HashMap;
+
+pub struct Level {
+    pub width: usize,
+    pub height: usize,
+    /// layers[layer][down][across] — 0 means empty, otherwise one byte.
+    pub layers: Vec<Vec<Vec<u8>>>,
+}
+
+impl Level {
+    pub fn parse(text: &str) -> Level {
+        let table = explode(text);
+        let mut width = 0;
+        let mut height = 0;
+        let mut nlayers = 0;
+        for coord in table.keys() {
+            width = width.max(coord.x.scroll);
+            height = height.max(coord.x.chapter);
+            nlayers = nlayers.max(coord.x.section);
+        }
+        let mut layers = vec![vec![vec![0u8; width]; height]; nlayers];
+        for (coord, scroll) in &table {
+            if let Some(&b) = scroll.as_bytes().first() {
+                layers[coord.x.section - 1][coord.x.chapter - 1][coord.x.scroll - 1] = b;
+            }
+        }
+        Level { width, height, layers }
+    }
+
+    pub fn serialize(&self) -> String {
+        let mut table: HashMap<Coordinate, String> = HashMap::new();
+        for (li, grid) in self.layers.iter().enumerate() {
+            for (yi, row) in grid.iter().enumerate() {
+                for (xi, &v) in row.iter().enumerate() {
+                    if v != 0 {
+                        let mut coord = Coordinate::new();
+                        coord.x.chapter = yi + 1;
+                        coord.x.section = li + 1;
+                        coord.x.scroll = xi + 1;
+                        table.insert(coord, (v as char).to_string());
+                    }
+                }
+            }
+        }
+        implode(table)
+    }
+
+    /// layer, x (across), y (down) are all 1-based, like phext addresses.
+    pub fn get(&self, layer: usize, x: usize, y: usize) -> u8 {
+        self.layers[layer - 1][y - 1][x - 1]
+    }
+
+    pub fn set(&mut self, layer: usize, x: usize, y: usize, ch: u8) {
+        while self.layers.len() < layer {
+            self.add_layer();
+        }
+        self.layers[layer - 1][y - 1][x - 1] = ch;
+    }
+
+    pub fn add_layer(&mut self) -> usize {
+        self.layers.push(vec![vec![0u8; self.width]; self.height]);
+        self.layers.len()
+    }
+}
+</script>
+<script type="text/plain" id="kit-level.mjs">
+// level.mjs — the ASCII-map level format, for Node.js.
+//
+// NOTE ON PHEXT ITSELF: there is no canonical phext library for
+// JavaScript. The canonical libraries are libphext for Rust
+// (crates.io: libphext, https://github.com/wbic16/libphext-rs — the
+// reference implementation) and phext for Python (PyPI: phext).
+// For general phext work, use one of those. The small reader/writer
+// below covers only this level format (three dimensions, one
+// character per square), and its output is byte-identical to the
+// canonical libraries' for level files.
+//
+// A level is a phext that uses three dimensions:
+//   down (chapter) · layer (section) · across (scroll)
+// Every square holds at most one character per layer; empty = no scroll.
+// Pair it with the level editor at edit.phext.io/ascii-map.html.
+//
+//   import { loadLevel, saveLevel, get, set } from "./level.mjs";
+//   const level = loadLevel("ascii-map.phext");
+//   get(level, 2, 10, 3);        // layer 2, across 10, down 3 -> "c"
+//   set(level, 2, 11, 3, "k");   // put a "k" next to it
+//   saveLevel(level, "ascii-map.phext");
+import { readFileSync, writeFileSync } from "node:fs";
+
+const BREAKS = { "\x19": 6, "\x18": 7, "\x17": 8 }; // chapter, section, scroll (last triple)
+
+export function parseLevel(text) {
+  const coord = [1, 1, 1, 1, 1, 1, 1, 1, 1], cells = {};
+  let buf = "", width = 0, height = 0, nlayers = 0;
+  const flush = () => {
+    if (buf === "") return;
+    const [down, layer, across] = [coord[6], coord[7], coord[8]];
+    cells[down + "," + layer + "," + across] = buf.charAt(0);
+    width = Math.max(width, across); height = Math.max(height, down); nlayers = Math.max(nlayers, layer);
+    buf = "";
+  };
+  for (const ch of text) {
+    const lvl = BREAKS[ch];
+    if (lvl !== undefined) { flush(); coord[lvl]++; for (let j = lvl + 1; j < 9; j++) coord[j] = 1; }
+    else buf += ch;
+  }
+  flush();
+  const layers = [];
+  for (let l = 0; l < nlayers; l++) {
+    const grid = [];
+    for (let y = 0; y < height; y++) {
+      const row = [];
+      for (let x = 0; x < width; x++) row.push(cells[(y + 1) + "," + (l + 1) + "," + (x + 1)] || "");
+      grid.push(row);
+    }
+    layers.push(grid);
+  }
+  return { width, height, layers };
+}
+
+export function get(level, layer, x, y) {
+  return level.layers[layer - 1][y - 1][x - 1] || "";
+}
+
+export function set(level, layer, x, y, ch) {
+  while (level.layers.length < layer) addLayer(level);
+  level.layers[layer - 1][y - 1][x - 1] = ch ? ch.charAt(0) : "";
+}
+
+export function addLayer(level) {
+  level.layers.push(Array.from({ length: level.height }, () => new Array(level.width).fill("")));
+  return level.layers.length;
+}
+
+export function serializeLevel(level) {
+  const cells = [];
+  level.layers.forEach((grid, li) => grid.forEach((row, yi) => row.forEach((v, xi) => {
+    if (v !== "") cells.push([yi + 1, li + 1, xi + 1, v]);
+  })));
+  cells.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+  let out = "", cr = 1, cs = 1, cc = 0;
+  for (const [r, s, c, v] of cells) {
+    if (r > cr) { out += "\x19".repeat(r - cr); cr = r; cs = 1; cc = 0; }
+    if (s > cs) { out += "\x18".repeat(s - cs); cs = s; cc = 0; }
+    out += "\x17".repeat(cc === 0 ? c - 1 : c - cc);
+    out += v; cc = c;
+  }
+  return out;
+}
+
+export function loadLevel(path) {
+  return parseLevel(readFileSync(path, "utf8"));
+}
+
+export function saveLevel(level, path) {
+  writeFileSync(path, serializeLevel(level), "utf8");
+}
+</script>
+<script type="text/plain" id="kit-level.js">
+// level.js — the ASCII-map level format, for the browser.
+//
+// NOTE ON PHEXT ITSELF: there is no canonical phext library for
+// JavaScript. The canonical libraries are libphext for Rust
+// (crates.io: libphext, https://github.com/wbic16/libphext-rs — the
+// reference implementation) and phext for Python (PyPI: phext).
+// For general phext work, use one of those. The small reader/writer
+// below covers only this level format (three dimensions, one
+// character per square), and its output is byte-identical to the
+// canonical libraries' for level files.
+//
+// A level is a phext that uses three dimensions:
+//   down (chapter) · layer (section) · across (scroll)
+// Every square holds at most one character per layer; empty = no scroll.
+// Pair it with the level editor at edit.phext.io/ascii-map.html.
+//
+//   const level = LevelFormat.parse(text);
+//   LevelFormat.get(level, 2, 10, 3);      // layer 2, across 10, down 3 -> "c"
+//   LevelFormat.set(level, 2, 11, 3, "k"); // put a "k" next to it
+//   const text = LevelFormat.serialize(level);
+var LevelFormat = (function () {
+  var BREAKS = { "\x19": 6, "\x18": 7, "\x17": 8 }; // chapter, section, scroll (last triple)
+
+  function parse(text) {
+    var coord = [1, 1, 1, 1, 1, 1, 1, 1, 1], cells = {}, buf = "";
+    var width = 0, height = 0, nlayers = 0;
+    function flush() {
+      if (buf === "") return;
+      var down = coord[6], layer = coord[7], across = coord[8];
+      cells[down + "," + layer + "," + across] = buf.charAt(0);
+      if (across > width) width = across;
+      if (down > height) height = down;
+      if (layer > nlayers) nlayers = layer;
+      buf = "";
+    }
+    for (var i = 0; i < text.length; i++) {
+      var ch = text.charAt(i), lvl = BREAKS[ch];
+      if (lvl !== undefined) {
+        flush();
+        coord[lvl]++;
+        for (var j = lvl + 1; j < 9; j++) coord[j] = 1;
+      } else buf += ch;
+    }
+    flush();
+    var layers = [];
+    for (var l = 0; l < nlayers; l++) {
+      var grid = [];
+      for (var y = 0; y < height; y++) {
+        var row = [];
+        for (var x = 0; x < width; x++) row.push(cells[(y + 1) + "," + (l + 1) + "," + (x + 1)] || "");
+        grid.push(row);
+      }
+      layers.push(grid);
+    }
+    return { width: width, height: height, layers: layers };
+  }
+
+  function get(level, layer, x, y) {
+    return level.layers[layer - 1][y - 1][x - 1] || "";
+  }
+
+  function set(level, layer, x, y, ch) {
+    while (level.layers.length < layer) addLayer(level);
+    level.layers[layer - 1][y - 1][x - 1] = ch ? ch.charAt(0) : "";
+  }
+
+  function addLayer(level) {
+    var grid = [];
+    for (var y = 0; y < level.height; y++) grid.push(new Array(level.width).fill(""));
+    level.layers.push(grid);
+    return level.layers.length;
+  }
+
+  function serialize(level) {
+    var cells = [];
+    level.layers.forEach(function (grid, li) {
+      grid.forEach(function (row, yi) {
+        row.forEach(function (v, xi) { if (v !== "") cells.push([yi + 1, li + 1, xi + 1, v]); });
+      });
+    });
+    cells.sort(function (a, b) { return a[0] - b[0] || a[1] - b[1] || a[2] - b[2]; });
+    var out = "", cr = 1, cs = 1, cc = 0;
+    for (var i = 0; i < cells.length; i++) {
+      var r = cells[i][0], s = cells[i][1], c = cells[i][2], v = cells[i][3];
+      if (r > cr) { out += "\x19".repeat(r - cr); cr = r; cs = 1; cc = 0; }
+      if (s > cs) { out += "\x18".repeat(s - cs); cs = s; cc = 0; }
+      out += "\x17".repeat(cc === 0 ? c - 1 : c - cc);
+      out += v; cc = c;
+    }
+    return out;
+  }
+
+  return { parse: parse, get: get, set: set, addLayer: addLayer, serialize: serialize };
+})();
+if (typeof module !== "undefined") module.exports = LevelFormat;
+</script>
+<script type="text/plain" id="kit-level.h">
+/* level.h — the ASCII-map level format, for C (single header, no deps).
+ *
+ * A level is a phext that uses three dimensions:
+ *   down (chapter) · layer (section) · across (scroll)
+ * Every square holds at most one character per layer; empty = no scroll.
+ * Pair it with the level editor at edit.phext.io/ascii-map.html.
+ *
+ * NOTE ON PHEXT ITSELF: there is no canonical phext library for C.
+ * The canonical libraries are libphext for Rust (crates.io: libphext,
+ * https://github.com/wbic16/libphext-rs — the reference implementation)
+ * and phext for Python (PyPI: phext). For general phext work, use one
+ * of those. The small reader/writer below covers only this level
+ * format: it walks the phext delimiters for the last coordinate
+ * triple (chapter/section/scroll) and reads one byte per scroll.
+ *
+ *   Level *level = level_parse(text);
+ *   level_get(level, 2, 10, 3);        // layer 2, across 10, down 3 -> 'c'
+ *   level_set(level, 2, 11, 3, 'k');   // put a 'k' next to it
+ *   char *out = level_serialize(level);
+ *   level_free(level); free(out);
+ */
+#ifndef LEVEL_H
+#define LEVEL_H
+
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct {
+    int width, height, nlayers;
+    char *cells; /* cells[((layer * height) + down) * width + across], 0 = empty; indexes 0-based */
+} Level;
+
+static int level__dim_for_break(unsigned char b) {
+    /* delimiter -> coordinate index (0..8), or -1. Hierarchy, high to low:
+       library shelf series collection volume book chapter section scroll */
+    switch (b) {
+        case 0x01: return 0; case 0x1F: return 1; case 0x1E: return 2;
+        case 0x1D: return 3; case 0x1C: return 4; case 0x1A: return 5;
+        case 0x19: return 6; case 0x18: return 7; case 0x17: return 8;
+        default: return -1;
+    }
+}
+
+static Level *level_parse(const char *text) {
+    int coord[9] = {1, 1, 1, 1, 1, 1, 1, 1, 1};
+    int width = 0, height = 0, nlayers = 0;
+    /* first pass: extents (only scrolls under 1.1.1/1.1.1 count) */
+    const unsigned char *p = (const unsigned char *)text;
+    int have = 0; /* bytes seen in current scroll */
+    for (; *p; p++) {
+        int d = level__dim_for_break(*p);
+        if (d >= 0) {
+            if (have && coord[0] == 1 && coord[1] == 1 && coord[2] == 1 &&
+                coord[3] == 1 && coord[4] == 1 && coord[5] == 1) {
+                if (coord[8] > width) width = coord[8];
+                if (coord[6] > height) height = coord[6];
+                if (coord[7] > nlayers) nlayers = coord[7];
+            }
+            have = 0;
+            coord[d]++;
+            for (int j = d + 1; j < 9; j++) coord[j] = 1;
+        } else have = 1;
+    }
+    if (have && coord[0] == 1 && coord[1] == 1 && coord[2] == 1 &&
+        coord[3] == 1 && coord[4] == 1 && coord[5] == 1) {
+        if (coord[8] > width) width = coord[8];
+        if (coord[6] > height) height = coord[6];
+        if (coord[7] > nlayers) nlayers = coord[7];
+    }
+    Level *lv = (Level *)calloc(1, sizeof(Level));
+    lv->width = width; lv->height = height; lv->nlayers = nlayers;
+    lv->cells = (char *)calloc((size_t)(width * height * (nlayers ? nlayers : 1)), 1);
+    /* second pass: first byte of each scroll lands in its square */
+    for (int i = 0; i < 9; i++) coord[i] = 1;
+    have = 0;
+    for (p = (const unsigned char *)text; *p; p++) {
+        int d = level__dim_for_break(*p);
+        if (d >= 0) { have = 0; coord[d]++; for (int j = d + 1; j < 9; j++) coord[j] = 1; }
+        else if (!have) {
+            have = 1;
+            if (coord[0] == 1 && coord[1] == 1 && coord[2] == 1 &&
+                coord[3] == 1 && coord[4] == 1 && coord[5] == 1)
+                lv->cells[((coord[7] - 1) * height + (coord[6] - 1)) * width + (coord[8] - 1)] = (char)*p;
+        }
+    }
+    return lv;
+}
+
+/* layer, x (across), y (down) are all 1-based, like phext addresses. */
+static char level_get(const Level *lv, int layer, int x, int y) {
+    if (layer < 1 || layer > lv->nlayers || x < 1 || x > lv->width || y < 1 || y > lv->height) return 0;
+    return lv->cells[((layer - 1) * lv->height + (y - 1)) * lv->width + (x - 1)];
+}
+
+static int level_add_layer(Level *lv) {
+    lv->cells = (char *)realloc(lv->cells,
+        (size_t)lv->width * lv->height * (lv->nlayers + 1));
+    memset(lv->cells + (size_t)lv->width * lv->height * lv->nlayers, 0,
+        (size_t)lv->width * lv->height);
+    return ++lv->nlayers;
+}
+
+static void level_set(Level *lv, int layer, int x, int y, char ch) {
+    while (lv->nlayers < layer) level_add_layer(lv);
+    if (x < 1 || x > lv->width || y < 1 || y > lv->height) return;
+    lv->cells[((layer - 1) * lv->height + (y - 1)) * lv->width + (x - 1)] = ch;
+}
+
+static char *level_serialize(const Level *lv) {
+    size_t cap = (size_t)lv->width * lv->height * lv->nlayers * 2 + 64;
+    char *out = (char *)malloc(cap), *w = out;
+    int cr = 1, cs = 1, cc = 0;
+    for (int r = 1; r <= lv->height; r++)
+        for (int s = 1; s <= lv->nlayers; s++)
+            for (int c = 1; c <= lv->width; c++) {
+                char v = lv->cells[((s - 1) * lv->height + (r - 1)) * lv->width + (c - 1)];
+                if (!v) continue;
+                if (r > cr) { for (int i = 0; i < r - cr; i++) *w++ = 0x19; cr = r; cs = 1; cc = 0; }
+                if (s > cs) { for (int i = 0; i < s - cs; i++) *w++ = 0x18; cs = s; cc = 0; }
+                int need = (cc == 0) ? c - 1 : c - cc;
+                for (int i = 0; i < need; i++) *w++ = 0x17;
+                *w++ = v; cc = c;
+            }
+    *w = 0;
+    return out;
+}
+
+static void level_free(Level *lv) { free(lv->cells); free(lv); }
+
+#endif /* LEVEL_H */
+</script>
+<script type="text/plain" id="kit-README.txt">
+The ASCII-map level kit
+=======================
+
+ascii-map.phext   the level itself — a phext using three dimensions:
+                  down (chapter) · layer (section) · across (scroll).
+                  Every square holds at most one character per layer.
+level.py          Python reader/writer (uses the canonical phext library)
+level.rs          Rust reader/writer (uses the canonical libphext crate)
+level.mjs         Node.js reader/writer
+level.js          browser reader/writer
+level.h           C reader/writer (single header)
+
+Edit levels in the browser: https://edit.phext.io/ascii-map.html
+
+Canonical phext libraries (for phext itself, beyond this format):
+  Rust   — libphext on crates.io · https://github.com/wbic16/libphext-rs
+           (the reference implementation)
+  Python — phext on PyPI · https://github.com/wbic16/libphext-py
+There is no canonical phext library for JavaScript or C; level.js,
+level.mjs and level.h carry small format-only reader/writers whose
+output matches the canonical libraries byte for byte on level files.
+</script>
 <script>
 // ---- the level: layers of one-letter squares -------------------------
 const W = 12, H = 8;
@@ -247,6 +759,61 @@ document.getElementById("dl").onclick = () => {
   const blob = new Blob([serializePhext()], {type:"text/plain; charset=utf-8"});
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob); a.download = "ascii-map.phext"; a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+// ---- the kit: the level plus reader/writers, in one zip ---------------
+const CRC_TABLE = (() => {
+  const t = [];
+  for (let n = 0; n < 256; n++){
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t.push(c >>> 0);
+  }
+  return t;
+})();
+function crc32(bytes){
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function makeZip(entries){ // entries: [{name, bytes}] — stored, no compression
+  const enc = new TextEncoder();
+  const parts = [], central = [];
+  let offset = 0;
+  const u16 = (v) => [v & 0xFF, (v >>> 8) & 0xFF];
+  const u32 = (v) => [v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF];
+  for (const e of entries){
+    const name = enc.encode(e.name);
+    const crc = crc32(e.bytes), size = e.bytes.length;
+    const local = new Uint8Array([].concat(
+      u32(0x04034b50), u16(20), u16(0x0800), u16(0), u16(0), u16(0),
+      u32(crc), u32(size), u32(size), u16(name.length), u16(0)));
+    parts.push(local, name, e.bytes);
+    central.push(new Uint8Array([].concat(
+      u32(0x02014b50), u16(20), u16(20), u16(0x0800), u16(0), u16(0), u16(0),
+      u32(crc), u32(size), u32(size), u16(name.length), u16(0), u16(0),
+      u16(0), u16(0), u32(0), u32(offset))), name);
+    offset += local.length + name.length + size;
+  }
+  let cdSize = 0;
+  for (const c of central) cdSize += c.length;
+  const end = new Uint8Array([].concat(
+    u32(0x06054b50), u16(0), u16(0), u16(entries.length), u16(entries.length),
+    u32(cdSize), u32(offset), u16(0)));
+  return new Blob(parts.concat(central, [end]), {type:"application/zip"});
+}
+function kitText(id){
+  return document.getElementById(id).textContent.replace(/^\n/, "").replace(/\s+$/, "") + "\n";
+}
+document.getElementById("dlkit").onclick = () => {
+  const enc = new TextEncoder();
+  const names = ["level.py", "level.rs", "level.mjs", "level.js", "level.h", "README.txt"];
+  const entries = [{name:"ascii-map.phext", bytes: enc.encode(serializePhext())}];
+  for (const n of names) entries.push({name: n, bytes: enc.encode(kitText("kit-" + n))});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(makeZip(entries));
+  a.download = "ascii-map-kit.zip"; a.click();
   URL.revokeObjectURL(a.href);
 };
 
