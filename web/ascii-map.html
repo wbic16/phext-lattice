@@ -3,192 +3,254 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>The Map in Sections · phext-edit</title>
+<title>Level Editor · phext-edit</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <style>
   :root{
     --bg:#171717; --panel:#131313; --bar:#1c1c1c; --border:#2e2e2e;
     --text:#dedede; --dim:#9a9a9a; --coord:#d4a855; --active:#e8c547;
-    --tile:#22304a; --tile-deep:#2e4470; --tile-sel:#1d4ed8; --empty:#182238;
+    --tile:#22304a; --empty:#182238; --sel:#1d4ed8;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);
        font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-       font-size:17px;line-height:1.55}
+       font-size:16px;line-height:1.45}
   #topbar{height:42px;background:var(--bar);border-bottom:1px solid var(--border);
           display:flex;align-items:center;padding:0 16px;gap:14px}
   #topbar .brand{color:var(--coord);text-decoration:none;font-weight:bold}
   #topbar .back{margin-left:auto;color:var(--coord);text-decoration:none;
           padding:4px 12px;border:1px solid var(--coord);border-radius:6px;background:#2a2312}
-  main{max-width:880px;margin:0 auto;padding:22px 18px 56px}
-  h1{color:var(--coord);font-size:27px;margin:0 0 6px}
-  h2{color:var(--coord);font-size:20px;margin:30px 0 8px}
-  .dim{color:var(--dim)}
-  .sections{display:flex;gap:20px;flex-wrap:wrap}
-  .sectionbox{background:#0b1220;border-radius:12px;padding:14px 16px}
-  .sectionbox h3{margin:0 0 4px;font-size:16px;color:var(--coord)}
-  .sectionbox .legend{font-size:13.5px;color:var(--dim);max-width:300px;margin-top:8px}
-  .map{display:grid;grid-template-columns:repeat(12,26px);gap:3px}
-  .cell{width:26px;height:26px;display:flex;align-items:center;justify-content:center;
-        background:var(--tile);color:#e8eefc;border-radius:5px;cursor:pointer;
-        font-family:ui-monospace,Menlo,Consolas,monospace;font-size:16px;
-        border:2px solid transparent;user-select:none}
+  main{max-width:900px;margin:0 auto;padding:18px 16px 48px}
+  h1{color:var(--coord);font-size:22px;margin:0 0 2px}
+  .sub{color:var(--dim);margin:0 0 14px}
+  .editor{display:flex;gap:0;background:#0b1220;border-radius:12px;overflow:hidden}
+  /* vertical layer tabs */
+  .tabs{display:flex;flex-direction:column;gap:4px;padding:10px 6px;background:#101a2e}
+  .tab{writing-mode:vertical-rl;transform:rotate(180deg);
+       background:#22304a;color:#cfe0ff;border:2px solid transparent;border-radius:8px;
+       padding:14px 7px;cursor:pointer;font-size:15px;text-align:center;user-select:none}
+  .tab:hover{background:#31497a}
+  .tab.sel{border-color:var(--active);background:var(--sel);color:#fff}
+  .tab.add{background:transparent;border:2px dashed #4a5f8a;color:var(--dim);font-weight:700}
+  .stage{flex:1;padding:14px 16px}
+  .layerbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  .layerbar input.name{background:#1e1e1e;color:var(--text);border:1px solid var(--border);
+       border-radius:7px;padding:7px 10px;font-size:16px;width:200px}
+  .layerbar .del{background:none;border:1px solid var(--border);color:var(--dim);
+       border-radius:7px;padding:6px 10px;cursor:pointer;font-size:13px}
+  .palette{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
+  .chip{min-width:44px;height:44px;padding:0 8px;display:flex;flex-direction:column;
+       align-items:center;justify-content:center;gap:0;background:#22304a;color:#e8eefc;
+       border:2px solid transparent;border-radius:8px;cursor:pointer}
+  .chip .g{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:18px;line-height:1.1}
+  .chip .l{font-size:10.5px;color:var(--dim);max-width:76px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chip.sel{border-color:var(--active)}
+  .chip.erase{background:#2a2a2a}
+  .addtile{display:flex;gap:5px;align-items:center}
+  .addtile input{background:#1e1e1e;color:var(--text);border:1px solid var(--border);
+       border-radius:7px;padding:8px;font-size:15px}
+  .addtile input.ch{width:44px;text-align:center;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .addtile input.lb{width:110px}
+  .smallbtn{background:var(--coord);color:#000;border:0;border-radius:7px;
+       padding:8px 12px;font-size:14px;font-weight:600;cursor:pointer}
+  .map{display:grid;grid-template-columns:repeat(12,44px);gap:4px}
+  .cell{width:44px;height:44px;display:flex;align-items:center;justify-content:center;
+       background:var(--tile);color:#e8eefc;border-radius:7px;cursor:pointer;
+       font-family:ui-monospace,Menlo,Consolas,monospace;font-size:21px;
+       border:2px solid transparent;user-select:none}
   .cell.empty{background:var(--empty);color:#3c4a6b}
   .cell:hover{background:#31497a}
-  .cell.sel{border-color:var(--active);background:var(--tile-sel)}
-  .panel{background:var(--panel);border:1px solid var(--border);
-         border-radius:12px;padding:16px 18px;margin-top:20px}
-  .panel h3{margin:0 0 2px;font-size:19px}
-  .addr{font-size:15px;color:var(--coord)}
-  button{background:var(--coord);color:#000;border:0;border-radius:9px;
-         padding:12px 18px;font-size:16px;font-weight:600;cursor:pointer}
-  button:disabled{background:#555;color:#999;cursor:default}
-  input.byte{width:64px;background:#1e1e1e;color:var(--text);border:1px solid var(--border);
-         border-radius:8px;padding:10px;font-size:18px;text-align:center;
-         font-family:ui-monospace,Menlo,Consolas,monospace}
-  .stat{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;color:var(--dim)}
-  .ok{color:#7bc47f;font-weight:600}
+  .cell.cursor{border-color:var(--active)}
+  .bottombar{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-top:14px}
+  .addr{font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--coord);font-size:14.5px}
+  .stat{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13.5px;color:var(--dim)}
+  button.dl{background:var(--coord);color:#000;border:0;border-radius:8px;
+       padding:10px 16px;font-size:15px;font-weight:600;cursor:pointer}
   a{color:#4dc9c9}
-  footer{margin-top:38px;color:var(--dim);font-size:14px}
+  footer{margin-top:26px;color:var(--dim);font-size:13.5px}
+  @media (max-width:620px){ .map{grid-template-columns:repeat(12,26px)} .cell{width:26px;height:26px;font-size:14px} }
 </style>
 </head>
 <body>
 <div id="topbar">
   <a class="brand" href="/">💎 phext-edit</a>
-  <span>The Map in Sections</span>
+  <span>Level Editor</span>
   <a class="back" href="/">← Back to the editor</a>
 </div>
 <main>
-  <h1>One map, drawn three times</h1>
-  <p>This is a map from a game. One map is not enough: a square can hold the
-  ground, a thing standing on it, and a story about what happened there — all
-  at once. So the map is drawn <b>three times</b>, once per <b>section</b>.
-  Each section is one kind of thing. And every square, in every section, is
-  still <b>just one letter</b>.</p>
-  <p><b>Tap any square</b> in any section to read it.</p>
+  <h1>Level editor</h1>
+  <p class="sub">One map, many layers. Every square holds one letter per layer.</p>
 
-  <div class="sections" id="sections"></div>
-
-  <div class="panel" id="panel">
-    <h3>Pick a square</h3>
-    <p class="dim">Section 1 is the ground. Section 2 is things. Section 3 is
-    what happened. The chest is in section 2, across 10, down 3.</p>
+  <div class="editor">
+    <div class="tabs" id="tabs"></div>
+    <div class="stage">
+      <div class="layerbar">
+        <input class="name" id="layerName" title="Layer name">
+        <button class="del" id="delLayer">delete layer</button>
+      </div>
+      <div class="palette" id="palette"></div>
+      <div class="map" id="map"></div>
+      <div class="bottombar">
+        <span class="addr" id="addr">—</span>
+        <span class="stat" id="stat"></span>
+        <button class="dl" id="dl">Download .phext</button>
+      </div>
+    </div>
   </div>
 
-  <h2>Three numbers find any letter</h2>
-  <p>Every letter lives at an address of three numbers:
-  <b>down · section · across</b>. The chest is down 3, section 2, across 10 —
-  address <span class="addr">3 · 2 · 10</span>, and its letter is <b>c</b>.
-  That is the whole trick. Phext can carry nine numbers; this map needs
-  three, so it uses three.</p>
-
-  <h2>Set a letter yourself</h2>
-  <p>Tap a square in any section, type <b>one</b> letter, and set it.
-  One letter is all a square ever holds — that rule is what keeps the map simple.</p>
-  <p><input class="byte" id="byteIn" maxlength="1" placeholder="a–z">
-     <button id="setBtn">Set this letter</button></p>
-  <p class="stat" id="setStat"></p>
-
-  <h2>Add a whole section</h2>
-  <p>A new kind of thing gets a new section — the map itself never changes.
-  Add section 4, <i>sounds</i>, with one dripping-water square:</p>
-  <p><button id="addSectionBtn">Add section 4 — sounds</button></p>
-  <p class="stat" id="sectionStat">letters so far: 106 · sections: 3</p>
-
-  <h2>Take the file</h2>
-  <p>The whole map — all three sections, every letter — is one tiny text file:
-  <a href="ascii-map.phext">ascii-map.phext</a> (255 bytes). Open it in any text
-  editor. It is a <b>phext</b>: plain text with addresses, nothing hidden.
-  Change a letter, and the map changes.</p>
-
-  <footer>A free example for phext-edit, built for a game maker who needed more
-  room inside each square of an ASCII map. No sign-in, no ads, ever.</footer>
+  <footer>The whole level is one tiny text file — a <b>phext</b>.
+  Addresses are three numbers: down · layer · across.
+  Take the starting file here: <a href="ascii-map.phext">ascii-map.phext</a> (255 bytes).
+  A free example, built for a game maker who needed more room inside each square of an ASCII map.
+  No sign-in, no ads, ever.</footer>
 </main>
 <script>
-// Each section is a grid of one-byte cells. "" means: no letter there.
-const TERRAIN = [
-  "############",
-  "#..........#",
-  "#..~~......#",
-  "#..~~..^...#",
-  "#......^^..#",
-  "#..T.......#",
-  "#..........#",
-  "############",
+// ---- the level: layers of one-letter squares -------------------------
+const W = 12, H = 8;
+function blank(){ return Array.from({length:H}, () => Array(W).fill("")); }
+function fromRows(rows){ return rows.map(r => r.split("")); }
+function sparse(cells){ const g = blank(); for (const [x,y,c] of cells) g[y-1][x-1] = c; return g; }
+
+let layers = [
+  { name:"Ground", grid: fromRows([
+      "############","#..........#","#..~~......#","#..~~..^...#",
+      "#......^^..#","#..T.......#","#..........#","############"]),
+    palette:[["#","wall"],[".","floor"],["~","water"],["^","hills"],["T","tree"]] },
+  { name:"Things", grid: sparse([[4,3,"b"],[8,4,"s"],[4,6,"i"],[9,6,"t"],[10,3,"c"]]),
+    palette:[["b","bottle"],["s","sentron"],["i","initials"],["t","trapdoor"],["c","chest"]] },
+  { name:"What happened", grid: sparse([[4,3,"F"],[8,4,"H"],[4,6,"R"],[9,6,"S"],[10,3,"L"]]),
+    palette:[["F","froze"],["H","hums"],["R","someone came"],["S","scratched"],["L","locked"]] },
 ];
-function blank(){ return Array.from({length:8}, () => Array(12).fill("")); }
-const ITEMS = blank(); ITEMS[2][3]="b"; ITEMS[3][7]="s"; ITEMS[5][3]="i"; ITEMS[5][8]="t"; ITEMS[2][9]="c";
-const STATE = blank(); STATE[2][3]="F"; STATE[3][7]="H"; STATE[5][3]="R"; STATE[5][8]="S"; STATE[2][9]="L";
+let cur = 0;              // current layer index
+let brush = null;         // current palette letter (null = eraser)
+let cursor = {x:10, y:3}; // last touched square
 
-const SECTIONS = [
-  {n:1, name:"Section 1 — the ground", grid:TERRAIN.map(r => r.split("")),
-   legend:"<b>#</b> wall · <b>.</b> floor · <b>~</b> water · <b>^</b> hills · <b>T</b> tree",
-   meaning:{"#":"wall",".":"floor","~":"water — deep; a cold current runs north","^":"hills — wind-scoured ridge","T":"tree — an old oak, wider than the path"}},
-  {n:2, name:"Section 2 — things here", grid:ITEMS,
-   legend:"<b>b</b> a corked bottle · <b>s</b> a sentron, dormant · <b>i</b> carved initials: A + L · <b>t</b> a trapdoor, rusted shut · <b>c</b> a chest, iron-bound",
-   meaning:{"b":"a corked bottle, label long gone","s":"a sentron, dormant","i":"carved initials: A + L","t":"a trapdoor, rusted shut","c":"a chest, iron-bound — the key is somewhere in this map"}},
-  {n:3, name:"Section 3 — what happened here", grid:STATE,
-   legend:"<b>F</b> froze solid last winter · <b>H</b> hums faintly when touched · <b>R</b> someone has been here, recently · <b>S</b> scratched — from below · <b>L</b> locked",
-   meaning:{"F":"froze solid last winter; thawed by the bell","H":"hums faintly when touched","R":"someone has been here. recently.","S":"scratched — from below","L":"locked. the key is somewhere in this map."}},
-];
-let letters = 106, selected = {s:2, x:10, y:3};
+const tabsEl = document.getElementById("tabs");
+const mapEl = document.getElementById("map");
+const palEl = document.getElementById("palette");
+const nameEl = document.getElementById("layerName");
+const addrEl = document.getElementById("addr");
+const statEl = document.getElementById("stat");
 
-const sectionsEl = document.getElementById("sections");
-const panel = document.getElementById("panel");
+function letterCount(){
+  let n = 0;
+  for (const L of layers) for (const row of L.grid) for (const c of row) if (c !== "") n++;
+  return n;
+}
+function drawTabs(){
+  tabsEl.innerHTML = "";
+  layers.forEach((L, i) => {
+    const t = document.createElement("div");
+    t.className = "tab" + (i === cur ? " sel" : "");
+    t.textContent = (i+1) + " · " + L.name;
+    t.onclick = () => { cur = i; brush = null; drawAll(); };
+    tabsEl.appendChild(t);
+  });
+  const add = document.createElement("div");
+  add.className = "tab add"; add.textContent = "+ new layer";
+  add.onclick = () => {
+    layers.push({name:"Layer " + (layers.length+1), grid: blank(), palette: []});
+    cur = layers.length - 1; brush = null; drawAll();
+    nameEl.focus(); nameEl.select();
+  };
+  tabsEl.appendChild(add);
+}
+function drawPalette(){
+  palEl.innerHTML = "";
+  const L = layers[cur];
+  const mk = (glyph, label, val) => {
+    const b = document.createElement("button");
+    b.className = "chip" + (brush === val ? " sel" : "") + (val === null ? " erase" : "");
+    b.innerHTML = '<span class="g">'+glyph+'</span><span class="l">'+label+'</span>';
+    b.onclick = () => { brush = val; drawPalette(); };
+    palEl.appendChild(b);
+  };
+  for (const [ch, lb] of L.palette) mk(ch, lb, ch);
+  mk("⌫", "empty", null);
+  const wrap = document.createElement("span"); wrap.className = "addtile";
+  wrap.innerHTML = '<input class="ch" id="newCh" maxlength="1" placeholder="a">' +
+                   '<input class="lb" id="newLb" placeholder="name it">' +
+                   '<button class="smallbtn" id="addTile">+ tile</button>';
+  palEl.appendChild(wrap);
+  wrap.querySelector("#addTile").onclick = () => {
+    const ch = wrap.querySelector("#newCh").value.trim();
+    const lb = wrap.querySelector("#newLb").value.trim() || ch;
+    if (ch.length !== 1) return;
+    if (!L.palette.some(([c]) => c === ch)) L.palette.push([ch, lb]);
+    brush = ch; drawPalette();
+  };
+}
+function drawMap(){
+  mapEl.innerHTML = "";
+  const L = layers[cur];
+  for (let y=1; y<=H; y++) for (let x=1; x<=W; x++){
+    const v = L.grid[y-1][x-1];
+    const d = document.createElement("div");
+    d.className = "cell" + (v === "" ? " empty" : "") +
+                  (cursor.x === x && cursor.y === y ? " cursor" : "");
+    d.textContent = v === "" ? "·" : v;
+    const paint = () => {
+      L.grid[y-1][x-1] = brush === null ? "" : brush;
+      cursor = {x, y}; drawMap(); drawStat();
+    };
+    d.onmousedown = paint;
+    d.onmouseenter = (e) => { if (e.buttons === 1) paint(); showAddr(x, y); };
+    d.onmouseover = () => showAddr(x, y);
+    mapEl.appendChild(d);
+  }
+}
+function tileLabel(L, ch){
+  const p = L.palette.find(([c]) => c === ch);
+  return p ? p[1] : "";
+}
+function showAddr(x, y){
+  const L = layers[cur];
+  const v = L.grid[y-1][x-1];
+  addrEl.textContent = "down " + y + " · layer " + (cur+1) + " · across " + x +
+    (v === "" ? " — empty" : " → '" + v + "'" + (tileLabel(L, v) ? " " + tileLabel(L, v) : ""));
+}
+function drawStat(){
+  statEl.textContent = "letters: " + letterCount() + " · layers: " + layers.length;
+}
+function drawAll(){
+  nameEl.value = layers[cur].name;
+  drawTabs(); drawPalette(); drawMap(); drawStat(); showAddr(cursor.x, cursor.y);
+}
+nameEl.oninput = () => { layers[cur].name = nameEl.value; drawTabs(); };
+document.getElementById("delLayer").onclick = () => {
+  if (layers.length <= 1) return;
+  layers.splice(cur, 1);
+  cur = Math.max(0, cur - 1); brush = null; drawAll();
+};
 
-function draw(){
-  sectionsEl.innerHTML = "";
-  for (const sec of SECTIONS){
-    const box = document.createElement("div"); box.className = "sectionbox";
-    let html = "<h3>"+sec.name+"</h3><div class='map'>";
-    for (let y=1; y<=8; y++) for (let x=1; x<=12; x++){
-      const v = sec.grid[y-1][x-1];
-      const sel = selected.s===sec.n && selected.x===x && selected.y===y;
-      html += '<div class="cell'+(v===""?" empty":"")+(sel?" sel":"")+'" data-s="'+sec.n+'" data-x="'+x+'" data-y="'+y+'">'+(v===""?"·":v)+"</div>";
+// ---- phext serialization (down = chapter, layer = section, across = scroll)
+const SCROLL_BREAK = "\x17", SECTION_BREAK = "\x18", CHAPTER_BREAK = "\x19";
+function serializePhext(){
+  const cells = []; // [row, layer, col, ch]
+  layers.forEach((L, li) => {
+    for (let y=1; y<=H; y++) for (let x=1; x<=W; x++){
+      const v = L.grid[y-1][x-1];
+      if (v !== "") cells.push([y, li+1, x, v]);
     }
-    html += "</div><div class='legend'>"+sec.legend+"</div>";
-    box.innerHTML = html;
-    sectionsEl.appendChild(box);
+  });
+  cells.sort((a,b) => a[0]-b[0] || a[1]-b[1] || a[2]-b[2]);
+  let out = "", cr = 1, cs = 1, cc = 0; // cc = column of last written scroll (0 = none yet here)
+  for (const [r, s, c, v] of cells){
+    if (r > cr){ out += CHAPTER_BREAK.repeat(r - cr); cr = r; cs = 1; cc = 0; }
+    if (s > cs){ out += SECTION_BREAK.repeat(s - cs); cs = s; cc = 0; }
+    out += SCROLL_BREAK.repeat(cc === 0 ? c - 1 : c - cc);
+    out += v; cc = c;
   }
-  for (const el of sectionsEl.querySelectorAll(".cell")){
-    el.onclick = () => { selected = {s:+el.dataset.s, x:+el.dataset.x, y:+el.dataset.y}; draw(); inspect(); };
-  }
+  return out;
 }
-function inspect(){
-  const sec = SECTIONS.find(s => s.n === selected.s);
-  const v = sec.grid[selected.y-1][selected.x-1];
-  let html = "<h3>Down "+selected.y+", section "+selected.s+", across "+selected.x+"</h3>";
-  html += '<div class="addr">address: '+selected.y+" · "+selected.s+" · "+selected.x+"</div>";
-  html += "<p>" + (v === "" ? "No letter here. This square has nothing in this section — most squares don't, and that's fine."
-                            : "Letter: <b>"+v+"</b> — "+(sec.meaning[v] || "a letter you set")) + "</p>";
-  panel.innerHTML = html;
-}
-document.getElementById("setBtn").onclick = function(){
-  const v = document.getElementById("byteIn").value.trim();
-  const stat = document.getElementById("setStat");
-  if (v.length !== 1){ stat.textContent = "One letter only — that's the rule."; return; }
-  const sec = SECTIONS.find(s => s.n === selected.s);
-  const old = sec.grid[selected.y-1][selected.x-1];
-  sec.grid[selected.y-1][selected.x-1] = v;
-  if (old === "") { letters += 1; }
-  stat.innerHTML = "Set. Square (down "+selected.y+", section "+selected.s+", across "+selected.x+") now holds <b>"+v+"</b>. Letters so far: "+letters+".";
-  document.getElementById("byteIn").value = "";
-  draw(); inspect();
+document.getElementById("dl").onclick = () => {
+  const blob = new Blob([serializePhext()], {type:"text/plain; charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "ascii-map.phext"; a.click();
+  URL.revokeObjectURL(a.href);
 };
-document.getElementById("addSectionBtn").onclick = function(){
-  if (SECTIONS.length > 3) return;
-  const g = blank(); g[4][4] = "d";
-  SECTIONS.push({n:4, name:"Section 4 — sounds", grid:g,
-    legend:"<b>d</b> dripping water, far off",
-    meaning:{"d":"dripping water, far off"}});
-  letters += 1;
-  this.disabled = true; this.textContent = "Section 4 added";
-  document.getElementById("sectionStat").innerHTML =
-    "letters so far: 106 → <b>107</b> · sections: 3 → <b>4</b> · sections 1–3: " +
-    '<span class="ok">untouched</span>. The ground did not move; a new kind of thing simply got its own drawing.';
-  selected = {s:4, x:5, y:5}; draw(); inspect();
-};
-draw(); inspect();
+
+drawAll();
 </script>
 </body>
 </html>
