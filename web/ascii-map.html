@@ -424,65 +424,6 @@ export function serialize(level) {
   return phext.implode(table);
 }
 </script>
-//
-//   import { parse, get, set, serialize } from "./level.js";
-//   const level = parse(text);
-//   get(level, 2, 10, 3);        // layer 2, across 10, down 3 -> "c"
-//   set(level, 2, 11, 3, "k");   // put a "k" next to it
-//   const out = serialize(level);
-import { Phext } from "libphext";
-
-const phext = new Phext();
-
-function addr(down, layer, across) {
-  return "1.1.1/1.1.1/" + down + "." + layer + "." + across;
-}
-
-export function parse(text) {
-  const table = phext.explode(text); // Map<coordinate string, scroll>
-  const cells = {};
-  let width = 0, height = 0, nlayers = 0;
-  for (const [coord, scroll] of table) {
-    const t = coord.split("/").map(g => g.split(".").map(Number));
-    const [down, layer, across] = [t[2][0], t[2][1], t[2][2]];
-    cells[down + "," + layer + "," + across] = scroll.charAt(0);
-    width = Math.max(width, across); height = Math.max(height, down); nlayers = Math.max(nlayers, layer);
-  }
-  const layers = [];
-  for (let l = 0; l < nlayers; l++) {
-    const grid = [];
-    for (let y = 0; y < height; y++) {
-      const row = [];
-      for (let x = 0; x < width; x++) row.push(cells[(y + 1) + "," + (l + 1) + "," + (x + 1)] || "");
-      grid.push(row);
-    }
-    layers.push(grid);
-  }
-  return { width, height, layers };
-}
-
-export function get(level, layer, x, y) {
-  return level.layers[layer - 1][y - 1][x - 1] || "";
-}
-
-export function set(level, layer, x, y, ch) {
-  while (level.layers.length < layer) addLayer(level);
-  level.layers[layer - 1][y - 1][x - 1] = ch ? ch.charAt(0) : "";
-}
-
-export function addLayer(level) {
-  level.layers.push(Array.from({ length: level.height }, () => new Array(level.width).fill("")));
-  return level.layers.length;
-}
-
-export function serialize(level) {
-  const table = new Map();
-  level.layers.forEach((grid, li) => grid.forEach((row, yi) => row.forEach((v, xi) => {
-    if (v !== "") table.set(addr(yi + 1, li + 1, xi + 1), v);
-  })));
-  return phext.implode(table);
-}
-</script>
 <script type="text/plain" id="kit-level.h">
 /* level.h — the ASCII-map level format, for C (single header, no deps).
  *
