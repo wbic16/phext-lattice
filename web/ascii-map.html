@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Map in Sections · phext-edit</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<style>
+  :root{
+    --bg:#171717; --panel:#131313; --bar:#1c1c1c; --border:#2e2e2e;
+    --text:#dedede; --dim:#9a9a9a; --coord:#d4a855; --active:#e8c547;
+    --tile:#22304a; --tile-deep:#2e4470; --tile-sel:#1d4ed8; --empty:#182238;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       font-size:17px;line-height:1.55}
+  #topbar{height:42px;background:var(--bar);border-bottom:1px solid var(--border);
+          display:flex;align-items:center;padding:0 16px;gap:14px}
+  #topbar .brand{color:var(--coord);text-decoration:none;font-weight:bold}
+  #topbar .back{margin-left:auto;color:var(--coord);text-decoration:none;
+          padding:4px 12px;border:1px solid var(--coord);border-radius:6px;background:#2a2312}
+  main{max-width:880px;margin:0 auto;padding:22px 18px 56px}
+  h1{color:var(--coord);font-size:27px;margin:0 0 6px}
+  h2{color:var(--coord);font-size:20px;margin:30px 0 8px}
+  .dim{color:var(--dim)}
+  .sections{display:flex;gap:20px;flex-wrap:wrap}
+  .sectionbox{background:#0b1220;border-radius:12px;padding:14px 16px}
+  .sectionbox h3{margin:0 0 4px;font-size:16px;color:var(--coord)}
+  .sectionbox .legend{font-size:13.5px;color:var(--dim);max-width:300px;margin-top:8px}
+  .map{display:grid;grid-template-columns:repeat(12,26px);gap:3px}
+  .cell{width:26px;height:26px;display:flex;align-items:center;justify-content:center;
+        background:var(--tile);color:#e8eefc;border-radius:5px;cursor:pointer;
+        font-family:ui-monospace,Menlo,Consolas,monospace;font-size:16px;
+        border:2px solid transparent;user-select:none}
+  .cell.empty{background:var(--empty);color:#3c4a6b}
+  .cell:hover{background:#31497a}
+  .cell.sel{border-color:var(--active);background:var(--tile-sel)}
+  .panel{background:var(--panel);border:1px solid var(--border);
+         border-radius:12px;padding:16px 18px;margin-top:20px}
+  .panel h3{margin:0 0 2px;font-size:19px}
+  .addr{font-size:15px;color:var(--coord)}
+  button{background:var(--coord);color:#000;border:0;border-radius:9px;
+         padding:12px 18px;font-size:16px;font-weight:600;cursor:pointer}
+  button:disabled{background:#555;color:#999;cursor:default}
+  input.byte{width:64px;background:#1e1e1e;color:var(--text);border:1px solid var(--border);
+         border-radius:8px;padding:10px;font-size:18px;text-align:center;
+         font-family:ui-monospace,Menlo,Consolas,monospace}
+  .stat{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;color:var(--dim)}
+  .ok{color:#7bc47f;font-weight:600}
+  a{color:#4dc9c9}
+  footer{margin-top:38px;color:var(--dim);font-size:14px}
+</style>
+</head>
+<body>
+<div id="topbar">
+  <a class="brand" href="/">💎 phext-edit</a>
+  <span>The Map in Sections</span>
+  <a class="back" href="/">← Back to the editor</a>
+</div>
+<main>
+  <h1>One map, drawn three times</h1>
+  <p>This is a map from a game. One map is not enough: a square can hold the
+  ground, a thing standing on it, and a story about what happened there — all
+  at once. So the map is drawn <b>three times</b>, once per <b>section</b>.
+  Each section is one kind of thing. And every square, in every section, is
+  still <b>just one letter</b>.</p>
+  <p><b>Tap any square</b> in any section to read it.</p>
+
+  <div class="sections" id="sections"></div>
+
+  <div class="panel" id="panel">
+    <h3>Pick a square</h3>
+    <p class="dim">Section 1 is the ground. Section 2 is things. Section 3 is
+    what happened. The chest is in section 2, across 10, down 3.</p>
+  </div>
+
+  <h2>Three numbers find any letter</h2>
+  <p>Every letter lives at an address of three numbers:
+  <b>down · section · across</b>. The chest is down 3, section 2, across 10 —
+  address <span class="addr">3 · 2 · 10</span>, and its letter is <b>c</b>.
+  That is the whole trick. Phext can carry nine numbers; this map needs
+  three, so it uses three.</p>
+
+  <h2>Set a letter yourself</h2>
+  <p>Tap a square in any section, type <b>one</b> letter, and set it.
+  One letter is all a square ever holds — that rule is what keeps the map simple.</p>
+  <p><input class="byte" id="byteIn" maxlength="1" placeholder="a–z">
+     <button id="setBtn">Set this letter</button></p>
+  <p class="stat" id="setStat"></p>
+
+  <h2>Add a whole section</h2>
+  <p>A new kind of thing gets a new section — the map itself never changes.
+  Add section 4, <i>sounds</i>, with one dripping-water square:</p>
+  <p><button id="addSectionBtn">Add section 4 — sounds</button></p>
+  <p class="stat" id="sectionStat">letters so far: 106 · sections: 3</p>
+
+  <h2>Take the file</h2>
+  <p>The whole map — all three sections, every letter — is one tiny text file:
+  <a href="ascii-map.phext">ascii-map.phext</a> (255 bytes). Open it in any text
+  editor. It is a <b>phext</b>: plain text with addresses, nothing hidden.
+  Change a letter, and the map changes.</p>
+
+  <footer>A free example for phext-edit, built for a game maker who needed more
+  room inside each square of an ASCII map. No sign-in, no ads, ever.</footer>
+</main>
+<script>
+// Each section is a grid of one-byte cells. "" means: no letter there.
+const TERRAIN = [
+  "############",
+  "#..........#",
+  "#..~~......#",
+  "#..~~..^...#",
+  "#......^^..#",
+  "#..T.......#",
+  "#..........#",
+  "############",
+];
+function blank(){ return Array.from({length:8}, () => Array(12).fill("")); }
+const ITEMS = blank(); ITEMS[2][3]="b"; ITEMS[3][7]="s"; ITEMS[5][3]="i"; ITEMS[5][8]="t"; ITEMS[2][9]="c";
+const STATE = blank(); STATE[2][3]="F"; STATE[3][7]="H"; STATE[5][3]="R"; STATE[5][8]="S"; STATE[2][9]="L";
+
+const SECTIONS = [
+  {n:1, name:"Section 1 — the ground", grid:TERRAIN.map(r => r.split("")),
+   legend:"<b>#</b> wall · <b>.</b> floor · <b>~</b> water · <b>^</b> hills · <b>T</b> tree",
+   meaning:{"#":"wall",".":"floor","~":"water — deep; a cold current runs north","^":"hills — wind-scoured ridge","T":"tree — an old oak, wider than the path"}},
+  {n:2, name:"Section 2 — things here", grid:ITEMS,
+   legend:"<b>b</b> a corked bottle · <b>s</b> a sentron, dormant · <b>i</b> carved initials: A + L · <b>t</b> a trapdoor, rusted shut · <b>c</b> a chest, iron-bound",
+   meaning:{"b":"a corked bottle, label long gone","s":"a sentron, dormant","i":"carved initials: A + L","t":"a trapdoor, rusted shut","c":"a chest, iron-bound — the key is somewhere in this map"}},
+  {n:3, name:"Section 3 — what happened here", grid:STATE,
+   legend:"<b>F</b> froze solid last winter · <b>H</b> hums faintly when touched · <b>R</b> someone has been here, recently · <b>S</b> scratched — from below · <b>L</b> locked",
+   meaning:{"F":"froze solid last winter; thawed by the bell","H":"hums faintly when touched","R":"someone has been here. recently.","S":"scratched — from below","L":"locked. the key is somewhere in this map."}},
+];
+let letters = 106, selected = {s:2, x:10, y:3};
+
+const sectionsEl = document.getElementById("sections");
+const panel = document.getElementById("panel");
+
+function draw(){
+  sectionsEl.innerHTML = "";
+  for (const sec of SECTIONS){
+    const box = document.createElement("div"); box.className = "sectionbox";
+    let html = "<h3>"+sec.name+"</h3><div class='map'>";
+    for (let y=1; y<=8; y++) for (let x=1; x<=12; x++){
+      const v = sec.grid[y-1][x-1];
+      const sel = selected.s===sec.n && selected.x===x && selected.y===y;
+      html += '<div class="cell'+(v===""?" empty":"")+(sel?" sel":"")+'" data-s="'+sec.n+'" data-x="'+x+'" data-y="'+y+'">'+(v===""?"·":v)+"</div>";
+    }
+    html += "</div><div class='legend'>"+sec.legend+"</div>";
+    box.innerHTML = html;
+    sectionsEl.appendChild(box);
+  }
+  for (const el of sectionsEl.querySelectorAll(".cell")){
+    el.onclick = () => { selected = {s:+el.dataset.s, x:+el.dataset.x, y:+el.dataset.y}; draw(); inspect(); };
+  }
+}
+function inspect(){
+  const sec = SECTIONS.find(s => s.n === selected.s);
+  const v = sec.grid[selected.y-1][selected.x-1];
+  let html = "<h3>Down "+selected.y+", section "+selected.s+", across "+selected.x+"</h3>";
+  html += '<div class="addr">address: '+selected.y+" · "+selected.s+" · "+selected.x+"</div>";
+  html += "<p>" + (v === "" ? "No letter here. This square has nothing in this section — most squares don't, and that's fine."
+                            : "Letter: <b>"+v+"</b> — "+(sec.meaning[v] || "a letter you set")) + "</p>";
+  panel.innerHTML = html;
+}
+document.getElementById("setBtn").onclick = function(){
+  const v = document.getElementById("byteIn").value.trim();
+  const stat = document.getElementById("setStat");
+  if (v.length !== 1){ stat.textContent = "One letter only — that's the rule."; return; }
+  const sec = SECTIONS.find(s => s.n === selected.s);
+  const old = sec.grid[selected.y-1][selected.x-1];
+  sec.grid[selected.y-1][selected.x-1] = v;
+  if (old === "") { letters += 1; }
+  stat.innerHTML = "Set. Square (down "+selected.y+", section "+selected.s+", across "+selected.x+") now holds <b>"+v+"</b>. Letters so far: "+letters+".";
+  document.getElementById("byteIn").value = "";
+  draw(); inspect();
+};
+document.getElementById("addSectionBtn").onclick = function(){
+  if (SECTIONS.length > 3) return;
+  const g = blank(); g[4][4] = "d";
+  SECTIONS.push({n:4, name:"Section 4 — sounds", grid:g,
+    legend:"<b>d</b> dripping water, far off",
+    meaning:{"d":"dripping water, far off"}});
+  letters += 1;
+  this.disabled = true; this.textContent = "Section 4 added";
+  document.getElementById("sectionStat").innerHTML =
+    "letters so far: 106 → <b>107</b> · sections: 3 → <b>4</b> · sections 1–3: " +
+    '<span class="ok">untouched</span>. The ground did not move; a new kind of thing simply got its own drawing.';
+  selected = {s:4, x:5, y:5}; draw(); inspect();
+};
+draw(); inspect();
+</script>
+</body>
+</html>
