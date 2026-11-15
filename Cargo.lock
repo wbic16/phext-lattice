@@ -575,8 +575,8 @@ dependencies = [
 
 [[package]]
 name = "holo-phext"
-version = "0.2.1"
-source = "git+https://github.com/wbic16/holo-phext?rev=13e10b19a126f416dd2af23efd5f6d66862fb1d7#13e10b19a126f416dd2af23efd5f6d66862fb1d7"
+version = "0.2.2"
+source = "git+https://github.com/wbic16/holo-phext?rev=8a1afca7d3471da6aeeec29441322ee288a6b447#8a1afca7d3471da6aeeec29441322ee288a6b447"
 dependencies = [
  "libphext 0.6.2",
  "memmap2",

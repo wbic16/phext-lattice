@@ -20,7 +20,7 @@ tui = ["dep:ratatui", "dep:crossterm"]
 # and both crates must agree on ONE libphext so Coordinate is one type.
 libphext = { git = "https://github.com/wbic16/libphext-rs", rev = "af3867c", features = ["binary"] }
 # HoloPhext: the layer2 engine phext-lattice is being re-implemented on.
-holo-phext = { git = "https://github.com/wbic16/holo-phext", rev = "13e10b19a126f416dd2af23efd5f6d66862fb1d7" }
+holo-phext = { git = "https://github.com/wbic16/holo-phext", rev = "8a1afca7d3471da6aeeec29441322ee288a6b447" }
 # TEI-XML → phext chain conversion for the web editor's direct TEI load
 # (phext-edit only; the converter's own deps come along for its library).
 teixml-to-mutable = { version = "0.3.0", optional = true }
