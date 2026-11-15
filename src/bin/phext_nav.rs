@@ -184,7 +184,7 @@ fn main() -> io::Result<()> {
         eprintln!("Usage: phext-nav <file.phext>");
         eprintln!();
         eprintln!("Keys:");
-        eprintln!("  1-9       Select dimension (Scroll..Library)");
+        eprintln!("  1-9       Select dimension (key 1 = Scroll .. key 9 = Library)");
         eprintln!("  h/l       Move backward/forward in dimension");
         eprintln!("  j/k       Next/prev populated coordinate");
         eprintln!("  Enter     View scroll content");
@@ -672,7 +672,11 @@ fn render_dimension_map(f: &mut ratatui::Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
 
     // ── Scroll (the neuron itself, dimension 9) ──
-    let scroll_density = &app.dimension_densities[8]; // dim 9 = index 8
+    // dimension_densities is built in Dimension-enum order (index 0 =
+    // Scroll .. index 8 = Library), so Scroll's density is index 0 — the
+    // row's "9" label is Scroll's canonical address position, not an
+    // index into this vec. (Was [8]: the row displayed Library's density.)
+    let scroll_density = &app.dimension_densities[0];
     let spark = scroll_density.sparkline(10);
     let scroll_marker = if dim == Dimension::Scroll { "▸" } else { " " };
     let scroll_style = if dim == Dimension::Scroll {
