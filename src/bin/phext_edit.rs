@@ -247,6 +247,9 @@ struct AppState {
     /// Hosted phexts opened for MCP tool calls, cached across calls —
     /// see `McpLatticeCacheEntry`. Most-recently-used is last.
     mcp_lattice_cache: Vec<McpLatticeCacheEntry>,
+    /// Serialized /api/heatmap responses, keyed by file path + query —
+    /// see `heat_map_json`. Bounded; cleared when full.
+    heat_cache: std::collections::HashMap<String, (u64, std::time::SystemTime, String)>,
 }
 
 impl AppState {
@@ -266,7 +269,7 @@ impl AppState {
             .map(|dir| dir.join("mcp-oauth.json"))
             .unwrap_or_else(|| PathBuf::from("mcp-oauth.json"));
         let mcp_oauth = Arc::new(McpOAuthStore::new(mcp_oauth_path));
-        AppState { lattice, nav, overview, default_file: file_path.clone(), file_path, dirty: false, phext_dir: None, example_wiki: None, home_file: None, home_coord: None, mcp_oauth, mcp_lattice_cache: Vec::new() }
+        AppState { lattice, nav, overview, default_file: file_path.clone(), file_path, dirty: false, phext_dir: None, example_wiki: None, home_file: None, home_coord: None, mcp_oauth, mcp_lattice_cache: Vec::new(), heat_cache: std::collections::HashMap::new() }
     }
 
     fn rebuild_overview(&mut self) {
@@ -276,6 +279,30 @@ impl AppState {
 
     fn nav_json(&self) -> ApiNav {
         nav_view(&self.lattice, &self.nav, self.overview.total_scrolls, &self.file_path, "/api/media")
+    }
+
+    /// The /api/heatmap body for one hosted phext, cached per
+    /// (path, query) and invalidated by the file's length + mtime:
+    /// building a phext's sky is a full parse, and the page asks again
+    /// on every search. Bounded — the cache clears rather than grows.
+    fn heat_map_json(&mut self, path: &std::path::Path, query: &str) -> Result<String, String> {
+        let meta = std::fs::metadata(path)
+            .map_err(|e| format!("cannot stat {}: {e}", path.display()))?;
+        let key = format!("{}|{query}", path.display());
+        if let Some((len, mtime, body)) = self.heat_cache.get(&key) {
+            let fresh = *len == meta.len()
+                && meta.modified().map(|m| m == *mtime).unwrap_or(false);
+            if fresh {
+                return Ok(body.clone());
+            }
+        }
+        let body = heat_map_body(path, meta.len(), query)?;
+        if self.heat_cache.len() >= 8 {
+            self.heat_cache.clear();
+        }
+        let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        self.heat_cache.insert(key, (meta.len(), mtime, body.clone()));
+        Ok(body)
     }
 
     fn list_phexts(&self) -> Vec<PhextFile> {
@@ -1025,6 +1052,137 @@ fn demo_bytes() -> Vec<u8> {
     output
 }
 
+/// The scroll cap for one heat-map response. Past it, the largest scrolls
+/// (by text size, or by match count while searching) stay nodes and the
+/// rest are reported as `aggregated_scrolls` — the client folds them into
+/// the ambient glow and says so. wiki.phext (49 scrolls) and
+/// choose-your-own-adventure.phext (thousands) never reach it; an
+/// ultra.phext-class file (~321k scrolls) does, by design: 20,000 nodes
+/// keep the response near a megabyte and the canvas at frame rate.
+const HEAT_NODE_CAP: usize = 20_000;
+
+/// One scroll's heat-map record: its address, the size of its text, the
+/// shape of its page (lines × widest line — the scroll's own two
+/// dimensions), a tone derived from the full text, and — while searching —
+/// how many times the query occurs in it.
+#[derive(Serialize)]
+struct ApiHeatScroll {
+    /// [library, shelf, series, collection, volume, book, chapter, section, scroll]
+    coord: [usize; 9],
+    coordinate: String,
+    bytes: usize,
+    chars: usize,
+    lines: usize,
+    width: usize,
+    /// xxh3 of the scroll's full text, folded into [0, 1). The client maps
+    /// it onto the gold–white–blue line. Same text, same colour, every load.
+    tone: f64,
+    matches: usize,
+}
+
+/// The /api/heatmap response: one hosted phext's sky. With no query this
+/// is the text-density view (`matching_scrolls` is then the total);
+/// with a query the client rebuilds the view around the matches.
+#[derive(Serialize)]
+struct ApiHeatMap {
+    phext: String,
+    file_bytes: u64,
+    query: String,
+    total_scrolls: usize,
+    returned_scrolls: usize,
+    aggregated_scrolls: usize,
+    matching_scrolls: usize,
+    total_matches: usize,
+    /// Over every scroll in the phext, capped nodes or not.
+    max_bytes: usize,
+    min_bytes: usize,
+    max_matches: usize,
+    /// Address order, always — the client's fabric and sparklines read
+    /// neighbourhood from sequence.
+    scrolls: Vec<ApiHeatScroll>,
+}
+
+/// Per-scroll statistics for the heat map, parsed with libphext's
+/// reference parser (`phext::explode`) — never a hand-rolled one.
+/// `query` empty means the text-density view; otherwise each scroll also
+/// carries its case-insensitive occurrence count, the same matching the
+/// editor's own search uses.
+fn heat_map_body(path: &std::path::Path, file_bytes: u64, query: &str) -> Result<String, String> {
+    let raw = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let text = String::from_utf8_lossy(&raw);
+    let map = libphext::phext::explode(&text);
+    let query: String = query.trim().chars().take(80).collect();
+    let needle = query.to_lowercase();
+    let mut scrolls: Vec<ApiHeatScroll> = Vec::with_capacity(map.len());
+    let mut total_matches = 0usize;
+    let mut matching_scrolls = 0usize;
+    let mut max_matches = 0usize;
+    for (coord, body) in &map {
+        let matches = if needle.is_empty() {
+            0
+        } else {
+            body.to_lowercase().matches(&needle).count()
+        };
+        if matches > 0 {
+            matching_scrolls += 1;
+            total_matches += matches;
+            max_matches = max_matches.max(matches);
+        }
+        let (mut lines, mut width) = (0usize, 0usize);
+        if !body.is_empty() {
+            for line in body.split('\n') {
+                lines += 1;
+                width = width.max(line.chars().count());
+            }
+        }
+        scrolls.push(ApiHeatScroll {
+            coord: [
+                coord.z.library, coord.z.shelf, coord.z.series,
+                coord.y.collection, coord.y.volume, coord.y.book,
+                coord.x.chapter, coord.x.section, coord.x.scroll,
+            ],
+            coordinate: format!("{coord}"),
+            bytes: body.len(),
+            chars: body.chars().count(),
+            lines,
+            width,
+            tone: (xxhash_rust::xxh3::xxh3_64(body.as_bytes()) % 10_000) as f64 / 10_000.0,
+            matches,
+        });
+    }
+    scrolls.sort_by_key(|s| s.coord);
+    let total_scrolls = scrolls.len();
+    let max_bytes = scrolls.iter().map(|s| s.bytes).max().unwrap_or(0);
+    let min_bytes = scrolls.iter().map(|s| s.bytes).min().unwrap_or(0);
+    let aggregated_scrolls = total_scrolls.saturating_sub(HEAT_NODE_CAP);
+    if aggregated_scrolls > 0 {
+        // Keep the cap largest — by matches while searching, else by
+        // bytes — then restore address order for the client.
+        if needle.is_empty() {
+            scrolls.sort_by_key(|s| std::cmp::Reverse(s.bytes));
+        } else {
+            scrolls.sort_by_key(|s| std::cmp::Reverse(s.matches));
+        }
+        scrolls.truncate(HEAT_NODE_CAP);
+        scrolls.sort_by_key(|s| s.coord);
+    }
+    let out = ApiHeatMap {
+        phext: path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        file_bytes,
+        query,
+        total_scrolls,
+        returned_scrolls: scrolls.len(),
+        aggregated_scrolls,
+        matching_scrolls: if needle.is_empty() { total_scrolls } else { matching_scrolls },
+        total_matches,
+        max_bytes,
+        min_bytes,
+        max_matches,
+        scrolls,
+    };
+    serde_json::to_string(&out).map_err(|e| format!("heatmap encode: {e}"))
+}
+
 fn serve_demo(
     stream: &mut std::net::TcpStream,
     method: &str,
@@ -1462,6 +1620,7 @@ fn public_document(path: &str) -> Option<PublicDocument> {
         "/singular.html" => ("text/html; charset=utf-8", SINGULAR_HTML),
         "/phext-previewer.html" => ("text/html; charset=utf-8", PREVIEWER_HTML),
         "/zeros" => ("text/html; charset=utf-8", ZERO_INDEX_HTML),
+        "/heatmap" => ("text/html; charset=utf-8", HEATMAP_HTML),
         "/phext-tts.js" => ("text/javascript; charset=utf-8", PHEXT_TTS_JS),
         "/robots.txt" => ("text/plain; charset=utf-8", ROBOTS_TXT),
         "/sitemap.xml" => ("application/xml; charset=utf-8", SITEMAP_XML),
@@ -1682,6 +1841,28 @@ fn handle_request(
         // ── Phext file management ──
         ("GET", "/api/phexts") => {
             json_response(stream, &headers, &state.list_phexts());
+        }
+
+        // Heat map data for one hosted phext: per-scroll text statistics
+        // (and per-scroll match counts with ?q=). Read-only, behind the
+        // same gate as /api/phexts; the /heatmap page itself is public,
+        // like the other utility pages, and asks for sign-in when this
+        // answers 401.
+        ("GET", p) if path_route(p) == "/api/heatmap" => {
+            let name = query_param(p, "name").unwrap_or_default();
+            let query = query_param(p, "q").unwrap_or_default();
+            let target = if name.trim().is_empty() {
+                Some(std::path::PathBuf::from(state.file_path.clone()))
+            } else {
+                state.hosted_phext(name.trim())
+            };
+            match target {
+                Some(path) => match state.heat_map_json(&path, &query) {
+                    Ok(body) => send_response(stream, 200, "application/json", body.as_bytes(), CacheClass::NoStore, &headers, false),
+                    Err(e) => json_response(stream, &headers, &ApiOk { ok: false, message: e }),
+                },
+                None => send_response(stream, 404, "application/json", API_NOT_FOUND, CacheClass::NoStore, &headers, false),
+            }
         }
         ("POST", "/api/open") => {
             let body = read_body(&mut reader, &headers);
@@ -6290,6 +6471,61 @@ mod local_mode_tests {
     }
 
     #[test]
+    fn heatmap_reports_scroll_stats_and_search_counts() {
+        let (port, dir) = serve(true);
+        // A three-scroll fixture, built with libphext's own implode so
+        // the bytes are exactly what the reference parser writes.
+        let mut map = std::collections::HashMap::new();
+        map.insert(parse_coordinate("1.1.1/1.1.1/1.1.1").unwrap(), "alpha alpha beta\nsecond line".to_string());
+        map.insert(parse_coordinate("1.1.1/1.1.1/1.1.2").unwrap(), "beta".to_string());
+        map.insert(parse_coordinate("1.1.1/1.1.1/2.1.1").unwrap(), "gamma alpha".to_string());
+        std::fs::write(dir.path().join("fixture.phext"), libphext::phext::implode(map)).unwrap();
+
+        // Text-density view: exact per-scroll statistics, address order.
+        let (code, body) = http(port, "GET", "/api/heatmap?name=fixture", "");
+        assert_eq!(code, 200, "{body}");
+        let v: serde_json::Value = serde_json::from_str(body.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or(&body)).unwrap();
+        assert_eq!(v["phext"], "fixture.phext");
+        assert_eq!(v["total_scrolls"], 3);
+        assert_eq!(v["returned_scrolls"], 3);
+        assert_eq!(v["aggregated_scrolls"], 0);
+        assert_eq!(v["matching_scrolls"], 3);
+        assert_eq!(v["total_matches"], 0);
+        assert_eq!(v["max_bytes"], 28);
+        assert_eq!(v["min_bytes"], 4);
+        let scrolls = v["scrolls"].as_array().unwrap();
+        assert_eq!(scrolls.len(), 3);
+        assert_eq!(scrolls[0]["coordinate"], "1.1.1/1.1.1/1.1.1");
+        assert_eq!(scrolls[0]["bytes"], 28);
+        assert_eq!(scrolls[0]["chars"], 28);
+        assert_eq!(scrolls[0]["lines"], 2);
+        assert_eq!(scrolls[0]["width"], 16);
+        assert_eq!(scrolls[0]["matches"], 0);
+        assert_eq!(scrolls[1]["coordinate"], "1.1.1/1.1.1/1.1.2");
+        assert_eq!(scrolls[1]["coord"][8], 2);
+        assert_eq!(scrolls[2]["coordinate"], "1.1.1/1.1.1/2.1.1");
+        assert_eq!(scrolls[2]["coord"][6], 2);
+
+        // Search view: the same scrolls, now carrying match counts —
+        // case-insensitive, the editor search's own matching.
+        let (code, body) = http(port, "GET", "/api/heatmap?name=fixture&q=ALPHA", "");
+        assert_eq!(code, 200, "{body}");
+        let v: serde_json::Value = serde_json::from_str(body.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or(&body)).unwrap();
+        assert_eq!(v["query"], "ALPHA");
+        assert_eq!(v["matching_scrolls"], 2);
+        assert_eq!(v["total_matches"], 3);
+        assert_eq!(v["max_matches"], 2);
+        let scrolls = v["scrolls"].as_array().unwrap();
+        assert_eq!(scrolls[0]["matches"], 2);
+        assert_eq!(scrolls[1]["matches"], 0);
+        assert_eq!(scrolls[2]["matches"], 1);
+
+        // A name that is not hosted answers 404, like the wiki routes.
+        let (code, _) = http(port, "GET", "/api/heatmap?name=nope", "");
+        assert_eq!(code, 404);
+    }
+
+    #[test]
     fn submissions_roundtrip_in_local_mode() {
         let (port, dir) = serve(true);
         let (code, body) = http(port, "GET", "/submit", "");
@@ -8023,6 +8259,10 @@ with those files from a browser:</p>
   Product Hunt on Tuesday Nov 10, 2026 — Phext Edit's own launch day — and still
   had zero upvotes when the snapshot was taken. No ranking: the list shuffles on
   every load, so every zero gets the same daylight.</li>
+  <li><a href="heatmap">Heat map</a> (sign-in needed): every scroll of a hosted phext
+  as a point of light in the void — the full text at each scroll colours its node and
+  the fabric woven between scrolls, the eleven-dimensional space projected down to
+  three, or two. Search, and the view rebuilds around the scrolls that match.</li>
 </ul>
 
 <h2>Why it asks you to sign in</h2>
@@ -8270,6 +8510,12 @@ const PREVIEWER_HTML: &str = include_str!("../../web/phext-previewer.html");
 // file under web/, not this constant.)
 const ZERO_INDEX_HTML: &str = include_str!("../../web/zero-index.html");
 
+// The heat map likewise lives as a file under web/ and is compiled in:
+// every scroll of a hosted phext as a point of light, projected from
+// the full eleven-dimensional space. Its data comes from the gated
+// /api/heatmap route; the page itself carries no phext text.
+const HEATMAP_HTML: &str = include_str!("../../web/heatmap.html");
+
 // The shell's artwork likewise lives under web/ and is compiled in: the
 // CYOA banner (the Flame at the root of the lattice, light running out
 // along the filaments to a wall of scrolls) that tops the sign-in
@@ -8313,6 +8559,7 @@ const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>https://edit.phext.io/claim</loc></url>
   <url><loc>https://edit.phext.io/explore</loc></url>
   <url><loc>https://edit.phext.io/zeros</loc></url>
+  <url><loc>https://edit.phext.io/heatmap</loc></url>
 </urlset>
 "#;
 
@@ -8916,6 +9163,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
   <a class="bar-link first" href="/submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
   <a class="bar-link" href="/claim" title="If your X account is in the wavefront map, claim your space on this server">Claim your space</a>
   <a class="bar-link" href="/explore" title="Every placement in the wavefront, explorable in nine dimensions">Explore the map</a>
+  <a class="bar-link" href="/heatmap" title="Every scroll of a phext as a point of light — the text colours the nodes and the fabric; search rebuilds the view">Heat map</a>
   <a class="bar-link" href="/phext-previewer.html" title="Open a phext file from your own device and preview it scroll by scroll — no sign-in needed">Preview a phext</a>
   <span class="mcp-endpoint" title="Connect an MCP client (ChatGPT, Claude, Cursor, …) to this endpoint and approve the sign-in: it can then read and write scrolls here">MCP: <code>https://edit.phext.io/mcp</code></span>
   <!--phext-sponsor-->
@@ -8959,7 +9207,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
     <p class="explain">Nine numbers name a scroll: library, shelf, series, collection, volume, book, chapter, section, scroll. The scroll is a page of lines and columns, which makes eleven. The file stays plain text.</p>
     <p class="hint">Sign in to save and edit your own files. The demo is a sample you can walk through; nothing in it is saved.</p>
     <p class="links"><a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · <a href="mailto:will+support@phext.io">Contact</a><br>
-      No sign-in needed: <a href="/up-goer-five.html">Up Goer Five</a> · <a href="/tts-demo.html">Coordinate TTS demo</a> · <a href="/learn-you-phext.html">Learn You Phext</a> · <a href="/ascii-map.html">The Map With Pages Behind It</a> · <a href="/singular.html">Singular</a> · <a href="/phext-previewer.html">Phext Previewer</a> · <a href="/wiki/">Example wiki</a> · <a href="/zeros">The Zero Index</a><br>
+      No sign-in needed: <a href="/up-goer-five.html">Up Goer Five</a> · <a href="/tts-demo.html">Coordinate TTS demo</a> · <a href="/learn-you-phext.html">Learn You Phext</a> · <a href="/ascii-map.html">The Map With Pages Behind It</a> · <a href="/singular.html">Singular</a> · <a href="/phext-previewer.html">Phext Previewer</a> · <a href="/wiki/">Example wiki</a> · <a href="/zeros">The Zero Index</a> · <a href="/heatmap">Heat map</a><br>
       Have a phext of your own? <a href="/submit">Upload it for review</a> — if an editor accepts it, you become an editor too. Signing in with X makes you an editor at once.<br>
       Placed in the wavefront map? <a href="/claim">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="/explore">explore the map</a> first. No ads, ever.<!--phext-sponsor--><br>
       Running build: <!--phext-build--></p>
@@ -10365,7 +10613,7 @@ mod public_route_tests {
         dashboard_html, handle_request, is_api_path, is_editor_shell, ph_badge_html, public_document,
         render_page, PH_BADGE_SLOT, PH_POST_ID, PH_POST_URL,
         AppState, DemoCatalog, ABOUT_HTML, BACKGROUND_WEBP, BANNER_WEBP, BUILD_SLOT, BUILD_STAMP,
-        CLAIM_HTML, EXPLORE_HTML, INDEX_HTML,
+        CLAIM_HTML, EXPLORE_HTML, HEATMAP_HTML, INDEX_HTML,
         LEARN_YOU_PHEXT_HTML, NOT_FOUND_HTML, PREVIEWER_HTML, PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE,
         SINGULAR_HTML, SITEMAP_XML, STATIC_CACHE, SUBMIT_HTML, TERMS_HTML, TTS_DEMO_HTML,
         UP_GOER_FIVE_HTML, ZERO_INDEX_HTML, DEFAULT_COORD,
@@ -10837,6 +11085,28 @@ mod public_route_tests {
         assert!(UP_GOER_FIVE_HTML.contains("href=\"/phext-previewer.html\""), "up goer five cross-link");
         assert!(TTS_DEMO_HTML.contains("href=\"/phext-previewer.html\""), "tts demo cross-link");
         assert!(LEARN_YOU_PHEXT_HTML.contains("href=\"/phext-previewer.html\""), "learn you phext cross-link");
+    }
+
+    #[test]
+    fn heat_map_page_is_public_and_linked() {
+        let gate = locked_gate();
+        let page = get(&gate, "/heatmap");
+        assert_eq!(page.status, 200);
+        assert!(page.content_type.contains("text/html"), "{}", page.content_type);
+        assert!(page.body.contains("Heat map"), "{}", page.body);
+        // The page is a shell over its data route: the route name rides
+        // in the page, and the compiled bytes are the web/ file.
+        assert!(page.body.contains("/api/heatmap"), "the page reads its data route");
+        assert!(page.body.contains("gold"), "the gold–white–blue line is the page's palette");
+        assert_eq!(public_document("/heatmap").unwrap().body, HEATMAP_HTML);
+
+        // Discoverability: the editor shell's status bar (where signed-in
+        // users actually are), the shell's sign-in screen, the About
+        // page's utility list, and the sitemap all link it.
+        assert!(INDEX_HTML.contains("class=\"bar-link\" href=\"/heatmap\""), "shell status bar link");
+        assert!(INDEX_HTML.contains("Heat map</a>"), "shell link label");
+        assert!(ABOUT_HTML.contains("href=\"heatmap\""), "about link");
+        assert!(SITEMAP_XML.contains("https://edit.phext.io/heatmap</loc>"), "sitemap entry");
     }
 
     #[test]

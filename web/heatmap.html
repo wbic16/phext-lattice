@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Heat Map — every scroll of a phext as light</title>
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #04060e; color: #e8ecf4;
+         font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  header, main, footer { max-width: 1180px; margin: 0 auto; padding: 0 20px; }
+  header { padding-top: 28px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  p.lede { color: #aeb8c8; max-width: 78ch; margin: 4px 0; }
+  a { color: #8fc1e9; }
+  .crumbs { font-size: 13px; color: #8b96a8; margin-bottom: 10px; }
+  .crumbs a { color: #8b96a8; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 16px 0 10px; }
+  .tabs button, button.act { background: #131a2a; color: #e8ecf4; border: 1px solid #2c3a55;
+    border-radius: 6px; padding: 6px 12px; font: inherit; font-size: 13.5px; cursor: pointer; }
+  .tabs button[aria-pressed="true"] { background: #274268; border-color: #4a7298; }
+  select { background: #0a0f1e; color: #e8ecf4; border: 1px solid #2c3a55;
+    border-radius: 6px; padding: 6px 10px; font: inherit; font-size: 13.5px; max-width: 320px; }
+  label.small { font-size: 13px; color: #8b96a8; display: inline-flex; gap: 6px; align-items: center; }
+  .stage { position: relative; }
+  .canvas-wrap { background: #04060e; border: 1px solid #1d2942; border-radius: 8px; position: relative; overflow: hidden; }
+  canvas#view { display: block; width: 100%; height: 600px; touch-action: none; cursor: grab; }
+  canvas#view:active { cursor: grabbing; }
+  .hint { position: absolute; left: 10px; bottom: 8px; font-size: 12px; color: #5f7089; pointer-events: none; }
+  .mode-label { position: absolute; right: 12px; top: 10px; font-size: 12px; color: #c9a44a;
+    letter-spacing: .08em; text-transform: uppercase; pointer-events: none; }
+  /* The detail panel rides over the lower-left of the stage, as in the
+     reference visualization: one scroll's numbers over the field. */
+  #detail { position: absolute; left: 14px; bottom: 38px; width: 330px; max-width: calc(100% - 28px);
+    background: rgba(7, 11, 24, .88); border: 1px solid #2c3a55; border-radius: 8px;
+    padding: 12px 14px; backdrop-filter: blur(3px); }
+  #detail h3 { margin: 0 0 2px; font-size: 15px; font-family: ui-monospace, Consolas, monospace; font-weight: 600; }
+  #detail .stats { font-size: 13px; color: #c3ccd9; margin: 2px 0; }
+  #detail .stats b { color: #fff; font-weight: 600; }
+  #detail .minmax { display: flex; justify-content: space-between; font-size: 12px; color: #8b96a8; margin-top: 4px; }
+  #spark { display: block; width: 100%; height: 44px; margin-top: 6px; }
+  #detail .open-link { font-size: 13px; }
+  /* The search bar runs along the bottom, as in the reference: a query, a
+     submit, and a badge counting the scrolls that match. */
+  .searchbar { display: flex; gap: 10px; align-items: center; margin-top: 12px;
+    background: #0a1122; border: 1px solid #2c3a55; border-radius: 8px; padding: 10px 12px; }
+  .searchbar .mag { color: #8b96a8; font-size: 16px; }
+  .searchbar input[type="search"] { flex: 1 1 auto; background: #04060e; color: #fff;
+    border: 1px solid #2c3a55; border-radius: 6px; padding: 8px 12px; font: inherit; font-size: 15px; min-width: 120px; }
+  .badge { flex: 0 0 auto; min-width: 30px; height: 30px; border-radius: 50%; background: #c9a44a;
+    color: #04060e; font-weight: 700; font-size: 14px; display: none; align-items: center; justify-content: center; padding: 0 6px; }
+  .badge.on { display: inline-flex; }
+  #signin-note { display: none; margin-top: 12px; background: #131a2a; border: 1px solid #2c3a55;
+    border-radius: 8px; padding: 12px 14px; font-size: 14px; }
+  details.how { margin-top: 16px; color: #aeb8c8; font-size: 13.5px; max-width: 85ch; }
+  details.how summary { cursor: pointer; color: #8fc1e9; }
+  details.how code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; color: #e8d9a0; }
+  footer { color: #5f7089; font-size: 12.5px; padding: 18px 20px 30px; }
+  @media (max-width: 860px) { canvas#view { height: 440px; } #detail { position: static; width: 100%; margin-top: 10px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="crumbs"><a href="/">phext.io</a> · <a href="/about">About</a> · <a href="/wiki/">Example wiki</a> · <a href="/explore">Explore the map</a><!--phext-sponsor--> · build <!--phext-build--></div>
+  <h1>Heat map</h1>
+  <p class="lede">Every scroll of a phext is a point of light in the subspace void. The full
+  text at each scroll colours its node — gold, white, or blue by the text itself — and the
+  fabric woven between neighbouring scrolls takes its colour from the text at both ends.
+  The whole eleven-dimensional space (nine address numbers, plus each scroll's own page of
+  lines and columns) is projected down to three dimensions, or two. Search, and the view
+  rebuilds itself around the scrolls that match.</p>
+  <div class="toolbar">
+    <label class="small">Phext
+      <select id="phext-picker" aria-label="Choose a phext"></select>
+    </label>
+    <span class="tabs">
+      <button id="tab3d" aria-pressed="true">3D</button>
+      <button id="tab2d" aria-pressed="false">2D</button>
+    </span>
+    <label class="small"><input type="checkbox" id="autorotate" checked> auto-rotate (3D)</label>
+    <span class="small" id="load-note" role="status"></span>
+  </div>
+</header>
+<main>
+  <div class="stage">
+    <div class="canvas-wrap">
+      <canvas id="view" width="800" height="600"></canvas>
+      <div class="mode-label" id="mode-label">text density</div>
+      <div class="hint" id="hint">drag to rotate · scroll to zoom · click a point</div>
+    </div>
+    <aside id="detail" hidden>
+      <h3 id="d-coord">—</h3>
+      <p class="stats" id="d-stats">—</p>
+      <canvas id="spark" width="300" height="44"></canvas>
+      <div class="minmax"><span id="d-min">min —</span><span id="d-max">max —</span></div>
+      <p class="stats"><a class="open-link" id="d-open" href="#">Open this scroll in the editor</a></p>
+    </aside>
+  </div>
+  <form class="searchbar" id="search-form">
+    <span class="mag" aria-hidden="true">⌕</span>
+    <input type="search" id="search-input" placeholder="Search the text — the view rebuilds around the matches" aria-label="Search the phext text">
+    <button class="act" type="submit">Search</button>
+    <button class="act" type="button" id="search-clear">Clear</button>
+    <span class="badge" id="search-badge" title="Scrolls that match">0</span>
+  </form>
+  <div id="signin-note">
+    The heat map reads the phexts hosted on this server, so it needs you signed in.
+    Sign in with <a href="/api/auth/google?next=%2Fheatmap">Google</a>,
+    <a href="/api/auth/github?next=%2Fheatmap">GitHub</a>, or
+    <a href="/api/auth/x?next=%2Fheatmap">X</a> — then come back to this page.
+  </div>
+  <details class="how">
+    <summary>How the projection works</summary>
+    <p>A scroll's address has nine numbers — <code>library.shelf.series / collection.volume.book /
+    chapter.section.scroll</code> — and its page adds two more dimensions, its lines and its
+    columns. The projection folds the nine address numbers into three axes with log scales
+    (each number <code>v</code> contributes <code>ln(1+v)</code>, so wide ranges stay readable):</p>
+    <p><code>x = ln(1+chapter) + 0.7·ln(1+collection) + 0.45·ln(1+library)</code><br>
+    <code>y = ln(1+section) + 0.7·ln(1+volume) + 0.45·ln(1+shelf)</code><br>
+    <code>z = ln(1+scroll) + 0.7·ln(1+book) + 0.45·ln(1+series)</code></p>
+    <p>Each axis is then stretched across the view by its 2nd–98th percentile range, so the
+    dense heart of the phext fills the sky and the rare extremes rest at the edges. The page dimensions ride on the node
+    itself: a scroll's line count sets its node's height, its widest line its width. The
+    text sets the colour — a hash of the scroll's full text picks a tone on the
+    gold–white–blue line — and its size sets the brightness. The fabric joins each scroll
+    to the next scroll, the next section, and the next chapter, drawn as bezier curves whose
+    two halves carry the colours of the scrolls they join. In 2D the same fold is drawn
+    flat: x across, y up, and z carried by brightness. Nothing here is random: the same
+    phext always draws the same sky.</p>
+    <p>Very large phexts (over 20,000 scrolls) draw their 20,000 largest scrolls as nodes —
+    by text size, or by match count while searching — and fold the rest into the ambient
+    glow; the page notes how many were folded.</p>
+  </details>
+</main>
+<footer>Phext Edit · <a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · Contact: <a href="mailto:will+support@phext.io">will+support@phext.io</a><!--phext-sponsor--> · build <!--phext-build--></footer>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const canvas = $("view"), ctx = canvas.getContext("2d");
+
+// ── Projection ──────────────────────────────────────────────────────────
+// The full 11D → 3D fold. A phext scroll lives at a 9-number address
+//   [library, shelf, series, collection, volume, book, chapter, section, scroll]
+// and its text is a 2D page (lines × columns). Every one of the eleven
+// dimensions contributes:
+//   x = ln(1+chapter) + 0.70·ln(1+collection) + 0.45·ln(1+library)
+//   y = ln(1+section) + 0.70·ln(1+volume)     + 0.45·ln(1+shelf)
+//   z = ln(1+scroll)  + 0.70·ln(1+book)       + 0.45·ln(1+series)
+// The X arm of the address leads its axis; the Y arm rides at 0.70 and the
+// Z arm at 0.45, so the finest grain dominates and the coarse grain still
+// moves the point. Axes are percentile-normalised across the phext below.
+// The text page rides on the node glyph: line count → glyph height, widest
+// line → glyph width. The text itself → tone (an xxh3 of the full text,
+// computed server-side) and byte size → brightness and radius.
+const L = v => Math.log(1 + v);
+function fold(c) {
+  return [
+    L(c[6]) + 0.7 * L(c[3]) + 0.45 * L(c[0]),
+    L(c[7]) + 0.7 * L(c[4]) + 0.45 * L(c[1]),
+    L(c[8]) + 0.7 * L(c[5]) + 0.45 * L(c[2]),
+  ];
+}
+
+// Tone line: gold → white → blue. t comes from the scroll's full text.
+function toneRGB(t) {
+  if (t < 0.5) {
+    const u = t * 2;
+    return [255 + (246 - 255) * u, 190 + (249 - 190) * u, 64 + (255 - 64) * u];
+  }
+  const u = (t - 0.5) * 2;
+  return [246 + (96 - 246) * u, 249 + (156 - 249) * u, 255];
+}
+const rgb = (c, a) => `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
+
+// Glow sprites, one per quantised tone step: a hot white core inside the
+// tone's halo. drawImage of a sprite is what keeps thousands of nodes at
+// frame rate; the tone is quantised to 24 steps, finer than the eye can
+// split along this line.
+const SPRITES = [];
+function sprite(t) {
+  const key = Math.round(t * 23);
+  if (SPRITES[key]) return SPRITES[key];
+  const s = document.createElement("canvas");
+  s.width = s.height = 64;
+  const g = s.getContext("2d");
+  const c = toneRGB(key / 23);
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, "rgba(255,255,255,0.95)");
+  grad.addColorStop(0.22, rgb(c, 0.9));
+  grad.addColorStop(0.55, rgb(c, 0.28));
+  grad.addColorStop(1, rgb(c, 0));
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 64, 64);
+  SPRITES[key] = s;
+  return s;
+}
+
+// Deterministic starfield for the void (mulberry32, fixed seed — the same
+// sky every load, like everything else on this page).
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const STARS = (() => {
+  const rnd = mulberry32(0x5eed);
+  const out = [];
+  for (let i = 0; i < 260; i++) out.push([rnd(), rnd(), 0.25 + rnd() * 0.75]);
+  return out;
+})();
+
+// ── State ───────────────────────────────────────────────────────────────
+let DATA = null;          // last /api/heatmap payload
+let nodes = [];           // view nodes (see buildNodes)
+let edges = [];           // [i, j] fabric pairs, indices into nodes
+let mode = "3d";
+let yaw = 0.7, pitch = 0.85, zoom = 1.0;
+let dragging = false, dragMoved = 0, lastX = 0, lastY = 0;
+let selected = -1;        // index into nodes, -1 = none
+let animT = 1;            // rebuild tween: 0 → 1
+let currentName = "";
+let currentQuery = "";
+
+// A view node: folded position now (p) and where the rebuild started it
+// (p0), tone now/start, weight now/start. The tween interpolates in folded
+// space, so orbiting stays coherent while the view re-forms.
+function buildNodes(data, prev) {
+  const prevByCoord = new Map();
+  if (prev) for (const n of prev) prevByCoord.set(n.coordinate, n);
+  const raw = data.scrolls.map(s => fold(s.coord));
+  // Normalise each axis by its 2nd–98th percentile range, not min/max:
+  // a phext's heart is dense and its extremes are rare, so min/max would
+  // squeeze the whole book into one corner of the sky. Outliers clamp to
+  // the edges — they are the extremes, and they sit where extremes sit.
+  const lo = [0, 0, 0], hi = [0, 0, 0];
+  for (let a = 0; a < 3; a++) {
+    const sorted = raw.map(p => p[a]).sort((x, y) => x - y);
+    lo[a] = sorted[Math.floor(0.02 * (sorted.length - 1))];
+    hi[a] = sorted[Math.ceil(0.98 * (sorted.length - 1))];
+    if (hi[a] - lo[a] < 1e-9) { lo[a] = sorted[0]; hi[a] = sorted[sorted.length - 1]; }
+  }
+  const searching = data.query !== "";
+  const wMax = searching ? Math.max(1, data.max_matches) : Math.max(1, data.max_bytes);
+  const wOf = s => searching
+    ? (s.matches > 0 ? Math.log(1 + s.matches) / Math.log(1 + wMax) : 0)
+    : Math.log(1 + s.bytes) / Math.log(1 + wMax);
+  const out = data.scrolls.map((s, i) => {
+    const p = raw[i].map((v, a) => {
+      const span = hi[a] - lo[a];
+      if (span < 1e-9) return 0;
+      return Math.max(0, Math.min(1, (v - lo[a]) / span)) - 0.5;
+    });
+    const old = prevByCoord.get(s.coordinate);
+    return {
+      s, coordinate: s.coordinate,
+      p, p0: old ? old.p : [0, 0, 0],
+      tone: s.tone, tone0: old ? old.tone : s.tone,
+      w: wOf(s), w0: old ? old.w : 0,
+      sx: 0, sy: 0, depth: 0, scale: 1,
+    };
+  });
+  // Fabric: each scroll joins the next scroll in its section, the first
+  // scroll of the next section, and the first scroll of the next chapter —
+  // the phext's own neighbourhood, nothing invented.
+  const byKey = new Map();
+  out.forEach((n, i) => byKey.set(n.s.coord.join("."), i));
+  const firstOf = new Map(); // prefix key → first node index with that prefix
+  out.forEach((n, i) => {
+    const c = n.s.coord;
+    for (const len of [7, 8]) {
+      const k = c.slice(0, len).join(".");
+      if (!firstOf.has(k)) firstOf.set(k, i);
+    }
+  });
+  const es = [];
+  out.forEach((n, i) => {
+    const c = n.s.coord.slice();
+    const link = (cc) => {
+      const j = byKey.get(cc.join("."));
+      if (j !== undefined && j !== i) es.push([i, j]);
+    };
+    const next = c.slice(); next[8] += 1; link(next);                    // next scroll
+    const ns = c.slice(); ns[7] += 1;                                    // next section
+    const j = firstOf.get(ns.slice(0, 8).join("."));
+    if (j !== undefined && j !== i) es.push([i, j]);
+    const nc = c.slice(); nc[6] += 1;                                    // next chapter
+    const k = firstOf.get(nc.slice(0, 7).join("."));
+    if (k !== undefined && k !== i) es.push([i, k]);
+  });
+  return { nodes: out, edges: es };
+}
+
+// ── Data ────────────────────────────────────────────────────────────────
+async function fetchJson(url) {
+  const r = await fetch(url, { headers: { "Accept": "application/json" } });
+  if (!r.ok) throw new Error("http " + r.status);
+  return r.json();
+}
+
+async function loadPhexts() {
+  const list = await fetchJson("/api/phexts");
+  const picker = $("phext-picker");
+  picker.innerHTML = "";
+  const files = list.filter(f => f.kind === "phext");
+  for (const f of files) {
+    const opt = document.createElement("option");
+    opt.value = f.name.replace(/\.phext$/, "");
+    opt.textContent = f.name;
+    picker.appendChild(opt);
+  }
+  if (!files.length) throw new Error("no phexts hosted");
+  const want = new URLSearchParams(location.search).get("name");
+  const names = files.map(f => f.name.replace(/\.phext$/, ""));
+  currentName = names.includes(want) ? want
+    : names.includes("choose-your-own-adventure") ? "choose-your-own-adventure"
+    : names[0];
+  picker.value = currentName;
+}
+
+async function loadView(query) {
+  const url = "/api/heatmap?name=" + encodeURIComponent(currentName)
+    + (query ? "&q=" + encodeURIComponent(query) : "");
+  $("load-note").textContent = "loading…";
+  const data = await fetchJson(url);
+  const prev = nodes.length ? nodes : null;
+  const built = buildNodes(data, prev);
+  DATA = data;
+  nodes = built.nodes;
+  edges = built.edges;
+  selected = -1;
+  $("detail").hidden = true;
+  currentQuery = data.query;
+  animT = 0;
+  // The badge counts matching scrolls, as in the reference; it shows only
+  // while a search is live.
+  const badge = $("search-badge");
+  badge.textContent = data.matching_scrolls;
+  badge.classList.toggle("on", data.query !== "");
+  $("mode-label").textContent = data.query !== ""
+    ? "search · " + data.matching_scrolls + " of " + data.total_scrolls + " scrolls"
+    : "text density";
+  let note = data.returned_scrolls + " scrolls";
+  if (data.aggregated_scrolls > 0) {
+    note += " · " + data.aggregated_scrolls + " smaller scrolls folded into the glow";
+  }
+  $("load-note").textContent = note;
+}
+
+// ── Rendering ───────────────────────────────────────────────────────────
+let W = 0, H = 0, DPR = 1, bgGrad = null;
+function resize() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  const rect = canvas.getBoundingClientRect();
+  W = Math.max(300, rect.width); H = Math.max(300, rect.height);
+  canvas.width = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  bgGrad = ctx.createRadialGradient(W / 2, H / 2, 40, W / 2, H / 2, Math.max(W, H) * 0.75);
+  bgGrad.addColorStop(0, "#080d1d");
+  bgGrad.addColorStop(1, "#02030a");
+}
+window.addEventListener("resize", resize);
+
+const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+function project(n, e) {
+  // Current (tweened) folded position.
+  const x = n.p0[0] + (n.p[0] - n.p0[0]) * e;
+  const y = n.p0[1] + (n.p[1] - n.p0[1]) * e;
+  const z = n.p0[2] + (n.p[2] - n.p0[2]) * e;
+  if (mode === "2d") {
+    n.sx = W / 2 + x * W * 0.86 * zoom;
+    n.sy = H / 2 - y * H * 0.82 * zoom;
+    n.depth = z;
+    n.scale = 1;
+    return;
+  }
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const x1 = x * cy - z * sy, z1 = x * sy + z * cy;
+  const y2 = y * cp - z1 * sp, z2 = y * sp + z1 * cp;
+  const f = 2.4, persp = f / (f + z2 + 1.2);
+  const s = Math.min(W, H) * 0.58 * zoom * persp;
+  n.sx = W / 2 + x1 * s * 2;
+  n.sy = H / 2 - y2 * s * 2;
+  n.depth = z2;
+  n.scale = persp;
+}
+
+function nodeRadius(n, w) {
+  // Radius from weight; the text page shapes the glyph — lines tall,
+  // widest line wide (drawn as an ellipse via the sprite's aspect).
+  return (2.2 + 7.5 * w) * (mode === "3d" ? n.scale : 1);
+}
+
+function draw() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = bgGrad || "#04060e";
+  ctx.fillRect(0, 0, W, H);
+  // The void's own faint stars.
+  ctx.fillStyle = "#aebfe0";
+  for (const [sx, sy, b] of STARS) {
+    ctx.globalAlpha = 0.05 + 0.1 * b;
+    ctx.fillRect(sx * W, sy * H, b > 0.8 ? 2 : 1, b > 0.8 ? 2 : 1);
+  }
+  ctx.globalAlpha = 1;
+  if (!nodes.length) return;
+  const e = ease(animT);
+  for (const n of nodes) project(n, e);
+  const order = nodes.map((_, i) => i).sort((a, b) => nodes[a].depth - nodes[b].depth);
+
+  // Fabric first, under the nodes: crisp quadratic beziers. Each curve is
+  // stroked in two halves — the first half in the near scroll's tone, the
+  // second in the far scroll's — so the colour of the text at both ends
+  // runs through the weave. The control point bows off the chord by a
+  // deterministic amount, alternating sides by pair, so the fabric reads
+  // as woven rather than ruled.
+  ctx.lineCap = "round";
+  const edgeOrder = edges.slice().sort((p, q) =>
+    (nodes[p[0]].depth + nodes[p[1]].depth) - (nodes[q[0]].depth + nodes[q[1]].depth));
+  for (const [i, j] of edgeOrder) {
+    const a = nodes[i], b = nodes[j];
+    const wa = a.w0 + (a.w - a.w0) * e, wb = b.w0 + (b.w - b.w0) * e;
+    const dx = b.sx - a.sx, dy = b.sy - a.sy;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 1) continue;
+    const bow = ((i * 31 + j * 17) % 2 === 0 ? 1 : -1) * Math.min(46, dist * 0.22);
+    const cxp = (a.sx + b.sx) / 2 - dy / dist * bow;
+    const cyp = (a.sy + b.sy) / 2 + dx / dist * bow;
+    const mx = 0.25 * a.sx + 0.5 * cxp + 0.25 * b.sx;
+    const my = 0.25 * a.sy + 0.5 * cyp + 0.25 * b.sy;
+    const ta = toneRGB(a.tone0 + (a.tone - a.tone0) * e);
+    const tb = toneRGB(b.tone0 + (b.tone - b.tone0) * e);
+    const alpha = 0.10 + 0.30 * Math.min(wa, wb);
+    ctx.lineWidth = 0.8 + 1.1 * Math.min(wa, wb);
+    ctx.strokeStyle = rgb(ta, alpha);
+    ctx.beginPath();
+    ctx.moveTo(a.sx, a.sy);
+    ctx.quadraticCurveTo((a.sx + cxp) / 2, (a.sy + cyp) / 2, mx, my);
+    ctx.stroke();
+    ctx.strokeStyle = rgb(tb, alpha);
+    ctx.beginPath();
+    ctx.moveTo(mx, my);
+    ctx.quadraticCurveTo((cxp + b.sx) / 2, (cyp + b.sy) / 2, b.sx, b.sy);
+    ctx.stroke();
+  }
+
+  // Nodes: glow sprites, far to near. In search mode a scroll with no
+  // match dims to a whisper of blue so the matches carry the sky.
+  const searching = currentQuery !== "";
+  for (const i of order) {
+    const n = nodes[i];
+    const w = n.w0 + (n.w - n.w0) * e;
+    const tone = n.tone0 + (n.tone - n.tone0) * e;
+    let alpha = 0.35 + 0.65 * w;
+    // Depth carries light: in 3D the perspective does it; in 2D the fold's
+    // z axis is brightness, exactly as the page's note says.
+    const d01 = Math.max(0, Math.min(1, mode === "2d" ? n.depth + 0.5 : (n.depth + 1) / 2));
+    alpha *= 0.45 + 0.55 * d01;
+    if (searching && n.s.matches === 0) alpha = 0.10;
+    const r = nodeRadius(n, w);
+    const aspect = Math.max(0.55, Math.min(1.6,
+      Math.sqrt(Math.max(1, n.s.width)) / Math.sqrt(Math.max(1, n.s.lines))));
+    const gw = r * 5.2 * aspect, gh = r * 5.2 / aspect;
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(sprite(tone), n.sx - gw / 2, n.sy - gh / 2, gw, gh);
+    if (i === selected) {
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.ellipse(n.sx, n.sy, r * 1.9 * aspect, r * 1.9 / aspect, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+let lastTs = 0;
+function frame(ts) {
+  const dt = Math.min(0.05, (ts - lastTs) / 1000 || 0);
+  lastTs = ts;
+  if (animT < 1) animT = Math.min(1, animT + dt / 0.75);
+  if (mode === "3d" && !dragging && $("autorotate").checked) yaw += dt * 0.12;
+  draw();
+  requestAnimationFrame(frame);
+}
+
+// ── Detail panel ────────────────────────────────────────────────────────
+function fmtBytes(b) {
+  if (b < 1024) return b + " B";
+  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + " KB";
+  return (b / (1024 * 1024)).toFixed(2) + " MB";
+}
+
+function showDetail(i) {
+  selected = i;
+  if (i < 0) { $("detail").hidden = true; return; }
+  const n = nodes[i], s = n.s;
+  $("d-coord").textContent = s.coordinate;
+  let stats = `<b>${fmtBytes(s.bytes)}</b> · ${s.chars} chars · ${s.lines} lines × ${s.width} cols`;
+  if (currentQuery !== "") {
+    const q = currentQuery.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    stats += `<br><b>${s.matches}</b> match${s.matches === 1 ? "" : "es"} for “${q}”`;
+  }
+  $("d-stats").innerHTML = stats;
+  $("d-open").href = "/" + encodeURIComponent(currentName) + "/#" + s.coordinate;
+  const searching = currentQuery !== "";
+  $("d-max").textContent = "max " + (searching ? DATA.max_matches + " matches" : fmtBytes(DATA.max_bytes));
+  $("d-min").textContent = "min " + (searching ? "0 matches" : fmtBytes(DATA.min_bytes));
+  // Sparkline: the neighbouring scrolls in address order, ±30 around the
+  // selection, sized by the same weight the sky uses.
+  const all = DATA.scrolls;
+  const at = all.findIndex(x => x.coordinate === s.coordinate);
+  const from = Math.max(0, at - 30), to = Math.min(all.length, at + 31);
+  const vals = all.slice(from, to).map(x => searching ? x.matches : x.bytes);
+  const vmax = Math.max(1, ...vals);
+  const c = $("spark"), g = c.getContext("2d");
+  const cw = c.width, ch = c.height;
+  g.clearRect(0, 0, cw, ch);
+  g.strokeStyle = "rgba(160,180,220,0.25)";
+  g.beginPath(); g.moveTo(0, ch - 4.5); g.lineTo(cw, ch - 4.5); g.stroke();
+  g.strokeStyle = "#e8d9a0";
+  g.lineWidth = 1.4;
+  g.beginPath();
+  vals.forEach((v, k) => {
+    const x = vals.length > 1 ? (k / (vals.length - 1)) * (cw - 8) + 4 : cw / 2;
+    const y = ch - 5 - (v / vmax) * (ch - 12);
+    if (k === 0) g.moveTo(x, y); else g.lineTo(x, y);
+  });
+  g.stroke();
+  const selK = at - from;
+  const selX = vals.length > 1 ? (selK / (vals.length - 1)) * (cw - 8) + 4 : cw / 2;
+  const selY = ch - 5 - (vals[selK] / vmax) * (ch - 12);
+  g.fillStyle = "#ffffff";
+  g.beginPath(); g.arc(selX, selY, 2.6, 0, Math.PI * 2); g.fill();
+  $("detail").hidden = false;
+}
+
+// ── Interaction ─────────────────────────────────────────────────────────
+canvas.addEventListener("pointerdown", ev => {
+  dragging = true; dragMoved = 0; lastX = ev.clientX; lastY = ev.clientY;
+  canvas.setPointerCapture(ev.pointerId);
+});
+canvas.addEventListener("pointermove", ev => {
+  if (!dragging) return;
+  const dx = ev.clientX - lastX, dy = ev.clientY - lastY;
+  lastX = ev.clientX; lastY = ev.clientY;
+  dragMoved += Math.abs(dx) + Math.abs(dy);
+  if (mode === "3d") {
+    yaw += dx * 0.008;
+    pitch = Math.max(-0.2, Math.min(2.6, pitch + dy * 0.008));
+  }
+});
+canvas.addEventListener("pointerup", ev => {
+  dragging = false;
+  if (dragMoved > 5) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+  let best = -1, bestD = 18;
+  nodes.forEach((n, i) => {
+    const d = Math.hypot(n.sx - mx, n.sy - my);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  showDetail(best);
+});
+canvas.addEventListener("wheel", ev => {
+  ev.preventDefault();
+  zoom = Math.max(0.35, Math.min(4, zoom * (ev.deltaY < 0 ? 1.09 : 0.92)));
+}, { passive: false });
+
+function setMode(m) {
+  mode = m;
+  $("tab3d").setAttribute("aria-pressed", m === "3d");
+  $("tab2d").setAttribute("aria-pressed", m === "2d");
+  $("hint").textContent = m === "3d"
+    ? "drag to rotate · scroll to zoom · click a point"
+    : "the fold, flat: x across, y up, z as brightness · click a point";
+}
+$("tab3d").addEventListener("click", () => setMode("3d"));
+$("tab2d").addEventListener("click", () => setMode("2d"));
+$("phext-picker").addEventListener("change", async ev => {
+  currentName = ev.target.value;
+  $("search-input").value = "";
+  $("search-badge").classList.remove("on");
+  try { await loadView(""); } catch (err) { $("load-note").textContent = "could not load: " + err.message; }
+});
+$("search-form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const q = $("search-input").value.trim();
+  try { await loadView(q); } catch (err) { $("load-note").textContent = "search failed: " + err.message; }
+});
+$("search-clear").addEventListener("click", async () => {
+  $("search-input").value = "";
+  try { await loadView(""); } catch (err) { $("load-note").textContent = "could not load: " + err.message; }
+});
+
+// ── Boot ────────────────────────────────────────────────────────────────
+(async () => {
+  resize();
+  const initialQ = new URLSearchParams(location.search).get("q") || "";
+  if (initialQ) $("search-input").value = initialQ;
+  try {
+    await loadPhexts();
+    await loadView(initialQ);
+  } catch (err) {
+    // The phext list and the heat map data sit behind the sign-in gate,
+    // like every other /api route: a signed-out visitor gets the page and
+    // a pointer to sign in, not the data.
+    $("signin-note").style.display = "block";
+    $("load-note").textContent = "";
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
