@@ -60,7 +60,7 @@ fn index_real_phext() {
     // Dimension extent
     for dim_idx in 1..=9u8 {
         let dim = Dimension::from_index(dim_idx).unwrap();
-        let extent = lattice.index().dimension_extent(dim);
+        let extent = lattice.index().dimension_extent(dim.into());
         if extent.len() > 1 {
             println!("  {} extent: {:?}", dim.name(), extent);
         }

@@ -15,7 +15,12 @@ web = ["dep:serde", "dep:serde_json", "dep:hmac", "dep:sha2", "dep:getrandom", "
 tui = ["dep:ratatui", "dep:crossterm"]
 
 [dependencies]
-libphext = { version = "0.6.0", features = ["binary"] }
+# libphext 0.6.2 (git rev until the crates.io publish lands: PR
+# wbic16/libphext-rs#14) — holo-phext requires the 0.6.2 conventions,
+# and both crates must agree on ONE libphext so Coordinate is one type.
+libphext = { git = "https://github.com/wbic16/libphext-rs", rev = "af3867c", features = ["binary"] }
+# HoloPhext: the layer2 engine phext-lattice is being re-implemented on.
+holo-phext = { git = "https://github.com/wbic16/holo-phext", rev = "34d3faf1242b3fcad2b5d77d02f22d2c7d4bcbf2" }
 # TEI-XML → phext chain conversion for the web editor's direct TEI load
 # (phext-edit only; the converter's own deps come along for its library).
 teixml-to-mutable = { version = "0.3.0", optional = true }
