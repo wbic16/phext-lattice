@@ -12115,6 +12115,25 @@ mod http_tests {
     }
 
     #[test]
+    fn scrollspace_galaxies_take_astronomical_forms() {
+        // Task 19.5.11/6.5.13/5.4.12 (Ian via Will): "make the graph
+        // look like real globular clusters / galaxies". Each phext's
+        // form is derived from its own macro-address distribution by
+        // the fixed galaxyForm rule (flatness of the macro triples,
+        // mass = summed macro scroll counts) and drives rendering
+        // only: King-profile glow stops, stellar tints by radius,
+        // cloud photometry, and the projected disc glow for discs.
+        assert!(SCROLLSPACE_HTML.contains("function galaxyForm(g,ts)"));
+        assert!(SCROLLSPACE_HTML.contains("function starTint(kind,rho)"));
+        assert!(SCROLLSPACE_HTML.contains("const GLOW_STOPS={"));
+        assert!(SCROLLSPACE_HTML.contains("\"globular\""));
+        assert!(SCROLLSPACE_HTML.contains("\"elliptical\""));
+        assert!(SCROLLSPACE_HTML.contains("\"disc\""));
+        assert!(SCROLLSPACE_HTML.contains("function drawDiscGlow(g,form,pc)"));
+        assert!(SCROLLSPACE_HTML.contains("g.form=galaxyForm(g,ts);"));
+    }
+
+    #[test]
     fn favicon_ico_is_an_icon_and_the_svg_keeps_its_type() {
         let (ico_type, ico) = public_asset("/favicon.ico").unwrap();
         assert_eq!(ico_type, "image/x-icon");
