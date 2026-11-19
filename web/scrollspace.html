@@ -16,6 +16,7 @@
   #target{position:absolute;top:10px;right:12px;max-width:36%;text-align:right;font-size:13px;line-height:1.5;pointer-events:none;text-shadow:0 1px 3px #000}
   #target .t{color:#ffe9a8}
   #target .s{color:#7d8aa5;font-size:12px}
+  #target .p{color:#9fb8e8;font-size:12px;font-style:italic}
   #nav{position:absolute;top:52px;left:50%;transform:translateX(-50%);display:flex;gap:6px;z-index:5}
   #nav input{width:min(430px,52vw);background:rgba(8,16,36,.92);border:1px solid #3c5a8f;border-radius:8px;color:#ffe9a8;font-family:inherit;font-size:14px;padding:8px 10px;outline:none}
   #nav input:focus{border-color:#ffd479}
@@ -101,7 +102,7 @@
   <div class="coord" id="coord">—</div>
   <div class="hint" id="hint">click the view to lock the mouse — Descent layout: F forward · A back · W/E strafe · S/D turn · Q down · R up · mouse1 fires the zoom · wheel sets throttle (forward/backward velocity) · shift boosts · z/x roll · gold crumbs mark your trail — aim + enter returns to one, c steps back along it</div>
 </div>
-<div id="target"><div class="t" id="tname">no target</div><div class="s" id="tsub">tab or fly close to acquire</div></div>
+<div id="target"><div class="t" id="tname">no target</div><div class="s" id="tsub">tab or fly close to acquire</div><div class="p" id="tprev" style="display:none"></div></div>
 <div id="nav">
   <input id="jump" type="text" spellcheck="false" placeholder="jump: coordinate 1.1.1/1.1.1/1.1.1 · a phext name · a triple 30.7.10">
   <button id="jumpgo">Go</button>
@@ -235,6 +236,95 @@ async function fetchBody(name,coord){
 }
 async function fetchMatches(at,scale){
   return apiJson("/api/toc?mode=matches&scope=all&scale="+scale+"&at="+encodeURIComponent(at));
+}
+/* ---------- hover labels (task 30.8.9/11.10.17/15.6.8) ----------
+   Will, 2026-11-19: "the nodes that are displayed should show the
+   first few words or a holographic summary word" / "load the label
+   on hover, including how many pages are found there".
+   Hover in this UI is the crosshair: S.target is the node under
+   the crosshair (TAB-lock included) — pointer lock hides the
+   cursor in flight, so there is no mouse-position hover to serve.
+   The label is a third line in the target readout (#tprev): the
+   first 7 words of the node's representative scroll, plus the
+   page count at the node (the summary total for a galaxy, the
+   children-map scrolls under a macro/meso, 1 page here for a
+   micro — the node is that one scroll in this phext, and its kin
+   at the same address elsewhere already ride in sub via matches).
+   Lazy by construction: a node must stay targeted ~250 ms before
+   anything is fetched (fly-bys spray nothing), the fetch is one
+   /api/scroll in the common case (the subspace home), and
+   hoverCache + the existing bodyCache make re-hover free.
+   The holographic summary word is NOT shipped: the real Singular
+   computation needs Will's authored-word atlas (46,720 words)
+   for the nearest-word lookup, and at L0-L2 the merge runs over
+   the node's whole text — fetching a galaxy's scrolls to
+   summarise it would break the lazy rule outright. First words
+   are Will's stated alternative; the summary word's honest route
+   is a server endpoint, not a client-side fake. */
+const hoverCache=new Map(); let hoverWanted=null, hoverTimer=null;
+function hoverKeyOf(n){
+  if(!n) return null;
+  if(n.kind==="gal") return "gal|"+n.ref.name;
+  if(n.kind==="macro") return "macro|"+(S.gal?S.gal.name:"")+"|"+n.ref;
+  if(n.kind==="meso") return "meso|"+(S.gal?S.gal.name:"")+"|"+(S.macro||"")+"|"+n.ref;
+  if(n.kind==="micro") return "micro|"+(S.gal?S.gal.name:"")+"|"+n.ref.coord;
+  return null;
+}
+function hoverPages(n){
+  if(n.kind==="gal") return n.ref.count;
+  if(n.kind==="macro"){ const m=S.gal&&S.gal.macros?S.gal.macros.get(n.ref):null; return m?m.scrolls:null; }
+  if(n.kind==="meso"){ const mm=S.gal?S.gal.mesos.get(S.macro):null, m=mm?mm.get(n.ref):null; return m?m.scrolls:null; }
+  if(n.kind==="micro") return 1;
+  return null;
+}
+function firstWords(text){
+  const w=String(text||"").split(/\s+/).map(x=>x.replace(/^#+/,"")).filter(Boolean);
+  return {words:w.slice(0,7).join(" "), more:w.length>7};
+}
+async function hoverResolve(n,gal,macro){
+  const first=async(name,coord)=>{ const rec=await fetchBody(name,coord); const f=firstWords(rec.text); return f.words?f:null; };
+  try{
+    if(n.kind==="gal"){ const g=n.ref;
+      if(g.count==null) fetchSummary(g).catch(()=>{});
+      try{ const f=await first(g.name,"1.1.1/1.1.1/1.1.1"); if(f) return f; }catch(e){}
+      if(g.scrollsAll&&g.scrollsAll.length){ try{ return await first(g.name,g.scrollsAll[0].coord); }catch(e){} }
+      return null;
+    }
+    if(!gal) return null;
+    if(n.kind==="macro"){
+      try{ const f=await first(gal.name,n.ref+"/1.1.1/1.1.1"); if(f) return f; }catch(e){}
+      try{ const j=await apiJson(tocUrl(gal.name,"mode=scrolls&at="+encodeURIComponent(n.ref)));
+        if(j.scrolls&&j.scrolls.length) return await first(gal.name,j.scrolls[0].coord); }catch(e){}
+      return null;
+    }
+    if(n.kind==="meso"){ const at=(macro||"")+"/"+n.ref;
+      try{ const f=await first(gal.name,at+"/1.1.1"); if(f) return f; }catch(e){}
+      try{ await fetchMicros(gal,macro,n.ref); const arr=gal.micros.get(at);
+        if(arr&&arr.length) return await first(gal.name,arr[0].coord); }catch(e){}
+      return null;
+    }
+    if(n.kind==="micro"){ return await first(gal.name,n.ref.coord); }
+  }catch(e){}
+  return null;
+}
+function syncHover(){
+  const tp=document.getElementById("tprev"); if(!tp) return;
+  const n=S.level<4?S.target:null, key=hoverKeyOf(n);
+  if(!key){ tp.style.display="none"; tp.textContent=""; hoverWanted=null; return; }
+  if(hoverWanted!==key){ hoverWanted=key;
+    if(!hoverCache.has(key)){ if(hoverTimer) clearTimeout(hoverTimer);
+      const snap=n, gal=S.gal, macro=S.macro;
+      hoverTimer=setTimeout(()=>{ if(hoverWanted!==key||hoverCache.has(key)) return;
+        hoverCache.set(key,{state:"loading"});
+        hoverResolve(snap,gal,macro).then(f=>hoverCache.set(key,f?{state:"done",words:f.words,more:f.more}:{state:"none"}))
+          .catch(()=>hoverCache.set(key,{state:"none"})); },250);
+    }
+  }
+  const c=hoverCache.get(key);
+  if(c&&c.state==="done"){ const p=hoverPages(n);
+    tp.textContent="\u201C"+c.words+(c.more?"\u2026":"")+"\u201D"+(p==null?"":(n.kind==="micro"?" \u00B7 1 page here":" \u00B7 "+p+" pages"));
+    tp.style.display="block";
+  } else tp.style.display="none";
 }
 
 /* ---------- galaxies + relationship indexes (built progressively) ---------- */
@@ -1307,6 +1397,7 @@ function frame(now){
   if(S.level===4){ tn.textContent=(S.planet.title||S.planet.coord); ts.textContent="plane of existence · Read for clean text · bksp steps back out"; }
   else if(S.target){ tn.textContent=S.target.label; ts.textContent=S.target.sub+" · enter or mouse1 to zoom"; }
   else { tn.textContent="no target"; ts.textContent="put the crosshair on a node, or TAB to lock one"; }
+  syncHover();
   if(S.msgT&&now-S.msgT>3400){document.getElementById("msg").style.opacity=0;S.msgT=0;}
   requestAnimationFrame(frame);
 }
