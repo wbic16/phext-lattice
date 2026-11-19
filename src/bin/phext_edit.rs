@@ -7954,6 +7954,7 @@ const FAVICON_ICO: &[u8] = include_bytes!("../../web/favicon.ico");
 const FAVICON_SVG: &[u8] = include_bytes!("../../web/favicon.svg");
 const APPLE_TOUCH_PNG: &[u8] = include_bytes!("../../web/apple-touch-icon.png");
 const OG_PNG: &[u8] = include_bytes!("../../web/og.png");
+const WILLBOT_MONO_WOFF2: &[u8] = include_bytes!("../../web/willbot-mono.woff2");
 
 /// Public icon and share-image routes. `path` may include a query string.
 /// Anything else (including `/robots.txt`, `/sitemap.xml`) is left for other routes.
@@ -7965,6 +7966,7 @@ fn public_asset(path: &str) -> Option<(&'static str, &'static [u8])> {
             Some(("image/png", APPLE_TOUCH_PNG))
         }
         "/og.png" => Some(("image/png", OG_PNG)),
+        "/willbot-mono.woff2" => Some(("font/woff2", WILLBOT_MONO_WOFF2)),
         "/banner.webp" => Some(("image/webp", BANNER_WEBP)),
         "/background.webp" => Some(("image/webp", BACKGROUND_WEBP)),
         _ => None,
@@ -8965,8 +8967,17 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
   --z-color: #4dc9c9; --y-color: #c964c9; --x-color: #6bc96b;
   --active: #e8c547; --danger: #e05555;
   --trans-fast: 120ms ease; --trans-med: 200ms ease;
+  --font-text: 'Willbot Mono', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
+/* Willbot Mono — Will's own monospace face (web/willbot-mono.woff2,
+   served pre-gate by public_asset so signed-out readers load it too).
+   The scroll-text face: #content (read view) and the editor textarea. */
+@font-face {
+  font-family: 'Willbot Mono';
+  src: url("/willbot-mono.woff2") format("woff2");
+  font-weight: 400; font-style: normal; font-display: swap;
+}
 body {
   background: var(--bg); color: var(--text);
   font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
@@ -9074,6 +9085,7 @@ body {
 #content-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 #content {
   flex: 1; overflow-y: auto; padding: 16px 20px;
+  font-family: var(--font-text);
   white-space: pre-wrap; word-wrap: break-word; line-height: 1.5; tab-size: 4;
   transition: opacity var(--trans-fast);
 }
@@ -9089,7 +9101,7 @@ body {
 #editor { display: none; flex: 1; overflow: hidden; flex-direction: column; }
 #editor textarea {
   width: 100%; flex: 1; background: var(--bg); color: var(--text);
-  font-family: inherit; font-size: 13px; line-height: 1.5;
+  font-family: var(--font-text); font-size: 13px; line-height: 1.5;
   padding: 16px 20px; border: none; outline: none; resize: none; tab-size: 4;
 }
 #editor .editor-toolbar {
@@ -12062,6 +12074,27 @@ mod http_tests {
         assert!(head.contains("Content-Length: 13\r\n"));
         let end = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
         assert_eq!(end + 4, bytes.len());
+    }
+
+    #[test]
+    fn willbot_mono_is_served_and_wired_for_scroll_text() {
+        // Will (2026-11-19): the jumped-to scroll text was unreadable in
+        // the old ligature-programming stacks ("the font is weird, the
+        // kernel is bad") — it renders in Willbot Mono now. The asset
+        // rides the pre-gate static route so signed-out readers load
+        // it too.
+        let (font_type, font) = public_asset("/willbot-mono.woff2").unwrap();
+        assert_eq!(font_type, "font/woff2");
+        assert!(font.starts_with(b"wOF2"));
+        assert!(public_asset("/willbot-mono.woff2?v=1").is_some());
+        for page in [INDEX_HTML, SCROLLSPACE_HTML] {
+            assert!(page.contains("@font-face"), "font-face declared");
+            assert!(page.contains("'Willbot Mono'"), "face named");
+            assert!(page.contains("/willbot-mono.woff2"), "face src wired");
+        }
+        assert!(INDEX_HTML.contains("--font-text: 'Willbot Mono'"));
+        assert!(INDEX_HTML.contains("font-family: var(--font-text);"));
+        assert!(SCROLLSPACE_HTML.contains("#read .body{font-family:'Willbot Mono'"));
     }
 
     #[test]
