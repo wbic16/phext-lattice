@@ -9515,7 +9515,8 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
   <span class="touch-actions"><button type="button" onclick="enterEdit()" title="Edit the current scroll (key: e)">✎ Edit</button><button type="button" onclick="openSearch()" title="Search scrolls (key: /)">⌕ Search</button><button type="button" onclick="openGoto()" title="Go to a coordinate (key: g)">⌖ Goto</button></span>
   <span class="help" id="help-text">1-9:dim  h/l:move  j/k:nav  J/K:×10  e:edit  u:UG5  t:tree  /:search  g:goto  [/]:universe  Home:BASE</span>
   <span class="msg" id="status-msg" role="status" aria-live="polite"></span>
-  <a class="bar-link first" href="/submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
+  <a class="bar-link first" id="scrollspace-link" href="/scrollspace.html" title="Jump back to Scrollspace — fly the hosted phexts in the 3D multiverse view">Jump back to Scrollspace</a>
+  <a class="bar-link" href="/submit" title="Upload a phext for review — an editor can accept it into the library">Submit a phext</a>
   <a class="bar-link" href="/claim" title="If your X account is in the wavefront map, claim your space on this server">Claim your space</a>
   <a class="bar-link" href="/explore" title="Every placement in the wavefront, explorable in nine dimensions">Explore the map</a>
   <a class="bar-link" href="/heatmap" title="Every scroll of a phext as a point of light — the text colours the nodes and the fabric; search rebuilds the view">Heat map</a>
@@ -12208,6 +12209,25 @@ mod http_tests {
         // capture itself is untouched: still requested only from the
         // canvas click handler at flight levels
         assert!(SCROLLSPACE_HTML.contains("if(S.level<4&&document.pointerLockElement!==cv&&cv.requestPointerLock) cv.requestPointerLock();"));
+    }
+
+    #[test]
+    fn editor_shell_links_back_to_scrollspace() {
+        // Task 30.6.8/6.5.9/5.5.8 (Will, 2026-11-19): "make sure you
+        // can actually reach scrollspace.html from a logged in
+        // editor page - jump back to scrollspace button". The only
+        // Scrollspace link in the shell was inside the sign-in
+        // screen's "No sign-in needed" line — invisible from a
+        // logged-in editor page. The status bar (the shell's
+        // persistent chrome, shared by anonymous and signed-in
+        // states; loadSession toggles only #signout and
+        // #dashboard-link) now leads its link row with the jump.
+        assert!(INDEX_HTML.contains("<a class=\"bar-link first\" id=\"scrollspace-link\" href=\"/scrollspace.html\""), "status-bar jump link");
+        assert!(INDEX_HTML.contains(">Jump back to Scrollspace</a>"), "jump link label");
+        // Same-tab, like every other bar-link: no target attribute.
+        assert!(!INDEX_HTML.contains("id=\"scrollspace-link\" href=\"/scrollspace.html\" target="), "same-tab jump");
+        // Exactly one jump link in the shell.
+        assert_eq!(INDEX_HTML.matches("id=\"scrollspace-link\"").count(), 1, "one jump link");
     }
 
     #[test]
