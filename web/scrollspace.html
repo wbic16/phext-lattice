@@ -795,7 +795,14 @@ function enterLevel(dist){ S.vel=[0,0,0]; S.throttle=0; S.wheelAcc=0; S.yaw=0;S.
     if(F){ S.trailStep=Math.max(30,Math.min(500,F.R*0.06)); dropCrumb(true); }
     else S.trailPending=true;
   } }
+/* Opening a scroll frees the mouse (Will, 2026-11-19): stepping onto
+   a plane or opening the Read panel drops pointer lock, so the plane
+   footer's editor link, the panel's controls and plane cell clicks
+   are reachable with a real cursor. Re-capture is unchanged — the
+   existing gesture: click the canvas at a flight level. */
+function releaseCapture(){ if(document.pointerLockElement&&document.exitPointerLock) document.exitPointerLock(); }
 async function enterPlane(){
+  releaseCapture();
   const ref=S.planet, g=S.gal;
   S.plane=["fetching the scroll from "+g.name+" …"]; S.px=2; S.py=2;
   if(!S.trailMute) dropCrumb(true); /* the plane's entry crumb, at the entry cell */
@@ -868,6 +875,7 @@ function openPanel(title, meta, body, links){
   readEl.style.display="flex";
 }
 async function openRead(ref){
+  releaseCapture();
   const g=S.gal;
   document.getElementById("readtitle").textContent=ref.title||ref.coord;
   document.getElementById("readmeta").textContent=g.name+" · "+ref.coord;
