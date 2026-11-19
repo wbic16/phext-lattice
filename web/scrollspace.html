@@ -88,7 +88,7 @@
 <div id="hud">
   <div class="crumb" id="crumb">SCROLLSPACE</div>
   <div class="coord" id="coord">—</div>
-  <div class="hint" id="hint">click the view to lock the mouse — Descent layout: F forward · A back · W/E strafe · S/D turn · Q down · R up · mouse1 fires the zoom · wheel sets cruise speed · shift boosts · z/x roll</div>
+  <div class="hint" id="hint">click the view to lock the mouse — Descent layout: F forward · A back · W/E strafe · S/D turn · Q down · R up · mouse1 fires the zoom · wheel sets throttle (forward/backward velocity) · shift boosts · z/x roll</div>
 </div>
 <div id="target"><div class="t" id="tname">no target</div><div class="s" id="tsub">tab or fly close to acquire</div></div>
 <div id="nav">
@@ -532,7 +532,7 @@ async function backgroundIndex(){
 /* ---------- state ---------- */
 const S={level:0, gal:null, macro:null, meso:null, planet:null, cam:[0,0,2700], yaw:0, pitch:0, roll:0,
          target:null, hot:null, tabTarget:null, tabIdx:-1, casting:null, trans:null, frameOnLoad:null, plane:null, px:2, py:2, msgT:0};
-S.vel=[0,0,0]; S.speedMul=1;
+S.vel=[0,0,0]; S.throttle=0; S.wheelAcc=0;
 let nodes=[];
 function buildNodes(){
   nodes=[];
@@ -648,7 +648,7 @@ function doZoomOut(){
   else if(S.level===2) up("Back to Macro…",()=>{S.level=1;S.macro=null;enterLevel(1500);});
   else if(S.level===1) up("Back to Galaxies…",()=>{S.level=0;S.gal=null;enterLevel(2700);});
 }
-function enterLevel(dist){ S.vel=[0,0,0]; S.yaw=0;S.pitch=0;S.roll=0; S.target=null;S.hot=null;S.tabTarget=null;S.tabIdx=-1;
+function enterLevel(dist){ S.vel=[0,0,0]; S.throttle=0; S.wheelAcc=0; S.yaw=0;S.pitch=0;S.roll=0; S.target=null;S.hot=null;S.tabTarget=null;S.tabIdx=-1;
   buildNodes();
   const F=frameNodes();
   if(F){ S.cam=F.cam; S.frameOnLoad=null; }
@@ -832,7 +832,23 @@ cv.addEventListener("mousedown",e=>{ if(document.pointerLockElement===cv){ if(S.
 cv.addEventListener("click",e=>{ if(S.level<4&&document.pointerLockElement!==cv&&cv.requestPointerLock) cv.requestPointerLock(); });
 addEventListener("mouseup",()=>{ dragging=false; });
 addEventListener("mousemove",e=>{ if(document.pointerLockElement===cv){ if(S.level<4){ S.yaw-=e.movementX*0.0023; S.pitch-=e.movementY*0.0023; S.pitch=Math.max(-1.45,Math.min(1.45,S.pitch)); } return; } ptrMove(e.clientX,e.clientY); });
-addEventListener("wheel",e=>{ if(S.level<4){ S.speedMul=Math.max(0.25,Math.min(6,S.speedMul*(e.deltaY<0?1.25:0.8))); showMsg("cruise speed x"+S.speedMul.toFixed(2)); } },{passive:true});
+/* the wheel is a throttle on forward/backward velocity (Will,
+   2026-11-19): S.throttle is a signed velocity along the camera's
+   forward axis, in units/sec. deltaY is normalised (line mode
+   x33, page mode x333) and accumulated; each full 100 units is
+   one notch — a standard mouse notch is exactly one step of
+   40 u/s, clamped to [-640, +640]. The throttle holds until the
+   wheel changes it or a level change resets it (enterLevel);
+   moveCam applies it. It never triggers a zoom — zooming stays
+   on the cast path. At the plane (level 4) the wheel is a no-op,
+   as before. */
+addEventListener("wheel",e=>{ if(S.level>=4) return;
+  S.wheelAcc+=e.deltaY*(e.deltaMode===1?33:e.deltaMode===2?333:1);
+  let stepped=false;
+  while(S.wheelAcc<=-100){ S.wheelAcc+=100; S.throttle=Math.min(640,S.throttle+40); stepped=true; }
+  while(S.wheelAcc>=100){ S.wheelAcc-=100; S.throttle=Math.max(-640,S.throttle-40); stepped=true; }
+  if(stepped) showMsg(S.throttle===0?"throttle 0":"throttle "+(S.throttle>0?"+":"")+S.throttle);
+},{passive:true});
 cv.addEventListener("touchstart",e=>{const t=e.touches[0];ptrDown(t.clientX,t.clientY);},{passive:true});
 cv.addEventListener("touchmove",e=>{const t=e.touches[0];ptrMove(t.clientX,t.clientY);e.preventDefault();},{passive:false});
 cv.addEventListener("touchend",()=>{ const wasDrag=moved>8; dragging=false;
@@ -874,7 +890,7 @@ function project(p){
 }
 function moveCam(dt){
   const {F,R}=basis();
-  const boost=keys["Shift"]?4:1, maxSp=640*boost*S.speedMul, accel=2800*boost;
+  const boost=keys["Shift"]?4:1, maxSp=640*boost, accel=2800*boost;
   const up=[0,1,0], wish=[0,0,0];
   const addW=(v,m)=>{wish[0]+=v[0]*m;wish[1]+=v[1]*m;wish[2]+=v[2]*m;};
   if(keys["f"]||keys["ArrowUp"])addW(F,1); if(keys["a"]||keys["ArrowDown"])addW(F,-1);
@@ -890,6 +906,14 @@ function moveCam(dt){
   const sp=Math.hypot(S.vel[0],S.vel[1],S.vel[2]), cap=Math.max(24,maxSp*taper);
   if(sp>cap) S.vel=S.vel.map(v=>v*cap/sp);
   S.cam=[0,1,2].map(i=>S.cam[i]+S.vel[i]*dt);
+  /* wheel throttle: a persistent signed velocity along the nose,
+     applied as its own term — exempt from the key-velocity
+     friction and cap above (it is the throttle, not stick input),
+     but scaled by the same approach taper so a targeted approach
+     slows the throttle exactly as key flight does. moveCam does not
+     run during a zoom transition, so the throttle never fights
+     the cast. */
+  if(S.throttle){ const th=S.throttle*taper*dt; S.cam=[0,1,2].map(i=>S.cam[i]+F[i]*th); }
   if(keys["z"])S.roll-=dt*1.6; if(keys["x"])S.roll+=dt*1.6;
 }
 /* MATH-END */
