@@ -1101,6 +1101,169 @@ struct ApiHeatMap {
     /// neighbourhood from sequence.
     scrolls: Vec<ApiHeatScroll>,
 }
+/// ----------------------------------------------------------------------------------------------------------
+/// Progressive TOC (Scrollspace): structure-only table-of-contents modes for
+/// hosted phexts, in the same JSON shapes as SQ's /api/v2/toc modes. All
+/// structure is computed by libphext's toc_* functions over the file text —
+/// this layer never walks the format itself. `heat_map_body` is the shape
+/// precedent: a free function over one hosted file, answered per request.
+///
+/// Modes:
+///   full     — the legacy textmap dump
+///   children — next-dimension values under the `at` prefix with scroll
+///              counts + bytes (step=1), or grouped by address triple
+///              (step=3, the Scrollspace zoom unit)
+///   summary  — subtree scroll count + bytes under `at`
+///   scrolls  — coordinates + byte sizes under `at`, no bodies
+///   matches  — scale 9 (full coordinate), 6 (prefix subtree), or 3
+///              (chapter.section.scroll suffix kinship); with scope=all the
+///              route aggregates across every hosted phext (toc_matches_all)
+/// ----------------------------------------------------------------------------------------------------------
+fn toc_parse_prefix(text: &str) -> Result<Vec<usize>, String> {
+    let cleaned = text.trim().replace(';', "/");
+    if cleaned.is_empty() { return Ok(Vec::new()); }
+    let mut prefix = Vec::new();
+    for part in cleaned.split(|c| c == '/' || c == '.') {
+        if part.is_empty() { continue; }
+        match part.parse::<usize>() {
+            Ok(v) => prefix.push(v),
+            Err(_) => return Err(format!("invalid coordinate prefix component: {}", part)),
+        }
+    }
+    if prefix.len() > 9 { return Err("coordinate prefix longer than 9 dimensions".to_string()); }
+    Ok(prefix)
+}
+
+fn toc_components(coord: &libphext::phext::Coordinate) -> [usize; 9] {
+    [coord.z.library, coord.z.shelf, coord.z.series,
+     coord.y.collection, coord.y.volume, coord.y.book,
+     coord.x.chapter, coord.x.section, coord.x.scroll]
+}
+
+fn toc_json_prefix(prefix: &[usize]) -> serde_json::Value {
+    serde_json::Value::Array(prefix.iter().map(|v| serde_json::json!(v)).collect())
+}
+
+fn toc_read_text(path: &std::path::Path) -> Result<String, String> {
+    let raw = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    Ok(String::from_utf8_lossy(&raw).into_owned())
+}
+
+fn toc_body(path: &std::path::Path, mode: &str, at: &str, step: usize, scale: Option<usize>) -> Result<String, String> {
+    let text = toc_read_text(path)?;
+    let prefix = toc_parse_prefix(at)?;
+    if step != 1 && step != 3 { return Err(format!("toc step must be 1 or 3, got {}", step)); }
+    match mode {
+        "full" => Ok(libphext::phext::textmap(&text)),
+        "summary" => {
+            let s = libphext::phext::toc_summary(&text, &prefix);
+            Ok(serde_json::json!({"mode": "summary", "at": toc_json_prefix(&prefix),
+                "scrolls": s.scrolls, "bytes": s.bytes}).to_string())
+        }
+        "children" => {
+            if prefix.len() + step > 9 {
+                return Err("toc children prefix + step exceeds 9 dimensions".to_string());
+            }
+            let children: Vec<serde_json::Value> = if step == 1 {
+                libphext::phext::toc_children(&text, &prefix).iter()
+                    .map(|c| serde_json::json!({"value": [c.value], "scrolls": c.scrolls, "bytes": c.bytes}))
+                    .collect()
+            } else {
+                let mut groups: std::collections::BTreeMap<[usize; 3], (usize, usize)> = Default::default();
+                for entry in libphext::phext::toc_scrolls(&text, &prefix) {
+                    let key = toc_components(&entry.coord);
+                    let d = prefix.len();
+                    let triple = [key[d], key[d + 1], key[d + 2]];
+                    let slot = groups.entry(triple).or_insert((0, 0));
+                    slot.0 += 1;
+                    slot.1 += entry.bytes;
+                }
+                groups.iter()
+                    .map(|(t, (n, b))| serde_json::json!({"value": [t[0], t[1], t[2]], "scrolls": n, "bytes": b}))
+                    .collect()
+            };
+            Ok(serde_json::json!({"mode": "children", "at": toc_json_prefix(&prefix),
+                "step": step, "children": children}).to_string())
+        }
+        "scrolls" => {
+            let entries = libphext::phext::toc_scrolls(&text, &prefix);
+            let list: Vec<serde_json::Value> = entries.iter()
+                .map(|e| serde_json::json!({"coord": e.coord.to_string(), "bytes": e.bytes}))
+                .collect();
+            Ok(serde_json::json!({"mode": "scrolls", "at": toc_json_prefix(&prefix),
+                "count": list.len(), "scrolls": list}).to_string())
+        }
+        "matches" => {
+            let scale = scale.unwrap_or(prefix.len());
+            if scale != 9 && scale != 6 && scale != 3 {
+                return Err(format!("toc matches scale must be 9, 6 or 3, got {}", scale));
+            }
+            if prefix.len() != scale {
+                return Err(format!("toc matches at prefix has {} components but scale is {}", prefix.len(), scale));
+            }
+            let entries = if scale == 3 {
+                libphext::phext::toc_scrolls_by_suffix(&text, &prefix)
+            } else {
+                libphext::phext::toc_scrolls(&text, &prefix)
+            };
+            let list: Vec<serde_json::Value> = entries.iter()
+                .map(|e| serde_json::json!({"coord": e.coord.to_string(), "bytes": e.bytes}))
+                .collect();
+            Ok(serde_json::json!({"mode": "matches", "scale": scale, "at": toc_json_prefix(&prefix),
+                "count": list.len(), "matches": list}).to_string())
+        }
+        other => Err(format!("unknown toc mode: {}", other)),
+    }
+}
+
+/// Cross-phext matches: where else a coordinate / 6-dimension prefix /
+/// 3-dimension suffix occurs across every hosted phext. Uncached by design —
+/// the client asks on inspect, not per frame.
+fn toc_matches_all(files: &[PhextFile], at: &str, scale: Option<usize>) -> Result<String, String> {
+    let prefix = toc_parse_prefix(at)?;
+    let scale = scale.unwrap_or(prefix.len());
+    if scale != 9 && scale != 6 && scale != 3 {
+        return Err(format!("toc matches scale must be 9, 6 or 3, got {}", scale));
+    }
+    if prefix.len() != scale {
+        return Err(format!("toc matches at prefix has {} components but scale is {}", prefix.len(), scale));
+    }
+    let mut all: Vec<serde_json::Value> = Vec::new();
+    for f in files {
+        let text = match toc_read_text(std::path::Path::new(&f.path)) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let entries = if scale == 3 {
+            libphext::phext::toc_scrolls_by_suffix(&text, &prefix)
+        } else {
+            libphext::phext::toc_scrolls(&text, &prefix)
+        };
+        for e in entries {
+            all.push(serde_json::json!({"phext": f.name, "coord": e.coord.to_string(), "bytes": e.bytes}));
+        }
+    }
+    Ok(serde_json::json!({"mode": "matches", "scale": scale, "at": toc_json_prefix(&prefix),
+        "scope": "all", "count": all.len(), "matches": all}).to_string())
+}
+
+/// One scroll's body from any hosted phext, fetched on demand — the read
+/// that replaces streaming a whole phext to the client.
+fn scroll_body(path: &std::path::Path, name: &str, coord_str: &str) -> Result<String, String> {
+    let text = toc_read_text(path)?;
+    let coord = libphext::phext::to_coordinate(coord_str);
+    if !coord.validate_coordinate() {
+        return Err(format!("invalid coordinate: {}", coord_str));
+    }
+    let prefix = toc_components(&coord);
+    if libphext::phext::toc_summary(&text, &prefix).scrolls == 0 {
+        return Ok(serde_json::json!({"ok": false, "message": format!("no scroll at {} in {}", coord, name)}).to_string());
+    }
+    let body = libphext::phext::fetch(&text, coord);
+    Ok(serde_json::json!({"ok": true, "phext": name, "coord": coord.to_string(),
+        "bytes": body.len(), "text": body}).to_string())
+}
+
 
 /// Per-scroll statistics for the heat map, parsed with libphext's
 /// reference parser (`phext::explode`) — never a hand-rolled one.
@@ -1616,6 +1779,7 @@ fn public_document(path: &str) -> Option<PublicDocument> {
         "/learn-you-phext.html" => ("text/html; charset=utf-8", LEARN_YOU_PHEXT_HTML),
         "/learn-you-phext.phext" => ("text/plain; charset=utf-8", LEARN_YOU_PHEXT),
         "/ascii-map.html" => ("text/html; charset=utf-8", ASCII_MAP_HTML),
+        "/scrollspace.html" => ("text/html; charset=utf-8", SCROLLSPACE_HTML),
         "/ascii-map.phext" => ("text/plain; charset=utf-8", ASCII_MAP),
         "/singular.html" => ("text/html; charset=utf-8", SINGULAR_HTML),
         "/phext-previewer.html" => ("text/html; charset=utf-8", PREVIEWER_HTML),
@@ -1864,6 +2028,60 @@ fn handle_request(
                 None => send_response(stream, 404, "application/json", API_NOT_FOUND, CacheClass::NoStore, &headers, false),
             }
         }
+        // Progressive TOC for one hosted phext — the structure modes
+        // Scrollspace walks with (same JSON shapes as SQ's /api/v2/toc
+        // modes). mode=matches&scope=all aggregates across every hosted
+        // phext: where else a coordinate, prefix, or suffix lives.
+        ("GET", p) if path_route(p) == "/api/toc" => {
+            let name = query_param(p, "name").unwrap_or_default();
+            let mode = query_param(p, "mode").unwrap_or_else(|| "children".to_string());
+            let at = query_param(p, "at").unwrap_or_default();
+            let step: usize = query_param(p, "step").and_then(|s| s.parse().ok()).unwrap_or(1);
+            let scale = query_param(p, "scale").and_then(|s| s.parse().ok());
+            let scope = query_param(p, "scope").unwrap_or_default();
+            if mode == "matches" && scope == "all" {
+                match toc_matches_all(&state.list_phexts(), &at, scale) {
+                    Ok(body) => send_response(stream, 200, "application/json", body.as_bytes(), CacheClass::NoStore, &headers, false),
+                    Err(e) => json_response(stream, &headers, &ApiOk { ok: false, message: e }),
+                }
+            } else {
+                let target = if name.trim().is_empty() {
+                    Some(std::path::PathBuf::from(state.file_path.clone()))
+                } else {
+                    state.hosted_phext(name.trim())
+                };
+                match target {
+                    Some(path) => match toc_body(&path, &mode, &at, step, scale) {
+                        Ok(body) => send_response(stream, 200, "application/json", body.as_bytes(), CacheClass::NoStore, &headers, false),
+                        Err(e) => json_response(stream, &headers, &ApiOk { ok: false, message: e }),
+                    },
+                    None => send_response(stream, 404, "application/json", API_NOT_FOUND, CacheClass::NoStore, &headers, false),
+                }
+            }
+        }
+
+        // One scroll's body from any hosted phext, fetched on demand —
+        // the read that replaces streaming a whole phext to the client.
+        ("GET", p) if path_route(p) == "/api/scroll" => {
+            let name = query_param(p, "name").unwrap_or_default();
+            let coord = query_param(p, "coord").unwrap_or_default();
+            let target = if name.trim().is_empty() {
+                Some(std::path::PathBuf::from(state.file_path.clone()))
+            } else {
+                state.hosted_phext(name.trim())
+            };
+            match target {
+                Some(path) => {
+                    let display = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    match scroll_body(&path, &display, &coord) {
+                        Ok(body) => send_response(stream, 200, "application/json", body.as_bytes(), CacheClass::NoStore, &headers, false),
+                        Err(e) => json_response(stream, &headers, &ApiOk { ok: false, message: e }),
+                    }
+                }
+                None => send_response(stream, 404, "application/json", API_NOT_FOUND, CacheClass::NoStore, &headers, false),
+            }
+        }
+
         ("POST", "/api/open") => {
             let body = read_body(&mut reader, &headers);
             let requested = body.trim();
@@ -8240,6 +8458,11 @@ with those files from a browser:</p>
   itself a phext, scroll by scroll.</li>
   <li><a href="ascii-map.html">The Map With Pages Behind It</a>: a game map drawn
   once per layer (ground, things, what happened). Each layer is one scroll of plain text you can read in any text editor — simple enough for a child.</li>
+  <li><a href="scrollspace.html">Scrollspace</a>: fly the hosted phexts like a
+  stellar cartography — galaxies, star systems, planets, and the plane of
+  existence inside each scroll. Descent controls and WoW action bars steer;
+  a jump box flies straight to a coordinate, and reading mode drops out of
+  exploration into clean, selectable text.</li>
   <li><a href="singular.html">Singular</a>: an Up Goer Five variant whose word list is one
   person's Twitter archive — read, write, and read/write with only those words.</li>
   <li><a href="phext-previewer.html">Phext Previewer</a>: open a phext file from your
@@ -8478,6 +8701,15 @@ const ASCII_MAP_HTML: &str = include_str!("../../web/ascii-map.html");
 // teaches from and open it in any text editor.
 const ASCII_MAP: &str = include_str!("../../web/ascii-map.phext");
 
+// Scrollspace likewise lives as a file under web/ and is compiled in: a
+// stellar-cartography flight through the hosted phexts — galaxies, star
+// systems, planets, and the plane of existence inside each scroll —
+// steered with Descent controls and WoW action bars, with a jump box
+// that flies straight to a coordinate and a reading mode that drops out
+// of exploration into clean, selectable text. The page carries its
+// dataset inline and makes no requests of its own.
+const SCROLLSPACE_HTML: &str = include_str!("../../web/scrollspace.html");
+
 // The Singular page likewise lives as a file under web/ and is compiled in:
 // an Up Goer Five variant whose word list is one person's Twitter archive.
 // Its modes pick which list flags the text: Read (what he read), Write
@@ -8553,6 +8785,7 @@ const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>https://edit.phext.io/tts-demo.html</loc></url>
   <url><loc>https://edit.phext.io/learn-you-phext.html</loc></url>
   <url><loc>https://edit.phext.io/ascii-map.html</loc></url>
+  <url><loc>https://edit.phext.io/scrollspace.html</loc></url>
   <url><loc>https://edit.phext.io/singular.html</loc></url>
   <url><loc>https://edit.phext.io/phext-previewer.html</loc></url>
   <url><loc>https://edit.phext.io/submit</loc></url>
@@ -9207,7 +9440,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
     <p class="explain">Nine numbers name a scroll: library, shelf, series, collection, volume, book, chapter, section, scroll. The scroll is a page of lines and columns, which makes eleven. The file stays plain text.</p>
     <p class="hint">Sign in to save and edit your own files. The demo is a sample you can walk through; nothing in it is saved.</p>
     <p class="links"><a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · <a href="mailto:will+support@phext.io">Contact</a><br>
-      No sign-in needed: <a href="/up-goer-five.html">Up Goer Five</a> · <a href="/tts-demo.html">Coordinate TTS demo</a> · <a href="/learn-you-phext.html">Learn You Phext</a> · <a href="/ascii-map.html">The Map With Pages Behind It</a> · <a href="/singular.html">Singular</a> · <a href="/phext-previewer.html">Phext Previewer</a> · <a href="/wiki/">Example wiki</a> · <a href="/zeros">The Zero Index</a> · <a href="/heatmap">Heat map</a><br>
+      No sign-in needed: <a href="/up-goer-five.html">Up Goer Five</a> · <a href="/tts-demo.html">Coordinate TTS demo</a> · <a href="/learn-you-phext.html">Learn You Phext</a> · <a href="/ascii-map.html">The Map With Pages Behind It</a> · <a href="/scrollspace.html">Scrollspace</a> · <a href="/singular.html">Singular</a> · <a href="/phext-previewer.html">Phext Previewer</a> · <a href="/wiki/">Example wiki</a> · <a href="/zeros">The Zero Index</a> · <a href="/heatmap">Heat map</a><br>
       Have a phext of your own? <a href="/submit">Upload it for review</a> — if an editor accepts it, you become an editor too. Signing in with X makes you an editor at once.<br>
       Placed in the wavefront map? <a href="/claim">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="/explore">explore the map</a> first. No ads, ever.<!--phext-sponsor--><br>
       Running build: <!--phext-build--></p>
@@ -10615,7 +10848,7 @@ mod public_route_tests {
         AppState, DemoCatalog, ABOUT_HTML, BACKGROUND_WEBP, BANNER_WEBP, BUILD_SLOT, BUILD_STAMP,
         CLAIM_HTML, EXPLORE_HTML, HEATMAP_HTML, INDEX_HTML,
         LEARN_YOU_PHEXT_HTML, NOT_FOUND_HTML, PREVIEWER_HTML, PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE,
-        SINGULAR_HTML, SITEMAP_XML, STATIC_CACHE, SUBMIT_HTML, TERMS_HTML, TTS_DEMO_HTML,
+        SCROLLSPACE_HTML, SINGULAR_HTML, SITEMAP_XML, STATIC_CACHE, SUBMIT_HTML, TERMS_HTML, TTS_DEMO_HTML,
         UP_GOER_FIVE_HTML, ZERO_INDEX_HTML, DEFAULT_COORD,
     };
     use phext_lattice::oauth::{Editors, Gate, Oauth};
@@ -11107,6 +11340,23 @@ mod public_route_tests {
         assert!(INDEX_HTML.contains("Heat map</a>"), "shell link label");
         assert!(ABOUT_HTML.contains("href=\"heatmap\""), "about link");
         assert!(SITEMAP_XML.contains("https://edit.phext.io/heatmap</loc>"), "sitemap entry");
+    }
+
+    #[test]
+    fn scrollspace_page_is_public_and_linked() {
+        let gate = locked_gate();
+        let page = get(&gate, "/scrollspace.html");
+        assert_eq!(page.status, 200);
+        assert!(page.content_type.contains("text/html"), "{}", page.content_type);
+        assert!(page.body.contains("SCROLLSPACE"));
+        // The compiled bytes are the web/ file, dataset and all.
+        assert_eq!(public_document("/scrollspace.html").unwrap().body, SCROLLSPACE_HTML);
+
+        // Discoverability: the shell's sign-in screen, the About page's
+        // utility list, and the sitemap all link it.
+        assert!(INDEX_HTML.contains("href=\"/scrollspace.html\""), "shell link");
+        assert!(ABOUT_HTML.contains("href=\"scrollspace.html\""), "about link");
+        assert!(SITEMAP_XML.contains("https://edit.phext.io/scrollspace.html</loc>"), "sitemap entry");
     }
 
     #[test]
@@ -14570,5 +14820,53 @@ mod image_tests {
         assert_eq!(status, 200);
         let body = String::from_utf8_lossy(&body).into_owned();
         assert!(body.contains("phext-binary:1:base64"), "{body}");
+    }
+
+    #[test]
+    fn toc_body_walks_a_hosted_phext() {
+        let dir = std::env::temp_dir().join(format!("phext-toc-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fixture.phext");
+        // alpha 1.1.1/1.1.1/1.1.1, beta .../1.1.2, gamma .../1.2.1, delta 2.1.1/1.1.1/1.1.1
+        let doc = format!("alpha{}beta{}gamma{}delta",
+            libphext::phext::SCROLL_BREAK, libphext::phext::SECTION_BREAK, libphext::phext::LIBRARY_BREAK);
+        std::fs::write(&path, &doc).unwrap();
+
+        let v: serde_json::Value = serde_json::from_str(&toc_body(&path, "summary", "", 1, None).unwrap()).unwrap();
+        assert_eq!(v["scrolls"], serde_json::json!(4));
+        assert_eq!(v["bytes"], serde_json::json!(19));
+
+        let v: serde_json::Value = serde_json::from_str(&toc_body(&path, "children", "", 3, None).unwrap()).unwrap();
+        assert_eq!(v["children"][0]["value"], serde_json::json!([1, 1, 1]));
+        assert_eq!(v["children"][0]["scrolls"], serde_json::json!(3));
+        assert_eq!(v["children"][1]["value"], serde_json::json!([2, 1, 1]));
+
+        let v: serde_json::Value = serde_json::from_str(&toc_body(&path, "scrolls", "1.1.1", 1, None).unwrap()).unwrap();
+        assert_eq!(v["count"], serde_json::json!(3));
+
+        // suffix kinship: alpha (library 1) + delta (library 2) share 1.1.1
+        let v: serde_json::Value = serde_json::from_str(&toc_body(&path, "matches", "1.1.1", 1, Some(3)).unwrap()).unwrap();
+        assert_eq!(v["count"], serde_json::json!(2));
+        assert!(toc_body(&path, "bogus", "", 1, None).is_err());
+        assert!(toc_body(&path, "children", "", 2, None).is_err());
+
+        let v: serde_json::Value = serde_json::from_str(&scroll_body(&path, "fixture.phext", "1.1.1/1.1.1/1.2.1").unwrap()).unwrap();
+        assert_eq!(v["ok"], serde_json::json!(true));
+        assert_eq!(v["text"], serde_json::json!("gamma"));
+        let v: serde_json::Value = serde_json::from_str(&scroll_body(&path, "fixture.phext", "9.9.9/9.9.9/9.9.9").unwrap()).unwrap();
+        assert_eq!(v["ok"], serde_json::json!(false));
+
+        // cross-phext aggregation finds the kin in both files
+        let path2 = dir.join("other.phext");
+        std::fs::write(&path2, &doc).unwrap();
+        let files = vec![
+            PhextFile { name: "fixture.phext".to_string(), path: path.to_string_lossy().to_string(), bytes: 0, kind: "phext".to_string() },
+            PhextFile { name: "other.phext".to_string(), path: path2.to_string_lossy().to_string(), bytes: 0, kind: "phext".to_string() },
+        ];
+        let v: serde_json::Value = serde_json::from_str(&toc_matches_all(&files, "1.1.1", Some(3)).unwrap()).unwrap();
+        assert_eq!(v["count"], serde_json::json!(4));
+        assert_eq!(v["scope"], serde_json::json!("all"));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

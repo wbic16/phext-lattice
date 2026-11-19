@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Scrollspace — Exocortical Vision</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%;background:#04060e;overflow:hidden;font-family:ui-monospace,Menlo,Consolas,monospace;color:#cfe3ff}
+  #view{position:absolute;inset:0;display:block;cursor:crosshair;touch-action:none}
+  #hud{position:absolute;top:10px;left:12px;font-size:13px;line-height:1.5;pointer-events:none;text-shadow:0 1px 3px #000;max-width:60vw}
+  #hud .crumb{color:#8fb7ff}
+  #hud .coord{color:#ffd479;font-size:15px}
+  #hud .hint{color:#7d8aa5;font-size:12px}
+  #target{position:absolute;top:10px;right:12px;max-width:36%;text-align:right;font-size:13px;line-height:1.5;pointer-events:none;text-shadow:0 1px 3px #000}
+  #target .t{color:#ffe9a8}
+  #target .s{color:#7d8aa5;font-size:12px}
+  #nav{position:absolute;top:52px;left:50%;transform:translateX(-50%);display:flex;gap:6px;z-index:5}
+  #nav input{width:min(430px,52vw);background:rgba(8,16,36,.92);border:1px solid #3c5a8f;border-radius:8px;color:#ffe9a8;font-family:inherit;font-size:14px;padding:8px 10px;outline:none}
+  #nav input:focus{border-color:#ffd479}
+  #nav button,#readbtn,#rebindbtn{background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:13px;padding:8px 12px;cursor:pointer}
+  #nav button:hover,#readbtn:hover,#rebindbtn:hover{border-color:#8fb7ff}
+  #readbtn{position:absolute;top:52px;right:12px;z-index:5;display:none}
+  #castwrap{position:absolute;left:50%;bottom:128px;transform:translateX(-50%);width:min(340px,80vw);display:none;z-index:6}
+  #castlabel{text-align:center;font-size:12px;color:#ffe9a8;margin-bottom:4px;text-shadow:0 1px 3px #000}
+  #castbar{height:12px;border:1px solid #5b7bb4;border-radius:6px;background:#0a1224;overflow:hidden}
+  #castfill{height:100%;width:0%;background:linear-gradient(90deg,#3f7cff,#9fd0ff)}
+  #fade{position:absolute;inset:0;background:#000;opacity:0;pointer-events:none;transition:opacity .45s}
+  #bars{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);display:flex;flex-direction:column;gap:6px;align-items:center;z-index:5}
+  .bar{display:flex;gap:5px}
+  .slot{width:52px;height:52px;border:1px solid #3c5a8f;border-radius:8px;background:rgba(10,20,44,.85);color:#cfe3ff;font-family:inherit;cursor:pointer;padding:3px;display:flex;flex-direction:column;justify-content:space-between}
+  .slot:hover{border-color:#8fb7ff}
+  .slot .k{font-size:11px;color:#ffd479;text-align:left}
+  .slot .a{font-size:9.5px;line-height:1.15;color:#b9d2ff;text-align:center}
+  .slot.rebind{border-color:#ffd479;box-shadow:0 0 8px #ffd479}
+  #rebindbtn{position:absolute;left:12px;bottom:196px;z-index:5;font-size:11.5px;padding:6px 9px}
+  #rebindbtn.on{border-color:#ffd479;color:#ffd479}
+  #help{position:absolute;left:12px;bottom:10px;font-size:11.5px;color:#7d8aa5;line-height:1.55;pointer-events:none;text-shadow:0 1px 3px #000;max-width:30vw}
+  #msg{position:absolute;left:50%;top:104px;transform:translateX(-50%);font-size:14px;color:#ffe9a8;text-shadow:0 1px 4px #000;pointer-events:none;opacity:0;transition:opacity .3s;z-index:6;text-align:center;max-width:90vw}
+  #pad{position:absolute;right:10px;bottom:196px;display:none;z-index:5;grid-template-columns:repeat(3,52px);grid-template-rows:repeat(3,52px);gap:5px}
+  #pad button{background:rgba(10,20,44,.85);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:17px;cursor:pointer}
+  #pad button:active{border-color:#ffd479;color:#ffd479}
+  #read{position:absolute;top:0;right:0;height:100%;width:min(560px,94vw);background:#070d1f;border-left:1px solid #3c5a8f;z-index:9;display:none;flex-direction:column;padding:18px 20px;overflow:auto}
+  #read h2{font-size:16px;color:#ffe9a8;margin:0 0 4px;line-height:1.4;user-select:text}
+  #read .meta{font-size:12px;color:#8fb7ff;margin-bottom:12px;user-select:text}
+  #read .body{font-size:14px;line-height:1.65;color:#dbe9ff;white-space:pre-wrap;user-select:text;word-break:break-word}
+  #read .row{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap}
+  #read .row button,#read .row a{background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:13px;padding:8px 12px;cursor:pointer;text-decoration:none}
+  #read .row button:hover,#read .row a:hover{border-color:#ffd479}
+  #readclose{align-self:flex-end}
+  @media (max-width:760px){
+    .slot{width:44px;height:44px}
+    .slot .a{font-size:8.5px}
+    #help{display:none}
+    #target{max-width:44%}
+    #hud{font-size:12px}
+    #rebindbtn{bottom:auto;top:104px}
+    #pad{display:grid}
+    #castwrap{bottom:170px}
+  }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="fade"></div>
+<div id="hud">
+  <div class="crumb" id="crumb">SCROLLSPACE</div>
+  <div class="coord" id="coord">—</div>
+  <div class="hint" id="hint">click the view to lock the mouse — Descent layout: F forward · A back · W/E strafe · S/D turn · Q down · R up · mouse1 fires the zoom · wheel sets cruise speed · shift boosts · z/x roll</div>
+</div>
+<div id="target"><div class="t" id="tname">no target</div><div class="s" id="tsub">tab or fly close to acquire</div></div>
+<div id="nav">
+  <input id="jump" type="text" spellcheck="false" placeholder="jump: coordinate 1.1.1/1.1.1/1.1.1 · a phext name · a triple 30.7.10">
+  <button id="jumpgo">Go</button>
+</div>
+<button id="readbtn">Read</button>
+<div id="msg"></div>
+<div id="castwrap"><div id="castlabel">Casting…</div><div id="castbar"><div id="castfill"></div></div></div>
+<button id="rebindbtn">REBIND: off</button>
+<div id="pad">
+  <button data-k="q">↓</button><button data-k="f">▲</button><button data-k="r">↑</button>
+  <button data-k="w">◀</button><button data-k="Enter">◎</button><button data-k="e">▶</button>
+  <button data-k="s">↩</button><button data-k="a">▼</button><button data-k="d">↪</button>
+</div>
+<div id="help">
+  click a bar slot to cast · REBIND on, then click a slot and press a key, to rebind<br>
+  on a plane: F/A/W/E (or arrows) walk the glyphs · Read opens clean text
+</div>
+<div id="bars"></div>
+<aside id="read">
+  <button id="readclose">✕ close</button>
+  <h2 id="readtitle"></h2>
+  <div class="meta" id="readmeta"></div>
+  <div class="row" id="readlinks"></div>
+  <div class="row">
+    <button id="readwalk">Walk the plane</button>
+    <a id="readedit" href="https://edit.phext.io/" target="_blank" rel="noopener">Open in edit.phext.io</a>
+    <button id="readcopy">Copy coordinate</button>
+  </div>
+  <div class="body" id="readbody"></div>
+</aside>
+<script>
+"use strict";
+/* Scrollspace — progressive client.
+   Structure and scrolls are fetched on demand from the lattice endpoints
+   (same-origin): GET /api/phexts, GET /api/toc (children/summary/scrolls/
+   matches), GET /api/scroll. Nothing streams a whole phext on connect:
+   the initial payload is this page plus the hosted-phext list.
+   Rendering, flight, and input are the monolith's reference implementation
+   (address-true triple placement, Descent movement layout, MATH block
+   lifted intact); only the data layer changed. */
+function parseCoord(s){ const p=String(s).replace(/\//g,".").split(".").map(Number); return p.length===9&&p.every(n=>Number.isFinite(n))?p:null; }
+function fmt(c){return c.slice(0,3).join(".")+"/"+c.slice(3,6).join(".")+"/"+c.slice(6,9).join(".");}
+function suffixOf(coord){ const c=parseCoord(coord); return c?c.slice(6,9).join("."):""; }
+function macroOf(coord){ const c=parseCoord(coord); return c?c.slice(0,3).join("."):""; }
+function mesoOf(coord){ const c=parseCoord(coord); return c?c.slice(3,6).join("."):""; }
+function titleOf(text){ const line=(String(text||"").split("\n").map(s=>s.trim()).find(s=>s.length>0)||""); return line.replace(/^#+\s*/,"").slice(0,90); }
+
+/* ---------- API ---------- */
+let AUTH_DEAD=false;
+async function apiJson(url){
+  const r=await fetch(url,{headers:{Accept:"application/json"}});
+  if(r.status===401){ authBlocked(); throw new Error("sign-in required"); }
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return r.json();
+}
+function authBlocked(){ if(AUTH_DEAD) return; AUTH_DEAD=true;
+  showMsg("the structure endpoints sit behind the editor's sign-in — sign in on edit.phext.io, then reload Scrollspace"); }
+const stemOf=name=>name.replace(/\.phext$/,"");
+const tocUrl=(name,params)=>"/api/toc?name="+encodeURIComponent(stemOf(name))+"&"+params;
+async function fetchSummary(g){ const j=await apiJson(tocUrl(g.name,"mode=summary")); g.count=j.scrolls; g.bytes=j.bytes; }
+async function fetchMacros(g){ const j=await apiJson(tocUrl(g.name,"mode=children&step=3"));
+  g.macros=new Map(j.children.map(c=>[c.value.join("."),{scrolls:c.scrolls,bytes:c.bytes}])); buildCloud(g); }
+async function fetchMesos(g,macro){ const j=await apiJson(tocUrl(g.name,"mode=children&step=3&at="+encodeURIComponent(macro)));
+  g.mesos.set(macro,new Map(j.children.map(c=>[c.value.join("."),{scrolls:c.scrolls,bytes:c.bytes}]))); }
+async function fetchMicros(g,macro,meso){ const j=await apiJson(tocUrl(g.name,"mode=scrolls&at="+encodeURIComponent(macro+"/"+meso)));
+  g.micros.set(macro+"/"+meso, j.scrolls.map(e=>({coord:e.coord,bytes:e.bytes,suffix:suffixOf(e.coord)}))); }
+async function fetchScrollList(g){ const j=await apiJson(tocUrl(g.name,"mode=scrolls"));
+  g.scrollsAll=j.scrolls; indexPhext(g); }
+const bodyCache=new Map();
+async function fetchBody(name,coord){
+  const key=name+"|"+coord;
+  if(bodyCache.has(key)) return bodyCache.get(key);
+  const j=await apiJson("/api/scroll?name="+encodeURIComponent(stemOf(name))+"&coord="+encodeURIComponent(coord));
+  if(!j.ok) throw new Error(j.message||"no such scroll");
+  const rec={text:j.text,title:titleOf(j.text)};
+  bodyCache.set(key,rec); return rec;
+}
+async function fetchMatches(at,scale){
+  return apiJson("/api/toc?mode=matches&scope=all&scale="+scale+"&at="+encodeURIComponent(at));
+}
+
+/* ---------- galaxies + relationship indexes (built progressively) ---------- */
+let GAL=[];
+const coordFiles=new Map(), prefix6Files=new Map(), prefix3Files=new Map(), suffix3Scrolls=new Map();
+const pairCount=new Map(); let galAdj=new Map(), LINKS_DRAW=[];
+function indexPhext(g){
+  const seen=new Set();
+  for(const e of g.scrollsAll){ const coord=e.coord, seg=coord.split("/");
+    let a=coordFiles.get(coord); if(!a){a=new Set();coordFiles.set(coord,a);} a.add(g.fi);
+    const k6=seg[0]+"/"+seg[1]; let b=prefix6Files.get(k6); if(!b){b=new Set();prefix6Files.set(k6,b);} b.add(g.fi);
+    let c=prefix3Files.get(seg[0]); if(!c){c=new Set();prefix3Files.set(seg[0],c);} c.add(g.fi);
+    let d=suffix3Scrolls.get(seg[2]); if(!d){d=[];suffix3Scrolls.set(seg[2],d);} d.push({fi:g.fi,coord});
+    seen.add(coord);
+  }
+  for(const coord of seen){ const st=coordFiles.get(coord); if(st.size<2) continue;
+    const others=[...st].filter(fi=>fi!==g.fi);
+    for(const o of others){ const k=Math.min(g.fi,o)+"_"+Math.max(g.fi,o); pairCount.set(k,(pairCount.get(k)||0)+1); } }
+  rebuildLinks();
+}
+function rebuildLinks(){
+  galAdj=new Map();
+  for(const [k,v] of pairCount){ if(v<2) continue; const [a,b]=k.split("_").map(Number);
+    if(!galAdj.has(a)) galAdj.set(a,[]); if(!galAdj.has(b)) galAdj.set(b,[]);
+    galAdj.get(a).push({fi:b,n:v}); galAdj.get(b).push({fi:a,n:v}); }
+  for(const v of galAdj.values()) v.sort((x,y)=>y.n-x.n);
+  for(const g of GAL) g.linkN=(galAdj.get(g.fi)||[]).length;
+  LINKS_DRAW=[...pairCount.entries()].filter(([,v])=>v>=3).map(([k,v])=>{ const [a,b]=k.split("_").map(Number); return {a,b,n:v}; })
+    .sort((x,y)=>y.n-x.n).slice(0,220);
+  if(S.level===0) buildNodes();
+}
+/* min/max per axis without spread — Math.min(...vs) blows the call stack on
+   phexts with tens of thousands of children in one space (ultra.phext). */
+function axisMidExt(ts){
+  const mid=[0,0,0]; let ext=1;
+  for(let a=0;a<3;a++){ let mn=1e18,mx=-1e18; for(const t of ts){ if(t[a]<mn)mn=t[a]; if(t[a]>mx)mx=t[a]; } mid[a]=(mn+mx)/2; if(mx-mn>ext)ext=mx-mn; }
+  return {mid,ext};
+}
+/* true 3D placement: the address segment IS the position (x,y,z), centered and scaled per level */
+function triplePositions(keys){
+  const ts=keys.map(k=>k.split(".").map(Number));
+  const {mid,ext}=axisMidExt(ts);
+  const scale=1450/ext;
+  const out=new Map();
+  keys.forEach((k,i)=>{ const t=ts[i]; out.set(k,[(t[0]-mid[0])*scale,(t[1]-mid[1])*scale,(t[2]-mid[2])*scale]); });
+  return out;
+}
+/* each galaxy renders as its internal structure: a cloud of its macro addresses, flowing outward */
+function buildCloud(g){
+  if(!g.macros) { g.cloud=[]; return; }
+  const keys=[...g.macros.keys()], ts=keys.map(k=>k.split(".").map(Number));
+  const {mid,ext}=axisMidExt(ts);
+  const sc=250/ext;
+  g.cloud=keys.map((k,i)=>({o:[(ts[i][0]-mid[0])*sc,(ts[i][1]-mid[1])*sc,(ts[i][2]-mid[2])*sc], n:g.macros.get(k).scrolls, ph:(i*0.618)%1}));
+}
+
+/* ---------- the multiverse layout (level 0) ---------- */
+/* Will, 2026-11-19: ultra.phext sits at the centre of the multiverse, and
+   everything else moves further away so it doesn't dwarf the other phexts.
+   A galaxy's glob radius in the renderer's own units is globSize() — the
+   very value buildNodes() draws as the node's disc, so layout and render
+   can never drift apart. ultra's radius comes from its real scroll count
+   (boot fetches ultra's summary before laying out). Every other galaxy
+   keeps the direction of its Fibonacci-sphere slot — its address in the
+   old layout — but moves out to a shell of SHELL_MULT x ultra's glob
+   radius: ultra's disc then clears every neighbour, and the 9D link web
+   radiates from the centre. If ultra (or its count) is absent, the plain
+   Fibonacci layout stands, exactly as before. */
+const SHELL_MULT=2.5;
+function globSize(count,bytes){ return 24+Math.sqrt(count||bytes/40)*2.2; }
+function layoutMultiverse(){
+  GAL.forEach((g,i)=>{ const y=1-(i/Math.max(1,GAL.length-1))*2, r=Math.sqrt(Math.max(0,1-y*y)), th=i*2.39996;
+    g.pos=[Math.cos(th)*r*1500, y*1050, Math.sin(th)*r*1500]; });
+  const u=GAL.find(g=>g.name.replace(/\.phext$/,"")==="ultra");
+  if(!u||u.count==null) return;
+  const shell=SHELL_MULT*globSize(u.count,u.bytes);
+  for(const g of GAL){ if(g===u) continue;
+    const d=Math.hypot(g.pos[0],g.pos[1],g.pos[2]);
+    if(d<1e-9){ g.pos=[shell,0,0]; continue; }
+    g.pos=[g.pos[0]/d*shell, g.pos[1]/d*shell, g.pos[2]/d*shell]; }
+  u.pos=[0,0,0];
+}
+
+/* ---------- lazy loading machinery ---------- */
+const inflight=new Map();
+function loadOnce(key,fn){ if(inflight.has(key)) return inflight.get(key);
+  const p=Promise.resolve().then(fn).catch(e=>{ if(!AUTH_DEAD) showMsg("load failed: "+e.message); }).finally(()=>inflight.delete(key));
+  inflight.set(key,p); return p; }
+function ensureMacros(g){ if(g.macros) return Promise.resolve();
+  return loadOnce("macros:"+g.fi,async()=>{ await fetchMacros(g); if(S.level===1&&S.gal===g) buildNodes(); prefetchMesos(g); }); }
+function ensureMesos(g,macro){ if(g.mesos.has(macro)) return Promise.resolve();
+  return loadOnce("mesos:"+g.fi+":"+macro,async()=>{ await fetchMesos(g,macro); if(S.level===2&&S.gal===g&&S.macro===macro) buildNodes(); prefetchMicros(g,macro); }); }
+function ensureMicros(g,macro,meso){ if(g.micros.has(macro+"/"+meso)) return Promise.resolve();
+  return loadOnce("micros:"+g.fi+":"+macro+":"+meso,async()=>{ await fetchMicros(g,macro,meso); if(S.level===3&&S.gal===g&&S.macro===macro&&S.meso===meso) buildNodes(); }); }
+/* Prefetch runs through a 2-wide queue so background warming can never
+   starve a user-driven fetch: ensure* calls loadOnce directly (immediate),
+   and a queued prefetch whose data already landed is skipped. */
+const pfQueue=[]; let pfActive=0;
+function prefetch(key,fn,has){ if(inflight.has(key)||pfQueue.some(q=>q.key===key)) return;
+  pfQueue.push({key,fn,has}); pfPump(); }
+function pfPump(){ while(pfActive<2&&pfQueue.length){ const q=pfQueue.shift();
+    if(inflight.has(q.key)||(q.has&&q.has())) continue;
+    pfActive++; loadOnce(q.key,q.fn).finally(()=>{ pfActive--; pfPump(); }); } }
+function prefetchMesos(g){ if(!g.macros) return;
+  for(const macro of g.macros.keys()) prefetch("mesos:"+g.fi+":"+macro,async()=>{ await fetchMesos(g,macro); },()=>g.mesos.has(macro)); }
+function prefetchMicros(g,macro){ const m=g.mesos.get(macro); if(!m) return;
+  for(const meso of m.keys()) prefetch("micros:"+g.fi+":"+macro+":"+meso,async()=>{ await fetchMicros(g,macro,meso); },()=>g.micros.has(macro+"/"+meso)); }
+/* background indexing: summaries, clouds, then full coordinate lists so the
+   relationship web (9D links, halos) fills in without blocking first paint */
+async function backgroundIndex(){
+  for(const g of GAL){ if(AUTH_DEAD) return;
+    if(g.count==null){ try{ await fetchSummary(g); }catch(e){} if(S.level===0) buildNodes(); }
+    await new Promise(r=>setTimeout(r,20)); }
+  for(const g of GAL){ if(AUTH_DEAD) return;
+    if(!g.macros){ try{ await fetchMacros(g); }catch(e){} }
+    await new Promise(r=>setTimeout(r,20)); }
+  for(const g of GAL){ if(AUTH_DEAD) return;
+    if(!g.scrollsAll && g.count!=null && g.count<=25000){ try{ await fetchScrollList(g); }catch(e){} }
+    await new Promise(r=>setTimeout(r,20)); }
+}
+
+/* ---------- state ---------- */
+const S={level:0, gal:null, macro:null, meso:null, planet:null, cam:[0,0,2700], yaw:0, pitch:0, roll:0,
+         target:null, hot:null, tabTarget:null, tabIdx:-1, casting:null, trans:null, frameOnLoad:null, plane:null, px:2, py:2, msgT:0};
+S.vel=[0,0,0]; S.speedMul=1;
+let nodes=[];
+function buildNodes(){
+  nodes=[];
+  if(S.level===0) for(const g of GAL) nodes.push({pos:g.pos,label:g.name,sub:(g.count==null?"…":g.count)+" scrolls · "+(g.macros?g.macros.size:"…")+" macro addresses · ⇄ "+g.linkN+" linked galaxies (9D)",hue:g.hue,size:globSize(g.count,g.bytes),ref:g,kind:"gal"});
+  if(S.level===1){ const g=S.gal; if(!g.macros){ ensureMacros(g); return; }
+    const keys=[...g.macros.keys()].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+    const P=triplePositions(keys);
+    for(const k of keys){ const n=g.macros.get(k).scrolls, elsewhere=(prefix3Files.get(k)||new Set()).size-1;
+      nodes.push({pos:P.get(k),label:"Macro "+k,sub:n+" scrolls under (LB.SR.SF) "+k+(elsewhere>0?" · also in "+elsewhere+" other phexts":""),hue:(g.hue+30)%360,size:20+Math.sqrt(n)*3,ref:k,kind:"macro",matches:elsewhere}); } }
+  if(S.level===2){ const g=S.gal, m=g.mesos.get(S.macro); if(!m){ ensureMesos(g,S.macro); return; }
+    const keys=[...m.keys()].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+    const P=triplePositions(keys);
+    for(const k of keys){ const n=m.get(k).scrolls, elsewhere=(prefix6Files.get(S.macro+"/"+k)||new Set()).size-1;
+      nodes.push({pos:P.get(k),label:"Meso "+k,sub:n+" scrolls under (CN.VM.BK) "+k+(elsewhere>0?" · ⇄ 6D match in "+elsewhere+" other phexts":""),hue:(g.hue+60)%360,size:18+Math.sqrt(n)*3,ref:k,kind:"meso",matches:elsewhere}); } }
+  if(S.level===3){ const g=S.gal, arr=g.micros.get(S.macro+"/"+S.meso); if(!arr){ ensureMicros(g,S.macro,S.meso); return; }
+    const P=triplePositions([...new Set(arr.map(e=>e.suffix))]);
+    for(const e of arr){ const elsewhere=(suffix3Scrolls.get(e.suffix)||[]).filter(x=>!(x.fi===g.fi&&x.coord===e.coord)).length;
+      nodes.push({pos:P.get(e.suffix),label:e.suffix,sub:g.name+" · "+e.coord+" · "+e.bytes+" bytes"+(elsewhere>0?" · ⇄ 3D match × "+elsewhere:""),hue:(g.hue+90)%360,size:11,ref:e,kind:"micro",matches:elsewhere}); } }
+}
+function crumb(){
+  if(S.level===0) return "SCROLLSPACE · GALAXIES (phexts)";
+  if(S.level===1) return S.gal.name+" · MACRO (LB.SR.SF)";
+  if(S.level===2) return S.gal.name+" · "+S.macro+" · MESO (CN.VM.BK)";
+  if(S.level===3) return S.gal.name+" · "+S.macro+" / "+S.meso+" · MICRO (CH.SN.SC)";
+  return S.gal.name+" · PLANE OF EXISTENCE";
+}
+/* ---------- actions & keybinds ---------- */
+const ACTIONS={ tab:{name:"Next Target",def:"Tab"}, zoomIn:{name:"Zoom In",def:"Enter"}, zoomOut:{name:"Zoom Out",def:"Backspace"},
+  inspect:{name:"Inspect",def:"i"}, tag:{name:"Tag WAU",def:"t"}, record:{name:"Record",def:"n"},
+  grade:{name:"Grade",def:"g"}, handoff:{name:"Handoff",def:"h"}, sync:{name:"Sync",def:"b"}, view:{name:"View",def:"v"},
+  queue:{name:"Queue",def:"q2"}, delegate:{name:"Delegate",def:"u"},
+  mvDown:{name:"Down",def:""}, mvTurnL:{name:"Turn Left",def:""}, mvTurnR:{name:"Turn Right",def:""}, mvUp:{name:"Up",def:""} };
+const BINDS={}; for(const k in ACTIONS) BINDS[k]=ACTIONS[k].def;
+let rebindMode=false, rebindSlot=null;
+function showMsg(t){const m=document.getElementById("msg");m.textContent=t;m.style.opacity=1;S.msgT=performance.now();}
+function cast(label,ms,done){ S.casting={label,until:performance.now()+ms,t0:performance.now(),done};
+  document.getElementById("castwrap").style.display="block"; document.getElementById("castlabel").textContent=label; }
+function flyTo(targetPos,mid,raw){
+  S.trans={t0:performance.now(),dur:950,from:S.cam.slice(),to:raw?targetPos.slice():[targetPos[0],targetPos[1],targetPos[2]+300],mid,midDone:false,fade:"in"};
+}
+/* ---------- camera bounding box ---------- */
+/* Continuity rule: when you arrive in a space, the places you can navigate
+   to are visible. frameFor() takes the world positions of the navigable
+   globs, finds their bounding sphere (AABB centre + max radius), and puts
+   the camera on the +Z axis of that centre, far enough back that the whole
+   sphere fits the frustum project() actually uses (f = height*0.9, so the
+   vertical half-angle is atan(1/1.8) and the horizontal follows aspect).
+   Same constants as project() — the fit cannot drift from the render. */
+function frameFor(positions){
+  if(!positions||!positions.length) return null;
+  const mn=[1e18,1e18,1e18], mx=[-1e18,-1e18,-1e18];
+  for(const p of positions) for(let i=0;i<3;i++){ if(p[i]<mn[i])mn[i]=p[i]; if(p[i]>mx[i])mx[i]=p[i]; }
+  const center=[0,1,2].map(i=>(mn[i]+mx[i])/2);
+  let R=0; for(const p of positions){ const d=Math.hypot(p[0]-center[0],p[1]-center[1],p[2]-center[2]); if(d>R)R=d; }
+  const halfV=Math.atan(1/1.8), halfH=Math.atan((cv.width/Math.max(1,cv.height))/1.8);
+  const th=Math.min(halfV,halfH);
+  /* the 11500 cap only binds on fields wider than ~3000 units — today
+     that is just the L0 shell around ultra (see layoutMultiverse: shell
+     ~3176, worst-case portrait framing distance ~10200); the meso and
+     micro fields span <=1450 units and never reach it */
+  const dist=Math.min(11500, Math.max(R/Math.sin(th)*1.06, R+170, 480));
+  return {center, R, dist, cam:[center[0], center[1], center[2]+dist]};
+}
+function frameNodes(){ return frameFor(nodes.map(n=>n.pos)); }
+/* After a level switch inside a running transition, land where enterLevel()
+   framed the camera — not at the stale parent-space destination. */
+function settleTrans(){ if(S.trans) S.trans.to=S.cam.slice(); }
+function fireTarget(){
+  if(S.target) return S.target;
+  return null;
+}
+function doZoomIn(){
+  if(S.casting||S.trans) return;
+  const n=fireTarget();
+  if(!n){ showMsg("no target under the crosshair — aim at a node, or TAB to lock one"); return; }
+  if(S.level===0) cast("Entering "+n.ref.name+"…",650,()=>flyTo(n.pos,()=>{S.gal=n.ref;S.level=1;enterLevel(1500);settleTrans();}));
+  if(S.level===1) cast("Entering Macro "+n.ref+"…",650,()=>flyTo(n.pos,()=>{S.macro=n.ref;S.level=2;enterLevel(1500);settleTrans();}));
+  if(S.level===2) cast("Entering Meso "+n.ref+"…",650,()=>flyTo(n.pos,()=>{S.meso=n.ref;S.level=3;enterLevel(1500);settleTrans();}));
+  if(S.level===3) cast("Stepping onto the plane…",800,()=>flyTo(n.pos,()=>{S.planet=n.ref;S.level=4;enterPlane();}));
+}
+function doZoomOut(){
+  if(S.casting||S.trans) return;
+  closeRead();
+  S.frameOnLoad=null;
+  if(S.level===0) return;
+  if(S.level===4){ cast("Stepping back…",450,()=>{ S.level=3;
+    S.trans={t0:performance.now(),dur:700,from:S.cam.slice(),to:S.cam.slice(),mid:()=>{ enterLevel(1500); settleTrans(); },midDone:false,fade:"in"}; }); return; }
+  /* Zooming out animates exactly like zooming in: a cast, then a flight —
+     here a pull-back above the current field — and at the fade's peak the
+     parent space switches in, framed on its own bounding box. */
+  const F=frameNodes(), c=F?F.center:[0,0,0];
+  const back=[c[0], c[1], c[2]+(F?F.dist*2.1:3400)];
+  const up=(label,apply)=>cast(label,500,()=>flyTo(back,()=>{ apply(); settleTrans(); },true));
+  if(S.level===3) up("Back to Meso…",()=>{S.level=2;S.meso=null;enterLevel(1500);});
+  else if(S.level===2) up("Back to Macro…",()=>{S.level=1;S.macro=null;enterLevel(1500);});
+  else if(S.level===1) up("Back to Galaxies…",()=>{S.level=0;S.gal=null;enterLevel(2700);});
+}
+function enterLevel(dist){ S.vel=[0,0,0]; S.yaw=0;S.pitch=0;S.roll=0; S.target=null;S.hot=null;S.tabTarget=null;S.tabIdx=-1;
+  buildNodes();
+  const F=frameNodes();
+  if(F){ S.cam=F.cam; S.frameOnLoad=null; }
+  else { S.cam=[0,0,dist]; S.frameOnLoad={level:S.level,gal:S.gal,macro:S.macro,meso:S.meso,at:S.cam.slice()}; } }
+async function enterPlane(){
+  const ref=S.planet, g=S.gal;
+  S.plane=["fetching the scroll from "+g.name+" …"]; S.px=2; S.py=2;
+  document.getElementById("readbtn").style.display="block";
+  try{
+    const rec=await fetchBody(g.name, ref.coord);
+    if(S.level!==4||S.planet!==ref) return;
+    ref.title=rec.title;
+    const lines=[]; lines.push(rec.title||""); lines.push("");
+    lines.push("scroll "+ref.coord+" in "+g.name); lines.push("");
+    for(const para of String(rec.text).split("\n")) for(const w of wrap(para,58)) lines.push(w);
+    if(lines.length>600){ lines.length=600; lines.push("… plane view caps at 600 lines — Read carries the full text"); }
+    lines.push(""); lines.push("you are standing on a plane of existence:");
+    lines.push("a scroll, walked like a zelda room. every glyph a floor tile.");
+    S.plane=lines;
+  }catch(e){ if(S.level===4) S.plane=["could not fetch "+ref.coord+": "+e.message]; }
+}
+function wrap(t,n){const out=[];let cur="";for(const w of String(t).split(/\s+/)){if((cur+" "+w).trim().length>n){out.push(cur.trim());cur=w;}else cur+=" "+w;}if(cur.trim())out.push(cur.trim());return out.length?out:[""];}
+function travelTo(fi,coord){
+  const c=parseCoord(coord); if(!c) return;
+  S.gal=GAL[fi]; S.macro=c.slice(0,3).join("."); S.meso=c.slice(3,6).join(".");
+  S.planet={coord,suffix:suffixOf(coord),title:""}; S.level=4; enterLevel(1500); S.level=4; enterPlane();
+}
+function doAction(k){
+  if(k==="tab"){ if(!nodes.length)return; S.tabIdx=(S.tabIdx+1)%nodes.length; S.tabTarget=nodes[S.tabIdx]; showMsg("target locked: "+S.tabTarget.label); }
+  else if(k==="zoomIn") doZoomIn();
+  else if(k==="zoomOut") doZoomOut();
+  else if(k==="inspect"){ const t=S.target; if(!t){ showMsg("nothing targeted"); return; }
+    if(S.level===3){ openRead(t.ref); return; }
+    if(S.level===0){ const partners=(galAdj.get(t.ref.fi)||[]).slice(0,12);
+      openPanel(t.ref.name+" — 9D relationships", partners.length+" galaxies share full 9D coordinates with this phext",
+        partners.length?("Strongest link: "+GAL[partners[0].fi].name+" — "+partners[0].n+" shared coordinates. Follow a link to fly to that galaxy. (The web fills in as phexts are indexed in the background.)"):"No shared coordinates found yet — the relationship index is still filling in.",
+        partners.map(p=>({label:GAL[p.fi].name+" · "+p.n+" shared", go:()=>{ S.gal=GAL[p.fi]; S.level=1; S.macro=null; S.meso=null; enterLevel(1500); ensureMacros(S.gal); }}))); return; }
+    if(S.level===1){ const others=[...(prefix3Files.get(t.ref)||[])].filter(fi=>fi!==S.gal.fi).slice(0,12);
+      openPanel("Macro "+t.ref+" — where else this address lives", others.length+" other phexts hold macro address "+t.ref,
+        "The same (LB.SR.SF) at the root of another galaxy. Follow one to enter that galaxy at this address. (From the background index — phexts not yet indexed are not counted.)",
+        others.map(fi=>({label:GAL[fi].name, go:()=>{ const m=t.ref; S.gal=GAL[fi]; S.macro=m; S.level=2; enterLevel(1500); }}))); return; }
+    if(S.level===2){ const at=S.macro+"/"+t.ref, here=S.gal.fi;
+      openPanel("Meso "+t.ref+" — 6D relationships", "asking every hosted phext…", "The same 6D system (LB.SR.SF/CN.VM.BK) in another galaxy. Follow one to enter its micro space.", []);
+      fetchMatches(at,6).then(j=>{ const others=[...new Set(j.matches.map(m=>m.phext))].map(n=>GAL.findIndex(g=>g.name===n)).filter(fi=>fi>=0&&fi!==here).slice(0,12);
+        openPanel("Meso "+t.ref+" — 6D relationships", others.length+" other phexts hold "+at,
+          "The same 6D system (LB.SR.SF/CN.VM.BK) in another galaxy. Follow one to enter its micro space.",
+          others.map(fi=>({label:GAL[fi].name, go:()=>{ const m=S.macro, s2=t.ref; S.gal=GAL[fi]; S.macro=m; S.meso=s2; S.level=3; enterLevel(1500); }}))); })
+      .catch(e=>showMsg("matches query failed: "+e.message)); return; }
+    showMsg("inspecting "+t.label+" — "+t.sub); }
+  else if(k==="tag"){ showMsg(S.target?("tagged WAU candidate: "+S.target.label):"tag needs a target"); }
+  else if(k==="record"){ showMsg("recorded at "+(S.target?S.target.sub:"current view")); }
+  else if(k==="grade"){ showMsg("grading the night… the watch keeps the ledger"); }
+  else if(k==="handoff"){ showMsg("handoff prepared — memory handed over, nothing dropped"); }
+  else if(k==="sync"){ showMsg("sync requested — registers reconcile by hash"); }
+  else if(k==="view"){ showMsg(S.target?S.target.label+" · "+S.target.sub:"view: "+crumb()); }
+  else if(k==="queue"){ showMsg("queued at the back — in-progress work is never de-prioritized"); }
+  else if(k==="delegate"){ showMsg("delegated to the background — the ranch takes it from here"); }
+  else if(k==="mvUp"){ S.vel[1]+=140; }
+  else if(k==="mvDown"){ S.vel[1]-=140; }
+  else if(k==="mvTurnL"){ S.yaw+=0.35; }
+  else if(k==="mvTurnR"){ S.yaw-=0.35; }
+}
+/* ---------- read mode: clean selectable text ---------- */
+const readEl=document.getElementById("read");
+function openPanel(title, meta, body, links){
+  document.getElementById("readtitle").textContent=title;
+  document.getElementById("readmeta").textContent=meta;
+  document.getElementById("readbody").textContent=body;
+  const box=document.getElementById("readlinks"); box.innerHTML="";
+  (links||[]).forEach(L=>{ const b=document.createElement("button"); b.textContent=L.label;
+    b.onclick=()=>{ closeRead(); L.go(); }; box.appendChild(b); });
+  readEl.style.display="flex";
+}
+async function openRead(ref){
+  const g=S.gal;
+  document.getElementById("readtitle").textContent=ref.title||ref.coord;
+  document.getElementById("readmeta").textContent=g.name+" · "+ref.coord;
+  document.getElementById("readbody").textContent="fetching the scroll…";
+  const box=document.getElementById("readlinks"); box.innerHTML="";
+  readEl.style.display="flex";
+  try{
+    const rec=await fetchBody(g.name, ref.coord);
+    ref.title=rec.title;
+    document.getElementById("readtitle").textContent=rec.title||"(untitled scroll)";
+    document.getElementById("readbody").textContent=rec.text;
+  }catch(e){ document.getElementById("readbody").textContent="could not fetch this scroll: "+e.message; }
+  /* kinship: same micro address (CH.SN.SC) anywhere — local index merged
+     with the authoritative cross-phext suffix query */
+  const seen=new Set([g.fi+"|"+ref.coord]);
+  const addLink=(fi,coord)=>{ if(seen.has(fi+"|"+coord)) return; seen.add(fi+"|"+coord);
+    const b=document.createElement("button"); b.textContent=GAL[fi].name+" · "+coord;
+    b.onclick=()=>{ travelTo(fi,coord); openRead(S.planet); }; box.appendChild(b); };
+  const local=(suffix3Scrolls.get(ref.suffix)||[]);
+  if(local.length){ const h=document.createElement("span"); h.style.cssText="width:100%;font-size:12px;color:#8fb7ff"; h.textContent="⇄ same micro address (CH.SN.SC "+ref.suffix+") elsewhere:"; box.appendChild(h); }
+  local.slice(0,16).forEach(o=>addLink(o.fi,o.coord));
+  fetchMatches(ref.suffix,3).then(j=>{ for(const m of j.matches){ const fi=GAL.findIndex(x=>x.name===m.phext); if(fi>=0) addLink(fi,m.coord); } }).catch(()=>{});
+  document.getElementById("readwalk").onclick=()=>{ closeRead(); if(S.level!==4||!S.planet||S.planet.coord!==ref.coord){ S.planet=ref; S.level=4; enterPlane(); } };
+  document.getElementById("readcopy").onclick=()=>{ if(navigator.clipboard) navigator.clipboard.writeText(ref.coord); showMsg("coordinate copied: "+ref.coord); };
+}
+function closeRead(){ readEl.style.display="none"; if(S.level!==4) document.getElementById("readbtn").style.display="none"; }
+document.getElementById("readclose").onclick=closeRead;
+document.getElementById("readbtn").onclick=()=>{ if(S.planet) openRead(S.planet); };
+/* ---------- quick navigation ---------- */
+async function jump(q){
+  q=q.trim(); if(!q) return;
+  const fl=GAL.findIndex(f=>f.name.toLowerCase()===q.toLowerCase()||f.name.toLowerCase()===q.toLowerCase()+".phext");
+  if(fl>=0){ S.gal=GAL[fl]; S.level=1; S.macro=null; S.meso=null; enterLevel(1500); ensureMacros(S.gal); showMsg("jumped to galaxy "+GAL[fl].name); return; }
+  const nums=q.replace(/\//g,".").split(".").map(Number);
+  if(nums.length===9&&nums.every(Number.isFinite)){
+    const cs=fmt(nums);
+    showMsg("resolving "+cs+" across every hosted phext…");
+    try{ const j=await fetchMatches(cs,9);
+      if(!j.matches.length){ showMsg("no scroll at "+cs+" in any hosted phext"); return; }
+      const m=j.matches[0], fi=GAL.findIndex(g=>g.name===m.phext);
+      travelTo(fi,m.coord); openRead(S.planet);
+      showMsg("jumped to "+cs+" in "+m.phext+(j.matches.length>1?" (+"+(j.matches.length-1)+" more hold it — Inspect lists them)":"")); return;
+    }catch(e){ showMsg("coordinate lookup failed: "+e.message); return; }
+  }
+  if(nums.length===3&&nums.every(Number.isFinite)){
+    const k=nums.join(".");
+    for(let fi=0;fi<GAL.length;fi++) if(prefix3Files.has(k)&&(prefix3Files.get(k)||new Set()).has(fi)){ S.gal=GAL[fi]; S.macro=k; S.level=2; enterLevel(1500); showMsg("jumped to macro "+k+" in "+GAL[fi].name); return; }
+    for(const g of GAL){ await ensureMacros(g); if(g.macros&&g.macros.has(k)){ S.gal=g; S.macro=k; S.level=2; enterLevel(1500); showMsg("jumped to macro "+k+" in "+g.name); return; } }
+    showMsg("no macro address "+k+" in any phext"); return;
+  }
+  /* title search is degraded in the progressive client: titles live in
+     scroll bodies, which are fetched on demand — search covers galaxy
+     names and the structure indexed so far */
+  const hit=GAL.findIndex(f=>f.name.toLowerCase().includes(q.toLowerCase()));
+  if(hit>=0){ S.gal=GAL[hit]; S.level=1; S.macro=null; S.meso=null; enterLevel(1500); ensureMacros(S.gal); showMsg("found galaxy "+GAL[hit].name); return; }
+  showMsg("nothing matches “"+q+"” in the loaded structure (title search covers fetched scrolls only)");
+}
+document.getElementById("jumpgo").onclick=e=>{ jump(document.getElementById("jump").value); e.currentTarget.blur(); };
+document.getElementById("jump").addEventListener("keydown",e=>{ if(e.key==="Enter") jump(e.target.value); e.stopPropagation(); });
+
+/* ---------- action bars (bar1 = 1-6 + shift layer, bar2 = zxcvqsdrgbth) ---------- */
+const BAR1=["tab","inspect","zoomIn","zoomOut","tag","handoff"];
+const BAR2=["zoomIn","inspect","tag","view","mvDown","mvTurnL","mvTurnR","mvUp","grade","sync","handoff","tab"];
+const BAR1KEYS=["1","2","3","4","5","6"], BAR2KEYS=["z","x","c","v","q","s","d","r","g","b","t","h"];
+const barsEl=document.getElementById("bars");
+function slotEl(action,keyLabel,shift){
+  const b=document.createElement("button"); b.className="slot";
+  b.innerHTML='<span class="k">'+(shift?"⇧":"")+keyLabel+'</span><span class="a">'+ACTIONS[action].name+'</span>';
+  b.onclick=()=>{ if(rebindMode){ document.querySelectorAll(".slot").forEach(e=>e.classList.remove("rebind")); b.classList.add("rebind"); rebindSlot={action,el:b}; showMsg("press a key to bind "+ACTIONS[action].name+" (esc cancels)"); } else doAction(action); };
+  return b;
+}
+(function buildBars(){
+  const r2=document.createElement("div"); r2.className="bar";
+  BAR2.forEach((a,i)=>r2.appendChild(slotEl(a,BAR2KEYS[i],false)));
+  const r1=document.createElement("div"); r1.className="bar";
+  BAR1.forEach((a,i)=>r1.appendChild(slotEl(a,BAR1KEYS[i],false)));
+  const r1s=document.createElement("div"); r1s.className="bar";
+  BAR1.forEach((a,i)=>r1s.appendChild(slotEl(a,BAR1KEYS[i],true)));
+  barsEl.appendChild(r2); barsEl.appendChild(r1); barsEl.appendChild(r1s);
+})();
+const rbBtn=document.getElementById("rebindbtn");
+rbBtn.onclick=()=>{ rebindMode=!rebindMode; rbBtn.textContent="REBIND: "+(rebindMode?"on":"off"); rbBtn.classList.toggle("on",rebindMode); if(!rebindMode){rebindSlot=null;document.querySelectorAll(".slot").forEach(e=>e.classList.remove("rebind"));} rbBtn.blur(); };
+/* ---------- input ---------- */
+const keys={};
+addEventListener("keydown",e=>{
+  if(e.target&&e.target.id==="jump") return;
+  if(rebindSlot){ e.preventDefault();
+    if(e.key!=="Escape"){ BINDS[rebindSlot.action]=e.key; showMsg(ACTIONS[rebindSlot.action].name+" bound to "+e.key); }
+    rebindSlot.el.classList.remove("rebind"); rebindSlot=null; return; }
+  const k=e.key.length===1?e.key.toLowerCase():e.key;
+  keys[k]=true;
+  if(e.key==="Tab"){e.preventDefault();doAction("tab");}
+  else if(e.key==="Enter") doZoomIn();
+  else if(e.key==="Backspace"){e.preventDefault();doZoomOut();}
+  else if(e.key==="Escape") closeRead();
+  else for(const a in BINDS) if(BINDS[a]===e.key||BINDS[a]===k){ if(a!=="tab"&&a!=="zoomIn"&&a!=="zoomOut") doAction(a); }
+  if(S.level===4 && ["a","w","e","f","ArrowLeft","ArrowUp","ArrowRight","ArrowDown"].includes(k)) e.preventDefault();
+});
+addEventListener("keyup",e=>{const k=e.key.length===1?e.key.toLowerCase():e.key;keys[k]=false;});
+const cv=document.getElementById("view"), ctx=cv.getContext("2d");
+let dragging=false,lx=0,ly=0,moved=0;
+function ptrDown(x,y){dragging=true;lx=x;ly=y;moved=0;}
+function ptrMove(x,y){ if(!dragging||S.level===4)return;
+  S.yaw-=(x-lx)*0.004; S.pitch-=(y-ly)*0.004; S.pitch=Math.max(-1.45,Math.min(1.45,S.pitch)); moved+=Math.abs(x-lx)+Math.abs(y-ly); lx=x;ly=y; }
+cv.addEventListener("mousedown",e=>{ if(document.pointerLockElement===cv){ if(S.level<4) doZoomIn(); return; } ptrDown(e.clientX,e.clientY); });
+cv.addEventListener("click",e=>{ if(S.level<4&&document.pointerLockElement!==cv&&cv.requestPointerLock) cv.requestPointerLock(); });
+addEventListener("mouseup",()=>{ dragging=false; });
+addEventListener("mousemove",e=>{ if(document.pointerLockElement===cv){ if(S.level<4){ S.yaw-=e.movementX*0.0023; S.pitch-=e.movementY*0.0023; S.pitch=Math.max(-1.45,Math.min(1.45,S.pitch)); } return; } ptrMove(e.clientX,e.clientY); });
+addEventListener("wheel",e=>{ if(S.level<4){ S.speedMul=Math.max(0.25,Math.min(6,S.speedMul*(e.deltaY<0?1.25:0.8))); showMsg("cruise speed x"+S.speedMul.toFixed(2)); } },{passive:true});
+cv.addEventListener("touchstart",e=>{const t=e.touches[0];ptrDown(t.clientX,t.clientY);},{passive:true});
+cv.addEventListener("touchmove",e=>{const t=e.touches[0];ptrMove(t.clientX,t.clientY);e.preventDefault();},{passive:false});
+cv.addEventListener("touchend",()=>{ const wasDrag=moved>8; dragging=false;
+  if(!wasDrag&&S.level<4){ const nd=nodeAt(lx,ly); if(nd){ S.tabTarget=nd; doZoomIn(); } } });
+document.querySelectorAll("#pad button").forEach(b=>{
+  const k=b.dataset.k;
+  const on=e=>{e.preventDefault(); if(k==="Enter")doZoomIn(); else if(k==="Backspace")doZoomOut(); else keys[k]=true;};
+  const off=e=>{e.preventDefault(); keys[k]=false;};
+  b.addEventListener("touchstart",on,{passive:false}); b.addEventListener("touchend",off,{passive:false});
+  b.addEventListener("mousedown",on); b.addEventListener("mouseup",off);
+});
+function resize(){cv.width=innerWidth;cv.height=innerHeight;} addEventListener("resize",resize); resize();
+/* ---------- render ---------- */
+const stars=[]; for(let i=0;i<420;i++) stars.push([Math.random(),Math.random(),Math.random()*1.6+0.4]);
+let lastDrawn=[];
+/* MATH-BEGIN */
+function basis(){
+  const cy=Math.cos(S.yaw), sy=Math.sin(S.yaw), cp=Math.cos(S.pitch), sp=Math.sin(S.pitch);
+  const F=[-sy*cp, sp, -cy*cp];
+  const R=[cy, 0, -sy];
+  let U=[R[1]*F[2]-R[2]*F[1], R[2]*F[0]-R[0]*F[2], R[0]*F[1]-R[1]*F[0]];
+  if(S.roll){ const cr=Math.cos(S.roll), sr=Math.sin(S.roll);
+    const R2=[R[0]*cr+U[0]*sr, R[1]*cr+U[1]*sr, R[2]*cr+U[2]*sr];
+    const U2=[U[0]*cr-R[0]*sr, U[1]*cr-R[1]*sr, U[2]*cr-R[2]*sr];
+    return {F, R:R2, U:U2};
+  }
+  return {F, R, U};
+}
+let _B=null;
+function project(p){
+  const {F,R,U}=_B||basis();
+  const rel=[p[0]-S.cam[0], p[1]-S.cam[1], p[2]-S.cam[2]];
+  const vx=rel[0]*R[0]+rel[1]*R[1]+rel[2]*R[2];
+  const vy=rel[0]*U[0]+rel[1]*U[1]+rel[2]*U[2];
+  const depth=rel[0]*F[0]+rel[1]*F[1]+rel[2]*F[2];
+  if(depth<40) return null;
+  const f=cv.height*0.9;
+  return [cv.width/2 + vx*f/depth, cv.height/2 - vy*f/depth, depth];
+}
+function moveCam(dt){
+  const {F,R}=basis();
+  const boost=keys["Shift"]?4:1, maxSp=640*boost*S.speedMul, accel=2800*boost;
+  const up=[0,1,0], wish=[0,0,0];
+  const addW=(v,m)=>{wish[0]+=v[0]*m;wish[1]+=v[1]*m;wish[2]+=v[2]*m;};
+  if(keys["f"]||keys["ArrowUp"])addW(F,1); if(keys["a"]||keys["ArrowDown"])addW(F,-1);
+  if(keys["w"]||keys["ArrowLeft"])addW(R,-1); if(keys["e"]||keys["ArrowRight"])addW(R,1);
+  if(keys["r"])addW(up,1); if(keys["q"])addW(up,-1);
+  if(keys["s"])S.yaw+=dt*1.9; if(keys["d"])S.yaw-=dt*1.9;
+  let taper=1;
+  const tgt=S.tabTarget||S.hot;
+  if(tgt){ const d=Math.hypot(tgt.pos[0]-S.cam[0],tgt.pos[1]-S.cam[1],tgt.pos[2]-S.cam[2]); taper=Math.max(0.1,Math.min(1,d/430)); }
+  const wl=Math.hypot(wish[0],wish[1],wish[2]);
+  if(wl>0){ const s=accel*dt; S.vel=[0,1,2].map(i=>S.vel[i]+wish[i]/wl*s); }
+  else { const fr=Math.pow(0.002,dt); S.vel=S.vel.map(v=>v*fr); }
+  const sp=Math.hypot(S.vel[0],S.vel[1],S.vel[2]), cap=Math.max(24,maxSp*taper);
+  if(sp>cap) S.vel=S.vel.map(v=>v*cap/sp);
+  S.cam=[0,1,2].map(i=>S.cam[i]+S.vel[i]*dt);
+  if(keys["z"])S.roll-=dt*1.6; if(keys["x"])S.roll+=dt*1.6;
+}
+/* MATH-END */
+function nodeAt(mx,my){ let best=null,bd=1e9;
+  for(const [n,pr,sc] of lastDrawn){ const d=Math.hypot(pr[0]-mx,pr[1]-my); if(d<Math.max(26,sc)&&d<bd){bd=d;best=n;} }
+  return best; }
+function draw3D(now){
+  _B=basis();
+  ctx.fillStyle="#04060e"; ctx.fillRect(0,0,cv.width,cv.height);
+  for(const st of stars){ ctx.fillStyle="rgba(160,190,255,"+(0.25+st[2]*0.3)+")"; ctx.fillRect(st[0]*cv.width,st[1]*cv.height,st[2],st[2]); }
+  if(S.level===0){
+    for(const L of LINKS_DRAW){ const a=GAL[L.a], b=GAL[L.b], pa=project(a.pos), pb=project(b.pos); if(!pa||!pb) continue;
+      const hot=S.target&&(S.target.ref===a||S.target.ref===b);
+      ctx.strokeStyle=hot?"rgba(255,212,121,.9)":"rgba(110,160,255,"+(0.05+Math.min(0.30,L.n/300)).toFixed(3)+")";
+      ctx.lineWidth=hot?1.6:1; ctx.beginPath(); ctx.moveTo(pa[0],pa[1]); ctx.lineTo(pb[0],pb[1]); ctx.stroke(); }
+    /* cloud cull must exceed the L0 boot framing distance at the shell
+       radius (~10200 worst case, portrait) plus the shell's own depth,
+       or galaxy clouds vanish from the boot frame */
+    for(const g of GAL){ const pc=project(g.pos); if(!pc||pc[2]>15000) continue;
+      for(const cp of g.cloud){ const fr=((now/11000)+cp.ph)%1, r=0.35+0.85*fr;
+        const pp=project([g.pos[0]+cp.o[0]*r, g.pos[1]+cp.o[1]*r, g.pos[2]+cp.o[2]*r]); if(!pp) continue;
+        ctx.fillStyle="hsla("+g.hue+",85%,68%,"+(0.75*(1-fr)+0.1).toFixed(3)+")";
+        const sz=cp.n>40?2.4:1.6; ctx.fillRect(pp[0],pp[1],sz,sz); } }
+  }
+  let hot=null,hotD=1e9; lastDrawn=[];
+  for(const n of nodes){
+    const pr=project(n.pos); if(!pr) continue;
+    const sc=Math.max(2.2, n.size*330/pr[2]);
+    lastDrawn.push([n,pr,sc]);
+    const d=Math.hypot(pr[0]-cv.width/2,pr[1]-cv.height/2);
+    if(d<Math.max(34,sc*0.95)&&d<hotD){hotD=d;hot=n;}
+  }
+  S.hot=hot;
+  S.target=(S.tabTarget&&nodes.includes(S.tabTarget))?S.tabTarget:hot;
+  for(const [n,pr,sc] of lastDrawn){
+    const isT=n===S.target, col="hsl("+n.hue+",85%,"+(isT?72:58)+"%)";
+    const gr=ctx.createRadialGradient(pr[0],pr[1],0,pr[0],pr[1],sc*2.1);
+    gr.addColorStop(0,col); gr.addColorStop(0.35,"hsla("+n.hue+",85%,55%,.5)"); gr.addColorStop(1,"hsla("+n.hue+",85%,50%,0)");
+    ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(pr[0],pr[1],sc*2.1,0,7); ctx.fill();
+    ctx.fillStyle="#eaf3ff"; ctx.beginPath(); ctx.arc(pr[0],pr[1],Math.max(1.4,sc*0.22),0,7); ctx.fill();
+    if(n.matches>0){ ctx.strokeStyle="rgba(120,240,255,.75)"; ctx.lineWidth=1.2; ctx.beginPath(); ctx.arc(pr[0],pr[1],sc*0.75+13,0,7); ctx.stroke(); }
+    if(isT){ ctx.strokeStyle="#ffd479"; ctx.lineWidth=1.6; ctx.beginPath(); ctx.arc(pr[0],pr[1],sc*0.75+7+Math.sin(now/240)*2,0,7); ctx.stroke();
+      ctx.fillStyle="#ffe9a8"; ctx.font="13px ui-monospace,monospace"; ctx.textAlign="center"; ctx.fillText(n.label,pr[0],pr[1]-sc*0.75-16); }
+    else if(pr[2]<950){ ctx.fillStyle="rgba(180,205,255,.55)"; ctx.font="10.5px ui-monospace,monospace"; ctx.textAlign="center"; ctx.fillText(n.label,pr[0],pr[1]-sc*0.6-8); }
+  }
+  ctx.strokeStyle="rgba(255,212,121,.8)"; ctx.lineWidth=1; const cx=cv.width/2,cy2=cv.height/2;
+  ctx.beginPath(); ctx.moveTo(cx-11,cy2); ctx.lineTo(cx-4,cy2); ctx.moveTo(cx+4,cy2); ctx.lineTo(cx+11,cy2);
+  ctx.moveTo(cx,cy2-11); ctx.lineTo(cx,cy2-4); ctx.moveTo(cx,cy2+4); ctx.lineTo(cx,cy2+11); ctx.stroke();
+}
+const GLYPH_FONTS="ui-monospace,'Cascadia Mono','DejaVu Sans Mono',Menlo,Consolas,'Noto Sans Mono','Segoe UI Symbol','Segoe UI Historic','Noto Sans Symbols 2','Noto Sans Symbols','Noto Sans Cuneiform','Noto Sans Egyptian Hieroglyphs','Apple Symbols','Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',monospace";
+function drawPlane(){
+  ctx.fillStyle="#070b18"; ctx.fillRect(0,0,cv.width,cv.height);
+  const lines=S.plane, cw=13, ch=22, ox=Math.max(16,Math.min(70,cv.width*0.06)), oy=120;
+  ctx.font="15px "+GLYPH_FONTS;
+  const maxr=Math.min(lines.length, Math.floor((cv.height-oy-170)/ch));
+  /* ONE uniform background for the whole text field (task 23.6.7/7.6.10):
+     the old rendering filled a mid-blue tile (rgba(30,48,92,.85)) behind
+     EVERY glyph — a ransom-note checkerboard that fought the reading.
+     Text now sits on a single panel in near-white (#eaf3ff on #0d1526,
+     ~16:1); only the cursor cell keeps a highlight fill. */
+  let maxc=0;
+  for(let r=0;r<maxr;r++){ const L=lines[r]||""; let n=0; while(n<L.length&&ox+n*cw<=cv.width-20) n++; if(n>maxc) maxc=n; }
+  if(maxr>0&&maxc>0){
+    ctx.fillStyle="#0d1526"; ctx.fillRect(ox-12,oy-30,maxc*cw+16,maxr*ch+22);
+    ctx.strokeStyle="rgba(120,160,255,.22)"; ctx.lineWidth=1; ctx.strokeRect(ox-12,oy-30,maxc*cw+16,maxr*ch+22);
+  }
+  for(let r=0;r<maxr;r++){
+    const line=lines[r]||"";
+    let c=0;
+    for(const glyph of line){ /* code points, not code units: an astral glyph
+       drawn as two lone surrogates renders as �� whatever font is present.
+       (Loop var must NOT be named ch — ch is the row height; shadowing it
+       made y=oy+r*ch coerce the glyph to a number: digits drew staircased,
+       everything else NaN. Caught by the walk4 screenshot, 2026-11-19.) */
+      const x=ox+c*cw, y=oy+r*ch; if(x>cv.width-20) break;
+      const cur=(c===S.px&&r===S.py);
+      if(cur){ ctx.fillStyle="#ffd479"; ctx.fillRect(x-1,y-13,cw-2,ch-3); }
+      ctx.fillStyle=cur?"#0a0f22":"#eaf3ff";
+      ctx.fillText(glyph,x,y);
+      c+=glyph.length;
+    }
+  }
+  ctx.fillStyle="#8fb7ff"; ctx.font="13px "+GLYPH_FONTS;
+  ctx.fillText("the line under your feet:  "+(lines[S.py]||""), ox, cv.height-140);
+  const ax=ox+S.px*cw-1, ay=oy+S.py*ch-13;
+  ctx.strokeStyle="#ffd479"; ctx.lineWidth=2; ctx.strokeRect(ax-3,ay-3,cw+3,ch+2);
+}
+let lastT=performance.now();
+function frame(now){
+  const dt=Math.min(0.05,(now-lastT)/1000); lastT=now;
+  if(S.casting){ const p=Math.min(1,(now-S.casting.t0)/(S.casting.until-S.casting.t0));
+    document.getElementById("castfill").style.width=(p*100)+"%";
+    if(p>=1){ const d=S.casting.done; S.casting=null; document.getElementById("castwrap").style.display="none"; d(); } }
+  if(S.frameOnLoad&&!S.trans&&!S.casting){ const f=S.frameOnLoad;
+    if(f.level===S.level&&f.gal===S.gal&&f.macro===S.macro&&f.meso===S.meso){
+      if(nodes.length){ const F=frameNodes(); S.frameOnLoad=null;
+        if(F&&Math.hypot(S.cam[0]-f.at[0],S.cam[1]-f.at[1],S.cam[2]-f.at[2])<1)
+          S.trans={t0:now,dur:650,from:S.cam.slice(),to:F.cam,mid:null,midDone:true,fade:"none"}; }
+    } else S.frameOnLoad=null; }
+  if(S.trans){ const tr=S.trans, p=Math.min(1,(now-tr.t0)/tr.dur), e=p<0.5?2*p*p:1-Math.pow(-2*p+2,2)/2;
+    S.cam=[0,1,2].map(i=>tr.from[i]+(tr.to[i]-tr.from[i])*e);
+    const fo=document.getElementById("fade");
+    if(tr.fade==="in") fo.style.opacity=String(p<0.6?Math.min(1,Math.max(0,(p-0.35)/0.25)):Math.max(0,1-(p-0.72)/0.28));
+    if(p>=0.58&&!tr.midDone){ tr.midDone=true; if(tr.mid) tr.mid(); }
+    if(p>=1){ S.trans=null; fo.style.opacity=0; } }
+  if(S.level<4){ if(!S.trans) moveCam(dt); draw3D(now); }
+  else {
+    if(keys["w"]||keys["ArrowLeft"]){S.px=Math.max(0,S.px-1);keys["w"]=keys["ArrowLeft"]=false;}
+    if(keys["e"]||keys["ArrowRight"]){S.px=S.px+1;keys["e"]=keys["ArrowRight"]=false;}
+    if(keys["f"]||keys["ArrowUp"]){S.py=Math.max(0,S.py-1);keys["f"]=keys["ArrowUp"]=false;}
+    if(keys["a"]||keys["ArrowDown"]){S.py=Math.min(S.plane.length-1,S.py+1);keys["a"]=keys["ArrowDown"]=false;}
+    S.px=Math.min(S.px, Math.max(0,(S.plane[S.py]||"").length-1));
+    drawPlane();
+  }
+  document.getElementById("crumb").textContent=crumb();
+  const known=GAL.reduce((a,g)=>a+(g.count||0),0);
+  document.getElementById("coord").textContent= S.level===4? S.planet.coord+" · plane" :
+    S.level===3? "meso "+S.meso+" · "+nodes.length+" micro addresses" :
+    S.level===2? "macro "+S.macro+" · "+nodes.length+" meso addresses" :
+    S.level===1? S.gal.name+" · "+nodes.length+" macro addresses" :
+    GAL.length+" galaxies · "+(known?known+" scrolls":"counting scrolls…");
+  const tn=document.getElementById("tname"), ts=document.getElementById("tsub");
+  if(S.level===4){ tn.textContent=(S.planet.title||S.planet.coord); ts.textContent="plane of existence · Read for clean text · bksp steps back out"; }
+  else if(S.target){ tn.textContent=S.target.label; ts.textContent=S.target.sub+" · enter or mouse1 to zoom"; }
+  else { tn.textContent="no target"; ts.textContent="put the crosshair on a node, or TAB to lock one"; }
+  if(S.msgT&&now-S.msgT>3400){document.getElementById("msg").style.opacity=0;S.msgT=0;}
+  requestAnimationFrame(frame);
+}
+/* ---------- boot: the list, and nothing heavier ---------- */
+(async function boot(){
+  try{
+    const list=await apiJson("/api/phexts");
+    GAL=list.map((f,fi)=>({fi, name:f.name, bytes:f.bytes, count:null, hue:(fi*47)%360,
+      macros:null, mesos:new Map(), micros:new Map(), scrollsAll:null, cloud:[], linkN:0, pos:[0,0,0]}));
+    /* the multiverse layout needs ultra's real scroll count (its glob
+       radius sets the shell), so fetch that one summary before laying
+       out — a single tiny structure call, the same one backgroundIndex
+       would make seconds later anyway */
+    const ug=GAL.find(g=>g.name.replace(/\.phext$/,"")==="ultra");
+    if(ug){ try{ await fetchSummary(ug); }catch(e){} }
+    layoutMultiverse();
+    buildNodes();
+    const BF=frameNodes(); if(BF) S.cam=BF.cam;
+    requestAnimationFrame(frame);
+    backgroundIndex();
+  }catch(e){
+    requestAnimationFrame(frame);
+    if(!AUTH_DEAD) showMsg("could not list the hosted phexts: "+e.message);
+  }
+})();
+
+</script>
+</body>
+</html>
