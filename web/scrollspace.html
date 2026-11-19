@@ -179,11 +179,17 @@ function rebuildLinks(){
     .sort((x,y)=>y.n-x.n).slice(0,220);
   if(S.level===0) buildNodes();
 }
+/* min/max per axis without spread — Math.min(...vs) blows the call stack on
+   phexts with tens of thousands of children in one space (ultra.phext). */
+function axisMidExt(ts){
+  const mid=[0,0,0]; let ext=1;
+  for(let a=0;a<3;a++){ let mn=1e18,mx=-1e18; for(const t of ts){ if(t[a]<mn)mn=t[a]; if(t[a]>mx)mx=t[a]; } mid[a]=(mn+mx)/2; if(mx-mn>ext)ext=mx-mn; }
+  return {mid,ext};
+}
 /* true 3D placement: the address segment IS the position (x,y,z), centered and scaled per level */
 function triplePositions(keys){
   const ts=keys.map(k=>k.split(".").map(Number));
-  const mid=[0,1,2].map(a=>{ const vs=ts.map(t=>t[a]); return (Math.min(...vs)+Math.max(...vs))/2; });
-  const ext=Math.max(1,...[0,1,2].map(a=>{ const vs=ts.map(t=>t[a]); return Math.max(...vs)-Math.min(...vs); }));
+  const {mid,ext}=axisMidExt(ts);
   const scale=1450/ext;
   const out=new Map();
   keys.forEach((k,i)=>{ const t=ts[i]; out.set(k,[(t[0]-mid[0])*scale,(t[1]-mid[1])*scale,(t[2]-mid[2])*scale]); });
@@ -193,8 +199,7 @@ function triplePositions(keys){
 function buildCloud(g){
   if(!g.macros) { g.cloud=[]; return; }
   const keys=[...g.macros.keys()], ts=keys.map(k=>k.split(".").map(Number));
-  const mid=[0,1,2].map(a=>{ const vs=ts.map(t=>t[a]); return (Math.min(...vs)+Math.max(...vs))/2; });
-  const ext=Math.max(1,...[0,1,2].map(a=>{ const vs=ts.map(t=>t[a]); return Math.max(...vs)-Math.min(...vs); }));
+  const {mid,ext}=axisMidExt(ts);
   const sc=250/ext;
   g.cloud=keys.map((k,i)=>({o:[(ts[i][0]-mid[0])*sc,(ts[i][1]-mid[1])*sc,(ts[i][2]-mid[2])*sc], n:g.macros.get(k).scrolls, ph:(i*0.618)%1}));
 }
@@ -239,7 +244,7 @@ async function backgroundIndex(){
 
 /* ---------- state ---------- */
 const S={level:0, gal:null, macro:null, meso:null, planet:null, cam:[0,0,2700], yaw:0, pitch:0, roll:0,
-         target:null, hot:null, tabTarget:null, tabIdx:-1, casting:null, trans:null, plane:null, px:2, py:2, msgT:0};
+         target:null, hot:null, tabTarget:null, tabIdx:-1, casting:null, trans:null, frameOnLoad:null, plane:null, px:2, py:2, msgT:0};
 S.vel=[0,0,0]; S.speedMul=1;
 let nodes=[];
 function buildNodes(){
@@ -278,9 +283,32 @@ let rebindMode=false, rebindSlot=null;
 function showMsg(t){const m=document.getElementById("msg");m.textContent=t;m.style.opacity=1;S.msgT=performance.now();}
 function cast(label,ms,done){ S.casting={label,until:performance.now()+ms,t0:performance.now(),done};
   document.getElementById("castwrap").style.display="block"; document.getElementById("castlabel").textContent=label; }
-function flyTo(targetPos,mid){
-  S.trans={t0:performance.now(),dur:950,from:S.cam.slice(),to:[targetPos[0],targetPos[1],targetPos[2]+300],mid,midDone:false};
+function flyTo(targetPos,mid,raw){
+  S.trans={t0:performance.now(),dur:950,from:S.cam.slice(),to:raw?targetPos.slice():[targetPos[0],targetPos[1],targetPos[2]+300],mid,midDone:false,fade:"in"};
 }
+/* ---------- camera bounding box ---------- */
+/* Continuity rule: when you arrive in a space, the places you can navigate
+   to are visible. frameFor() takes the world positions of the navigable
+   globs, finds their bounding sphere (AABB centre + max radius), and puts
+   the camera on the +Z axis of that centre, far enough back that the whole
+   sphere fits the frustum project() actually uses (f = height*0.9, so the
+   vertical half-angle is atan(1/1.8) and the horizontal follows aspect).
+   Same constants as project() — the fit cannot drift from the render. */
+function frameFor(positions){
+  if(!positions||!positions.length) return null;
+  const mn=[1e18,1e18,1e18], mx=[-1e18,-1e18,-1e18];
+  for(const p of positions) for(let i=0;i<3;i++){ if(p[i]<mn[i])mn[i]=p[i]; if(p[i]>mx[i])mx[i]=p[i]; }
+  const center=[0,1,2].map(i=>(mn[i]+mx[i])/2);
+  let R=0; for(const p of positions){ const d=Math.hypot(p[0]-center[0],p[1]-center[1],p[2]-center[2]); if(d>R)R=d; }
+  const halfV=Math.atan(1/1.8), halfH=Math.atan((cv.width/Math.max(1,cv.height))/1.8);
+  const th=Math.min(halfV,halfH);
+  const dist=Math.min(6500, Math.max(R/Math.sin(th)*1.06, R+170, 480));
+  return {center, R, dist, cam:[center[0], center[1], center[2]+dist]};
+}
+function frameNodes(){ return frameFor(nodes.map(n=>n.pos)); }
+/* After a level switch inside a running transition, land where enterLevel()
+   framed the camera — not at the stale parent-space destination. */
+function settleTrans(){ if(S.trans) S.trans.to=S.cam.slice(); }
 function fireTarget(){
   if(S.target) return S.target;
   return null;
@@ -289,20 +317,33 @@ function doZoomIn(){
   if(S.casting||S.trans) return;
   const n=fireTarget();
   if(!n){ showMsg("no target under the crosshair — aim at a node, or TAB to lock one"); return; }
-  if(S.level===0) cast("Entering "+n.ref.name+"…",650,()=>flyTo(n.pos,()=>{S.gal=n.ref;S.level=1;enterLevel(1500);}));
-  if(S.level===1) cast("Entering Macro "+n.ref+"…",650,()=>flyTo(n.pos,()=>{S.macro=n.ref;S.level=2;enterLevel(1500);}));
-  if(S.level===2) cast("Entering Meso "+n.ref+"…",650,()=>flyTo(n.pos,()=>{S.meso=n.ref;S.level=3;enterLevel(1500);}));
+  if(S.level===0) cast("Entering "+n.ref.name+"…",650,()=>flyTo(n.pos,()=>{S.gal=n.ref;S.level=1;enterLevel(1500);settleTrans();}));
+  if(S.level===1) cast("Entering Macro "+n.ref+"…",650,()=>flyTo(n.pos,()=>{S.macro=n.ref;S.level=2;enterLevel(1500);settleTrans();}));
+  if(S.level===2) cast("Entering Meso "+n.ref+"…",650,()=>flyTo(n.pos,()=>{S.meso=n.ref;S.level=3;enterLevel(1500);settleTrans();}));
   if(S.level===3) cast("Stepping onto the plane…",800,()=>flyTo(n.pos,()=>{S.planet=n.ref;S.level=4;enterPlane();}));
 }
 function doZoomOut(){
   if(S.casting||S.trans) return;
   closeRead();
-  if(S.level===4){S.level=3;enterLevel(1500);}
-  else if(S.level===3){S.level=2;S.meso=null;enterLevel(1500);}
-  else if(S.level===2){S.level=1;S.macro=null;enterLevel(1500);}
-  else if(S.level===1){S.level=0;S.gal=null;enterLevel(2700);}
+  S.frameOnLoad=null;
+  if(S.level===0) return;
+  if(S.level===4){ cast("Stepping back…",450,()=>{ S.level=3;
+    S.trans={t0:performance.now(),dur:700,from:S.cam.slice(),to:S.cam.slice(),mid:()=>{ enterLevel(1500); settleTrans(); },midDone:false,fade:"in"}; }); return; }
+  /* Zooming out animates exactly like zooming in: a cast, then a flight —
+     here a pull-back above the current field — and at the fade's peak the
+     parent space switches in, framed on its own bounding box. */
+  const F=frameNodes(), c=F?F.center:[0,0,0];
+  const back=[c[0], c[1], c[2]+(F?F.dist*2.1:3400)];
+  const up=(label,apply)=>cast(label,500,()=>flyTo(back,()=>{ apply(); settleTrans(); },true));
+  if(S.level===3) up("Back to Meso…",()=>{S.level=2;S.meso=null;enterLevel(1500);});
+  else if(S.level===2) up("Back to Macro…",()=>{S.level=1;S.macro=null;enterLevel(1500);});
+  else if(S.level===1) up("Back to Galaxies…",()=>{S.level=0;S.gal=null;enterLevel(2700);});
 }
-function enterLevel(dist){ S.vel=[0,0,0]; S.cam=[0,0,dist]; S.yaw=0;S.pitch=0;S.roll=0;S.target=null;S.hot=null;S.tabTarget=null;S.tabIdx=-1; buildNodes(); }
+function enterLevel(dist){ S.vel=[0,0,0]; S.yaw=0;S.pitch=0;S.roll=0; S.target=null;S.hot=null;S.tabTarget=null;S.tabIdx=-1;
+  buildNodes();
+  const F=frameNodes();
+  if(F){ S.cam=F.cam; S.frameOnLoad=null; }
+  else { S.cam=[0,0,dist]; S.frameOnLoad={level:S.level,gal:S.gal,macro:S.macro,meso:S.meso,at:S.cam.slice()}; } }
 async function enterPlane(){
   const ref=S.planet, g=S.gal;
   S.plane=["fetching the scroll from "+g.name+" …"]; S.px=2; S.py=2;
@@ -611,11 +652,18 @@ function frame(now){
   if(S.casting){ const p=Math.min(1,(now-S.casting.t0)/(S.casting.until-S.casting.t0));
     document.getElementById("castfill").style.width=(p*100)+"%";
     if(p>=1){ const d=S.casting.done; S.casting=null; document.getElementById("castwrap").style.display="none"; d(); } }
+  if(S.frameOnLoad&&!S.trans&&!S.casting){ const f=S.frameOnLoad;
+    if(f.level===S.level&&f.gal===S.gal&&f.macro===S.macro&&f.meso===S.meso){
+      if(nodes.length){ const F=frameNodes(); S.frameOnLoad=null;
+        if(F&&Math.hypot(S.cam[0]-f.at[0],S.cam[1]-f.at[1],S.cam[2]-f.at[2])<1)
+          S.trans={t0:now,dur:650,from:S.cam.slice(),to:F.cam,mid:null,midDone:true,fade:"none"}; }
+    } else S.frameOnLoad=null; }
   if(S.trans){ const tr=S.trans, p=Math.min(1,(now-tr.t0)/tr.dur), e=p<0.5?2*p*p:1-Math.pow(-2*p+2,2)/2;
     S.cam=[0,1,2].map(i=>tr.from[i]+(tr.to[i]-tr.from[i])*e);
-    document.getElementById("fade").style.opacity=p>0.55?String(Math.min(1,(p-0.55)/0.4)):0;
-    if(p>=0.58&&!tr.midDone){ tr.midDone=true; tr.mid(); }
-    if(p>=1){ S.trans=null; document.getElementById("fade").style.opacity=0; } }
+    const fo=document.getElementById("fade");
+    if(tr.fade==="in") fo.style.opacity=String(p<0.6?Math.min(1,Math.max(0,(p-0.35)/0.25)):Math.max(0,1-(p-0.72)/0.28));
+    if(p>=0.58&&!tr.midDone){ tr.midDone=true; if(tr.mid) tr.mid(); }
+    if(p>=1){ S.trans=null; fo.style.opacity=0; } }
   if(S.level<4){ if(!S.trans) moveCam(dt); draw3D(now); }
   else {
     if(keys["w"]||keys["ArrowLeft"]){S.px=Math.max(0,S.px-1);keys["w"]=keys["ArrowLeft"]=false;}
@@ -648,6 +696,7 @@ function frame(now){
     GAL.forEach((g,i)=>{ const y=1-(i/Math.max(1,GAL.length-1))*2, r=Math.sqrt(Math.max(0,1-y*y)), th=i*2.39996;
       g.pos=[Math.cos(th)*r*1500, y*1050, Math.sin(th)*r*1500]; });
     buildNodes();
+    const BF=frameNodes(); if(BF) S.cam=BF.cam;
     requestAnimationFrame(frame);
     backgroundIndex();
   }catch(e){
