@@ -296,13 +296,137 @@ function layoutMultiverse(){
   GAL.forEach((g,i)=>{ const y=1-(i/Math.max(1,GAL.length-1))*2, r=Math.sqrt(Math.max(0,1-y*y)), th=i*2.39996;
     g.pos=[Math.cos(th)*r*1500, y*1050, Math.sin(th)*r*1500]; });
   const u=GAL.find(g=>g.name.replace(/\.phext$/,"")==="ultra");
-  if(!u||u.count==null) return;
+  if(!u||u.count==null){ for(const g of GAL) g.anchorPos=g.pos.slice(); return; }
   const shell=SHELL_MULT*globSize(u.count,u.bytes);
   for(const g of GAL){ if(g===u) continue;
     const d=Math.hypot(g.pos[0],g.pos[1],g.pos[2]);
     if(d<1e-9){ g.pos=[shell,0,0]; continue; }
     g.pos=[g.pos[0]/d*shell, g.pos[1]/d*shell, g.pos[2]/d*shell]; }
   u.pos=[0,0,0];
+  for(const g of GAL) g.anchorPos=g.pos.slice();
+}
+
+/* ---------- node repulsion (task 21.5.7/6.5.9/6.5.8) ---------- */
+/* Will: nodes clustered near each other are hard to read/navigate —
+   give them "repulsive gravity" that keeps them from overlapping, but
+   not from getting away from view. Every node keeps its address-true
+   position as an anchor; this bounded relaxation pushes overlapping
+   neighbours apart around their anchors, a restoring spring pulls
+   each node home, and a hard cap bounds any displacement to a
+   fraction of the space's extent. frameFor() frames the DISPLACED
+   positions, so a relaxed space is always framed whole — nothing is
+   pushed out of view. The pass is deterministic: fixed iteration
+   budget, fixed pair order, no randomness, no clocks — the same
+   corpus relaxes to the same layout on every load, for every viewer.
+   Separation model: a node's keep-out radius is
+     max(rendered disc radius, label half-width) + RELAX_GAP/2,
+   the disc radius being the renderer's own gradient extent
+   (size * 330 * 2.1 / 810 = size * RELAX_DISC_K at the reference
+   frame height) and the label half-width the label's rendered width
+   at the depth labels appear (len * 6.31 * 950 / 810 / 2). A pair is
+   separated when its centres are at least the sum of the two radii
+   apart. Where a space is too dense for full separation inside the
+   cap (ultra.phext's largest meso), the relaxation does its bounded
+   best: local declumping, anchors still legible. As a final guard,
+   spaces whose scoring grid stays efficient (up to 20,000 nodes, no
+   giant-radius degeneracy) are scored before and after with the
+   census's own overlap metrics (disc pairs + label-box pairs); if a
+   relaxation ever scored worse than the anchors, the anchors stand —
+   repulsion never makes a space worse. */
+const RELAX_DISC_K=0.8556;
+const RELAX_GAP=4;
+const RELAX_SPRING=0.05;
+const RELAX_CAP_FRAC=0.45;
+const RELAX_DAMP=0.7;
+function relaxLayout(nodes){
+  const n=nodes.length;
+  for(const nd of nodes){ if(!nd.anchor) nd.anchor=nd.pos; nd.pos=nd.anchor.slice(); }
+  if(n<2) return;
+  const R=new Float64Array(n);
+  for(let i=0;i<n;i++){ const nd=nodes[i];
+    R[i]=Math.max(nd.size*RELAX_DISC_K, nd.label.length*6.31*950/1620)+RELAX_GAP/2; }
+  const mn=[1e18,1e18,1e18], mx=[-1e18,-1e18,-1e18];
+  for(const nd of nodes) for(let a=0;a<3;a++){ const v=nd.anchor[a]; if(v<mn[a])mn[a]=v; if(v>mx[a])mx[a]=v; }
+  let ext=1; for(let a=0;a<3;a++){ const s=mx[a]-mn[a]; if(s>ext)ext=s; }
+  const cap=RELAX_CAP_FRAC*ext;
+  /* radii above the grid scale are few by construction (top ~2%):
+     check those against everything; the grid handles the rest */
+  const sortedR=Array.from(R).sort((a,b)=>b-a);
+  const rGrid=sortedR[Math.min(n-1,Math.floor(n*0.02))];
+  const cell=Math.max(1,2*rGrid);
+  const bigSet=new Set(), big=[];
+  for(let i=0;i<n;i++) if(R[i]>rGrid){ bigSet.add(i); big.push(i); }
+  const X=new Float64Array(n), Y=new Float64Array(n), Z=new Float64Array(n);
+  const accX=new Float64Array(n), accY=new Float64Array(n), accZ=new Float64Array(n);
+  for(let i=0;i<n;i++){ X[i]=nodes[i].anchor[0]; Y[i]=nodes[i].anchor[1]; Z[i]=nodes[i].anchor[2]; }
+  const iters= n<=1500?140 : n<=20000?36 : 4;
+  const offs=[];
+  for(let a=-1;a<=1;a++) for(let b=-1;b<=1;b++) for(let c=-1;c<=1;c++) offs.push([a,b,c]);
+  let stall=0;
+  for(let it=0; it<iters; it++){
+    accX.fill(0); accY.fill(0); accZ.fill(0);
+    let maxPush=0;
+    const push=(i,j)=>{
+      const dx=X[i]-X[j], dy=Y[i]-Y[j], dz=Z[i]-Z[j];
+      const T=R[i]+R[j], d2=dx*dx+dy*dy+dz*dz;
+      if(d2>=T*T) return;
+      let d=Math.sqrt(d2), ux, uy, uz;
+      if(d<1e-6){ const h=((i+1)*73856093)^((j+1)*19349663);
+        const th=(h%6283)/1000, ph=((h>>8)%6283)/1000;
+        ux=Math.cos(th)*Math.cos(ph); uy=Math.sin(ph); uz=Math.sin(th)*Math.cos(ph); d=0; }
+      else { ux=dx/d; uy=dy/d; uz=dz/d; }
+      const p=(T-d)/2*RELAX_DAMP;
+      accX[i]+=ux*p; accY[i]+=uy*p; accZ[i]+=uz*p;
+      accX[j]-=ux*p; accY[j]-=uy*p; accZ[j]-=uz*p;
+      if(p>maxPush) maxPush=p;
+    };
+    for(const bi of big) for(let j=0;j<n;j++){ if(j===bi) continue; if(bigSet.has(j)&&j<bi) continue; push(bi,j); }
+    const grid=new Map();
+    for(let i=0;i<n;i++){ if(bigSet.has(i)) continue;
+      const k=Math.floor(X[i]/cell)+","+Math.floor(Y[i]/cell)+","+Math.floor(Z[i]/cell);
+      let arr=grid.get(k); if(!arr){ arr=[]; grid.set(k,arr); } arr.push(i); }
+    for(let i=0;i<n;i++){ if(bigSet.has(i)) continue;
+      const cx=Math.floor(X[i]/cell), cy=Math.floor(Y[i]/cell), cz=Math.floor(Z[i]/cell);
+      for(let o=0;o<27;o++){ const arr=grid.get((cx+offs[o][0])+","+(cy+offs[o][1])+","+(cz+offs[o][2])); if(!arr) continue;
+        for(const j of arr){ if(j<=i) continue; push(i,j); } } }
+    for(let i=0;i<n;i++){ const nd=nodes[i];
+      let dx=(X[i]-nd.anchor[0])+accX[i], dy=(Y[i]-nd.anchor[1])+accY[i], dz=(Z[i]-nd.anchor[2])+accZ[i];
+      dx*=(1-RELAX_SPRING); dy*=(1-RELAX_SPRING); dz*=(1-RELAX_SPRING);
+      const len=Math.hypot(dx,dy,dz);
+      if(len>cap){ const s=cap/len; dx*=s; dy*=s; dz*=s; }
+      X[i]=nd.anchor[0]+dx; Y[i]=nd.anchor[1]+dy; Z[i]=nd.anchor[2]+dz; }
+    if(maxPush<0.02){ if(++stall>=3) break; } else stall=0;
+  }
+  for(let i=0;i<n;i++) nodes[i].pos=[X[i],Y[i],Z[i]];
+  let maxR2=0; const R2=nodes.map(nd=>Math.max(nd.size*RELAX_DISC_K, nd.label.length*6.31*950/1620)+4);
+  for(const r of R2) if(r>maxR2)maxR2=r;
+  if(n<=20000&&2*maxR2<=ext){
+    /* guard: score with the census's metrics; revert if worse. The
+       2*maxR2<=ext condition keeps the scoring grid efficient — in
+       the giant-radius foam regime (ultra's macro field) relaxation
+       is monotone in practice and the scoring pass would degenerate
+       to an all-pairs count. */
+    const score=(getPos)=>{
+      const cell2=Math.max(1,2*maxR2), grid2=new Map();
+      nodes.forEach((nd,i)=>{ const p=getPos(nd,i);
+        const k=Math.floor(p[0]/cell2)+","+Math.floor(p[1]/cell2)+","+Math.floor(p[2]/cell2);
+        let arr=grid2.get(k); if(!arr){ arr=[]; grid2.set(k,arr); } arr.push(i); });
+      let s=0; const LH=10.5*950/810;
+      nodes.forEach((nd,i)=>{ const p=getPos(nd,i);
+        const cx=Math.floor(p[0]/cell2), cy=Math.floor(p[1]/cell2), cz=Math.floor(p[2]/cell2);
+        for(let a=-1;a<=1;a++) for(let b=-1;b<=1;b++) for(let c=-1;c<=1;c++){
+          const arr=grid2.get((cx+a)+","+(cy+b)+","+(cz+c)); if(!arr) continue;
+          for(const j of arr){ if(j<=i) continue; const q=getPos(nodes[j],j);
+            const dx=p[0]-q[0], dy=p[1]-q[1], dz=p[2]-q[2];
+            if(Math.hypot(dx,dy,dz)<nd.size*RELAX_DISC_K+nodes[j].size*RELAX_DISC_K) s++;
+            const lw=(nd.label.length+nodes[j].label.length)*6.31*950/1620;
+            const cyi=p[1]+nd.size*RELAX_DISC_K+LH/2, cyj=q[1]+nodes[j].size*RELAX_DISC_K+LH/2;
+            if(Math.abs(dx)<lw&&Math.abs(cyi-cyj)<LH&&Math.abs(dz)<30) s++;
+          } } });
+      return s;
+    };
+    if(score(nd=>nd.pos)>score(nd=>nd.anchor)) for(const nd of nodes) nd.pos=nd.anchor.slice();
+  }
 }
 
 /* ---------- lazy loading machinery ---------- */
@@ -350,21 +474,28 @@ S.vel=[0,0,0]; S.speedMul=1;
 let nodes=[];
 function buildNodes(){
   nodes=[];
-  if(S.level===0) for(const g of GAL) nodes.push({pos:g.pos,label:g.name,sub:(g.count==null?"…":g.count)+" scrolls · "+(g.macros?g.macros.size:"…")+" macro addresses · ⇄ "+g.linkN+" linked galaxies (9D)",hue:g.hue,size:globSize(g.count,g.bytes),ref:g,kind:"gal"});
+  if(S.level===0) for(const g of GAL) nodes.push({pos:(g.anchorPos||g.pos).slice(),anchor:g.anchorPos||g.pos,label:g.name,sub:(g.count==null?"…":g.count)+" scrolls · "+(g.macros?g.macros.size:"…")+" macro addresses · ⇄ "+g.linkN+" linked galaxies (9D)",hue:g.hue,size:globSize(g.count,g.bytes),ref:g,kind:"gal"});
   if(S.level===1){ const g=S.gal; if(!g.macros){ ensureMacros(g); return; }
     const keys=[...g.macros.keys()].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
     const P=triplePositions(keys);
     for(const k of keys){ const n=g.macros.get(k).scrolls, elsewhere=(prefix3Files.get(k)||new Set()).size-1;
-      nodes.push({pos:P.get(k),label:"Macro "+k,sub:n+" scrolls under (LB.SR.SF) "+k+(elsewhere>0?" · also in "+elsewhere+" other phexts":""),hue:(g.hue+30)%360,size:20+Math.sqrt(n)*3,ref:k,kind:"macro",matches:elsewhere}); } }
+      nodes.push({pos:P.get(k),anchor:P.get(k),label:"Macro "+k,sub:n+" scrolls under (LB.SR.SF) "+k+(elsewhere>0?" · also in "+elsewhere+" other phexts":""),hue:(g.hue+30)%360,size:20+Math.sqrt(n)*3,ref:k,kind:"macro",matches:elsewhere}); } }
   if(S.level===2){ const g=S.gal, m=g.mesos.get(S.macro); if(!m){ ensureMesos(g,S.macro); return; }
     const keys=[...m.keys()].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
     const P=triplePositions(keys);
     for(const k of keys){ const n=m.get(k).scrolls, elsewhere=(prefix6Files.get(S.macro+"/"+k)||new Set()).size-1;
-      nodes.push({pos:P.get(k),label:"Meso "+k,sub:n+" scrolls under (CN.VM.BK) "+k+(elsewhere>0?" · ⇄ 6D match in "+elsewhere+" other phexts":""),hue:(g.hue+60)%360,size:18+Math.sqrt(n)*3,ref:k,kind:"meso",matches:elsewhere}); } }
+      nodes.push({pos:P.get(k),anchor:P.get(k),label:"Meso "+k,sub:n+" scrolls under (CN.VM.BK) "+k+(elsewhere>0?" · ⇄ 6D match in "+elsewhere+" other phexts":""),hue:(g.hue+60)%360,size:18+Math.sqrt(n)*3,ref:k,kind:"meso",matches:elsewhere}); } }
   if(S.level===3){ const g=S.gal, arr=g.micros.get(S.macro+"/"+S.meso); if(!arr){ ensureMicros(g,S.macro,S.meso); return; }
     const P=triplePositions([...new Set(arr.map(e=>e.suffix))]);
     for(const e of arr){ const elsewhere=(suffix3Scrolls.get(e.suffix)||[]).filter(x=>!(x.fi===g.fi&&x.coord===e.coord)).length;
-      nodes.push({pos:P.get(e.suffix),label:e.suffix,sub:g.name+" · "+e.coord+" · "+e.bytes+" bytes"+(elsewhere>0?" · ⇄ 3D match × "+elsewhere:""),hue:(g.hue+90)%360,size:11,ref:e,kind:"micro",matches:elsewhere}); } }
+      nodes.push({pos:P.get(e.suffix),anchor:P.get(e.suffix),label:e.suffix,sub:g.name+" · "+e.coord+" · "+e.bytes+" bytes"+(elsewhere>0?" · ⇄ 3D match × "+elsewhere:""),hue:(g.hue+90)%360,size:11,ref:e,kind:"micro",matches:elsewhere}); } }
+  /* repulsive gravity (task 21.5.7/6.5.9/6.5.8): separate the
+     overlapping globs around their address-true anchors, then —
+     at L0 — write the displaced positions back so the link web
+     and the galaxy clouds follow their globs. frameFor() frames
+     the displaced positions, so nothing is pushed out of view. */
+  relaxLayout(nodes);
+  if(S.level===0) for(const nd of nodes){ const g=nd.ref; g.pos[0]=nd.pos[0]; g.pos[1]=nd.pos[1]; g.pos[2]=nd.pos[2]; }
 }
 function crumb(){
   if(S.level===0) return "SCROLLSPACE · GALAXIES (phexts)";
@@ -841,7 +972,7 @@ function frame(now){
   try{
     const list=await apiJson("/api/phexts");
     GAL=list.map((f,fi)=>({fi, name:f.name, bytes:f.bytes, count:null, hue:(fi*47)%360,
-      macros:null, mesos:new Map(), micros:new Map(), scrollsAll:null, cloud:[], linkN:0, pos:[0,0,0]}));
+      macros:null, mesos:new Map(), micros:new Map(), scrollsAll:null, cloud:[], linkN:0, pos:[0,0,0], anchorPos:null}));
     /* the multiverse layout needs ultra's real scroll count (its glob
        radius sets the shell), so fetch that one summary before laying
        out — a single tiny structure call, the same one backgroundIndex
