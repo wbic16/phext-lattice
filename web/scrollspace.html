@@ -204,6 +204,33 @@ function buildCloud(g){
   g.cloud=keys.map((k,i)=>({o:[(ts[i][0]-mid[0])*sc,(ts[i][1]-mid[1])*sc,(ts[i][2]-mid[2])*sc], n:g.macros.get(k).scrolls, ph:(i*0.618)%1}));
 }
 
+/* ---------- the multiverse layout (level 0) ---------- */
+/* Will, 2026-11-19: ultra.phext sits at the centre of the multiverse, and
+   everything else moves further away so it doesn't dwarf the other phexts.
+   A galaxy's glob radius in the renderer's own units is globSize() — the
+   very value buildNodes() draws as the node's disc, so layout and render
+   can never drift apart. ultra's radius comes from its real scroll count
+   (boot fetches ultra's summary before laying out). Every other galaxy
+   keeps the direction of its Fibonacci-sphere slot — its address in the
+   old layout — but moves out to a shell of SHELL_MULT x ultra's glob
+   radius: ultra's disc then clears every neighbour, and the 9D link web
+   radiates from the centre. If ultra (or its count) is absent, the plain
+   Fibonacci layout stands, exactly as before. */
+const SHELL_MULT=2.5;
+function globSize(count,bytes){ return 24+Math.sqrt(count||bytes/40)*2.2; }
+function layoutMultiverse(){
+  GAL.forEach((g,i)=>{ const y=1-(i/Math.max(1,GAL.length-1))*2, r=Math.sqrt(Math.max(0,1-y*y)), th=i*2.39996;
+    g.pos=[Math.cos(th)*r*1500, y*1050, Math.sin(th)*r*1500]; });
+  const u=GAL.find(g=>g.name.replace(/\.phext$/,"")==="ultra");
+  if(!u||u.count==null) return;
+  const shell=SHELL_MULT*globSize(u.count,u.bytes);
+  for(const g of GAL){ if(g===u) continue;
+    const d=Math.hypot(g.pos[0],g.pos[1],g.pos[2]);
+    if(d<1e-9){ g.pos=[shell,0,0]; continue; }
+    g.pos=[g.pos[0]/d*shell, g.pos[1]/d*shell, g.pos[2]/d*shell]; }
+  u.pos=[0,0,0];
+}
+
 /* ---------- lazy loading machinery ---------- */
 const inflight=new Map();
 function loadOnce(key,fn){ if(inflight.has(key)) return inflight.get(key);
@@ -249,7 +276,7 @@ S.vel=[0,0,0]; S.speedMul=1;
 let nodes=[];
 function buildNodes(){
   nodes=[];
-  if(S.level===0) for(const g of GAL) nodes.push({pos:g.pos,label:g.name,sub:(g.count==null?"…":g.count)+" scrolls · "+(g.macros?g.macros.size:"…")+" macro addresses · ⇄ "+g.linkN+" linked galaxies (9D)",hue:g.hue,size:24+Math.sqrt(g.count||g.bytes/40)*2.2,ref:g,kind:"gal"});
+  if(S.level===0) for(const g of GAL) nodes.push({pos:g.pos,label:g.name,sub:(g.count==null?"…":g.count)+" scrolls · "+(g.macros?g.macros.size:"…")+" macro addresses · ⇄ "+g.linkN+" linked galaxies (9D)",hue:g.hue,size:globSize(g.count,g.bytes),ref:g,kind:"gal"});
   if(S.level===1){ const g=S.gal; if(!g.macros){ ensureMacros(g); return; }
     const keys=[...g.macros.keys()].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
     const P=triplePositions(keys);
@@ -302,7 +329,11 @@ function frameFor(positions){
   let R=0; for(const p of positions){ const d=Math.hypot(p[0]-center[0],p[1]-center[1],p[2]-center[2]); if(d>R)R=d; }
   const halfV=Math.atan(1/1.8), halfH=Math.atan((cv.width/Math.max(1,cv.height))/1.8);
   const th=Math.min(halfV,halfH);
-  const dist=Math.min(6500, Math.max(R/Math.sin(th)*1.06, R+170, 480));
+  /* the 11500 cap only binds on fields wider than ~3000 units — today
+     that is just the L0 shell around ultra (see layoutMultiverse: shell
+     ~3176, worst-case portrait framing distance ~10200); the meso and
+     micro fields span <=1450 units and never reach it */
+  const dist=Math.min(11500, Math.max(R/Math.sin(th)*1.06, R+170, 480));
   return {center, R, dist, cam:[center[0], center[1], center[2]+dist]};
 }
 function frameNodes(){ return frameFor(nodes.map(n=>n.pos)); }
@@ -595,7 +626,10 @@ function draw3D(now){
       const hot=S.target&&(S.target.ref===a||S.target.ref===b);
       ctx.strokeStyle=hot?"rgba(255,212,121,.9)":"rgba(110,160,255,"+(0.05+Math.min(0.30,L.n/300)).toFixed(3)+")";
       ctx.lineWidth=hot?1.6:1; ctx.beginPath(); ctx.moveTo(pa[0],pa[1]); ctx.lineTo(pb[0],pb[1]); ctx.stroke(); }
-    for(const g of GAL){ const pc=project(g.pos); if(!pc||pc[2]>4200) continue;
+    /* cloud cull must exceed the L0 boot framing distance at the shell
+       radius (~10200 worst case, portrait) plus the shell's own depth,
+       or galaxy clouds vanish from the boot frame */
+    for(const g of GAL){ const pc=project(g.pos); if(!pc||pc[2]>15000) continue;
       for(const cp of g.cloud){ const fr=((now/11000)+cp.ph)%1, r=0.35+0.85*fr;
         const pp=project([g.pos[0]+cp.o[0]*r, g.pos[1]+cp.o[1]*r, g.pos[2]+cp.o[2]*r]); if(!pp) continue;
         ctx.fillStyle="hsla("+g.hue+",85%,68%,"+(0.75*(1-fr)+0.1).toFixed(3)+")";
@@ -693,8 +727,13 @@ function frame(now){
     const list=await apiJson("/api/phexts");
     GAL=list.map((f,fi)=>({fi, name:f.name, bytes:f.bytes, count:null, hue:(fi*47)%360,
       macros:null, mesos:new Map(), micros:new Map(), scrollsAll:null, cloud:[], linkN:0, pos:[0,0,0]}));
-    GAL.forEach((g,i)=>{ const y=1-(i/Math.max(1,GAL.length-1))*2, r=Math.sqrt(Math.max(0,1-y*y)), th=i*2.39996;
-      g.pos=[Math.cos(th)*r*1500, y*1050, Math.sin(th)*r*1500]; });
+    /* the multiverse layout needs ultra's real scroll count (its glob
+       radius sets the shell), so fetch that one summary before laying
+       out — a single tiny structure call, the same one backgroundIndex
+       would make seconds later anyway */
+    const ug=GAL.find(g=>g.name.replace(/\.phext$/,"")==="ultra");
+    if(ug){ try{ await fetchSummary(ug); }catch(e){} }
+    layoutMultiverse();
     buildNodes();
     const BF=frameNodes(); if(BF) S.cam=BF.cam;
     requestAnimationFrame(frame);
