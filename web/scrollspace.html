@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Scrollspace — Exocortical Vision</title>
 <style>
+  @font-face{font-family:'Willbot Mono';src:url("/willbot-mono.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
   *{box-sizing:border-box}
   html,body{margin:0;padding:0;height:100%;background:#04060e;overflow:hidden;font-family:ui-monospace,Menlo,Consolas,monospace;color:#cfe3ff}
   #view{position:absolute;inset:0;display:block;cursor:crosshair;touch-action:none}
@@ -49,7 +50,7 @@
   #read{position:absolute;top:0;right:0;height:100%;width:min(560px,94vw);background:#070d1f;border-left:1px solid #3c5a8f;z-index:9;display:none;flex-direction:column;padding:18px 20px;overflow:auto}
   #read h2{font-size:16px;color:#ffe9a8;margin:0 0 4px;line-height:1.4;user-select:text}
   #read .meta{font-size:12px;color:#8fb7ff;margin-bottom:12px;user-select:text}
-  #read .body{font-size:14px;line-height:1.65;color:#dbe9ff;white-space:pre-wrap;user-select:text;word-break:break-word}
+  #read .body{font-family:'Willbot Mono',ui-monospace,Menlo,Consolas,monospace;font-size:14px;line-height:1.65;color:#dbe9ff;white-space:pre-wrap;user-select:text;word-break:break-word}
   #read .row{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap}
   #read .row button,#read .row a{background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:13px;padding:8px 12px;cursor:pointer;text-decoration:none}
   #read .row button:hover,#read .row a:hover{border-color:#ffd479}
