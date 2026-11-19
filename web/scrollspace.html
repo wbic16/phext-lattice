@@ -22,9 +22,13 @@
   #nav button,#readbtn,#rebindbtn{background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:13px;padding:8px 12px;cursor:pointer}
   #nav button:hover,#readbtn:hover,#rebindbtn:hover{border-color:#8fb7ff}
   #readbtn{position:absolute;top:52px;right:12px;z-index:5;display:none}
-  #castwrap{position:absolute;left:50%;bottom:128px;transform:translateX(-50%);width:min(340px,80vw);display:none;z-index:6}
-  #castlabel{text-align:center;font-size:12px;color:#ffe9a8;margin-bottom:4px;text-shadow:0 1px 3px #000}
-  #castbar{height:12px;border:1px solid #5b7bb4;border-radius:6px;background:#0a1224;overflow:hidden}
+  /* Progress (cast) bar (task 32.9.13/7.5.8/6.4.8): larger — 520x22
+     in place of 340x12 — and above the buttons: the wrap's bottom
+     edge (196px) clears the button stack's top edge (178px = 10px
+     base + three 52px rows + two 6px gaps) by 18px. */
+  #castwrap{position:absolute;left:50%;bottom:196px;transform:translateX(-50%);width:min(520px,88vw);display:none;z-index:6}
+  #castlabel{text-align:center;font-size:14px;color:#ffe9a8;margin-bottom:6px;text-shadow:0 1px 3px #000}
+  #castbar{height:22px;border:1px solid #5b7bb4;border-radius:10px;background:#0a1224;overflow:hidden}
   #castfill{height:100%;width:0%;background:linear-gradient(90deg,#3f7cff,#9fd0ff)}
   #fade{position:absolute;inset:0;background:#000;opacity:0;pointer-events:none;transition:opacity .45s}
   #bars{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);display:flex;flex-direction:column;gap:6px;align-items:center;z-index:5}
@@ -72,7 +76,7 @@
   #planefoot a:hover{border-color:#ffd479;color:#ffe9a8}
   body.onplane #bars{bottom:calc(10px + var(--planefoot-h,52px))}
   body.onplane #help{bottom:calc(10px + var(--planefoot-h,52px))}
-  body.onplane #castwrap{bottom:calc(128px + var(--planefoot-h,52px))}
+  body.onplane #castwrap{bottom:calc(196px + var(--planefoot-h,52px))}
   body.onplane #rebindbtn{bottom:calc(196px + var(--planefoot-h,52px))}
   body.onplane #pad{bottom:calc(196px + var(--planefoot-h,52px))}
   body.onplane #trailctl{bottom:calc(10px + var(--planefoot-h,52px))}
