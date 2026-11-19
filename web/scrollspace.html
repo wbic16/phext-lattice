@@ -271,12 +271,74 @@ function triplePositions(keys){
 }
 /* each galaxy renders as its internal structure: a cloud of its macro addresses, flowing outward */
 function buildCloud(g){
-  if(!g.macros) { g.cloud=[]; return; }
+  if(!g.macros) { g.cloud=[]; g.form=g.form||{kind:"globular",flat:1,axes:[0,1],nrm:2}; return; }
   const keys=[...g.macros.keys()], ts=keys.map(k=>k.split(".").map(Number));
   const {mid,ext}=axisMidExt(ts);
   const sc=250/ext;
-  g.cloud=keys.map((k,i)=>({o:[(ts[i][0]-mid[0])*sc,(ts[i][1]-mid[1])*sc,(ts[i][2]-mid[2])*sc], n:g.macros.get(k).scrolls, ph:(i*0.618)%1}));
+  const offs=ts.map(t=>[(t[0]-mid[0])*sc,(t[1]-mid[1])*sc,(t[2]-mid[2])*sc]);
+  let maxR=1e-9; for(const o of offs){ const r=Math.hypot(o[0],o[1],o[2]); if(r>maxR)maxR=r; }
+  g.form=galaxyForm(g,ts);
+  const ax=g.form.axes;
+  g.cloud=keys.map((k,i)=>{ const o=offs[i];
+    return {o, n:g.macros.get(k).scrolls, ph:(i*0.618)%1,
+            rad:Math.hypot(o[0],o[1],o[2])/maxR, ang:Math.atan2(o[ax[1]],o[ax[0]])}; });
 }
+
+/* ---------- astronomical forms (task 19.5.11/6.5.13/5.4.12) ---------- */
+/* Ian's request (via Will, 2026-11-19): "make the graph look like real
+   globular clusters / galaxies". Each phext's FORM is derived from its
+   own macro-address distribution by a fixed rule — never assigned by
+   hand, never random, and computed from data buildCloud already holds
+   (mass M = the sum of the macros' scroll counts, so the answer cannot
+   depend on load order): flatness F = min/max per-axis extent of the
+   macro triples, n = the macro count.
+     n < 2             -> globular (one unresolved core)
+     F <= 0.30, n >= 4 -> disc (the address space is genuinely flat;
+                          the disc plane is the two widest axes)
+     M >= 50000        -> elliptical (a massive spheroid)
+     otherwise         -> globular (a compact spheroid system)
+   On the hosted corpus this makes ultra.phext (F = 1.00, M = 320,958)
+   the giant elliptical at the centre of the multiverse, the flat
+   phexts (the glyph sheet, artifacts, vtpu, ...) discs, and the rest
+   globular clusters. The form drives RENDERING only — glow profiles,
+   stellar colours, cloud photometry: positions stay address-derived
+   and move only through the anchor + relaxLayout machinery. */
+function galaxyForm(g,ts){
+  const n=ts.length, ext=[0,0,0]; let mass=0;
+  for(const v of g.macros.values()) mass+=v.scrolls;
+  for(let a=0;a<3;a++){ let mn=1e18,mx=-1e18; for(const t of ts){ if(t[a]<mn)mn=t[a]; if(t[a]>mx)mx=t[a]; } ext[a]=mx-mn; }
+  const order=[0,1,2].sort((a,b)=>ext[b]-ext[a]); /* widest axis first */
+  const flat=ext[order[2]]/Math.max(1,ext[order[0]]);
+  let kind="globular";
+  if(n>=4&&flat<=0.30) kind="disc";
+  else if(mass>=50000) kind="elliptical";
+  return {kind, flat, axes:[order[0],order[1]], nrm:order[2]};
+}
+/* stellar populations as [hue, saturation], by radius fraction rho
+   inside the parent form: globulars burn warm at the core and pale
+   toward the halo, ellipticals stay warm throughout, discs run warm
+   in the bulge and blue in the young outskirts. */
+function starTint(kind,rho){
+  /* disc tint fades warm -> pale -> blue through near-white, never
+     through green: a straight hue sweep 42 -> 215 crosses 120. */
+  if(kind==="disc"){ if(rho<0.25) return [42,85];
+    const t=Math.min(1,(rho-0.25)/0.6);
+    return t<0.5? [42+6*(t*2), 85-60*(t*2)] : [215, 25+55*((t-0.5)*2)]; }
+  if(kind==="elliptical") return [40-6*rho, 84-14*rho];
+  return [43, 90-45*Math.min(1,rho)];
+}
+/* glow profiles per form: [offset, alpha, lightness] stops over the
+   SAME outer radius the renderer has always used (2.1 * sc, the disc
+   the repulsion census models), redistributed into a stellar shape —
+   a concentrated King-like core for globulars, a broader r^1/4 body
+   for ellipticals, a tight bulge for discs, a steep star for the
+   nodes inside a space. */
+const GLOW_STOPS={
+  globular:  [[0,1,72],[0.10,0.92,68],[0.28,0.36,60],[0.60,0.09,54],[1,0,50]],
+  elliptical:[[0,1,72],[0.16,0.78,66],[0.42,0.30,58],[0.75,0.07,52],[1,0,50]],
+  disc:      [[0,1,73],[0.08,0.95,68],[0.22,0.34,60],[0.55,0.08,54],[1,0,50]],
+  star:      [[0,1,74],[0.10,0.90,68],[0.30,0.32,60],[0.62,0.08,54],[1,0,50]]
+};
 
 /* ---------- the multiverse layout (level 0) ---------- */
 /* Will, 2026-11-19: ultra.phext sits at the centre of the multiverse, and
@@ -460,7 +522,7 @@ async function backgroundIndex(){
     if(g.count==null){ try{ await fetchSummary(g); }catch(e){} if(S.level===0) buildNodes(); }
     await new Promise(r=>setTimeout(r,20)); }
   for(const g of GAL){ if(AUTH_DEAD) return;
-    if(!g.macros){ try{ await fetchMacros(g); }catch(e){} }
+    if(!g.macros){ try{ await fetchMacros(g); }catch(e){} if(S.level===0) buildNodes(); }
     await new Promise(r=>setTimeout(r,20)); }
   for(const g of GAL){ if(AUTH_DEAD) return;
     if(!g.scrollsAll && g.count!=null && g.count<=25000){ try{ await fetchScrollList(g); }catch(e){} }
@@ -489,6 +551,17 @@ function buildNodes(){
     const P=triplePositions([...new Set(arr.map(e=>e.suffix))]);
     for(const e of arr){ const elsewhere=(suffix3Scrolls.get(e.suffix)||[]).filter(x=>!(x.fi===g.fi&&x.coord===e.coord)).length;
       nodes.push({pos:P.get(e.suffix),anchor:P.get(e.suffix),label:e.suffix,sub:g.name+" · "+e.coord+" · "+e.bytes+" bytes"+(elsewhere>0?" · ⇄ 3D match × "+elsewhere:""),hue:(g.hue+90)%360,size:11,ref:e,kind:"micro",matches:elsewhere}); } }
+  /* astronomical forms (task 19.5.11/6.5.13/5.4.12): every node gets
+     a stellar tint. At L0 the tint follows the galaxy's own form;
+     inside a space it follows the node's radius fraction from the
+     space's centre (the anchors are extent-centred, so the centre
+     is the origin) read through the parent galaxy's form. Colours
+     only — positions are untouched here. */
+  if(S.level===0) for(const nd of nodes){ const f=(nd.ref.form||{}).kind||"globular"; nd.form=f;
+    nd.tint=f==="elliptical"?[39,84]:f==="disc"?[42,85]:[43,88]; }
+  else { const kind=(S.gal.form||{}).kind||"globular";
+    let mx=1e-9; for(const nd of nodes){ const r=Math.hypot(nd.anchor[0],nd.anchor[1],nd.anchor[2]); if(r>mx)mx=r; }
+    for(const nd of nodes){ const rho=Math.hypot(nd.anchor[0],nd.anchor[1],nd.anchor[2])/mx; nd.rho=rho; nd.tint=starTint(kind,rho); } }
   /* repulsive gravity (task 21.5.7/6.5.9/6.5.8): separate the
      overlapping globs around their address-true anchors, then —
      at L0 — write the displaced positions back so the link web
@@ -823,6 +896,26 @@ function moveCam(dt){
 function nodeAt(mx,my){ let best=null,bd=1e9;
   for(const [n,pr,sc] of lastDrawn){ const d=Math.hypot(pr[0]-mx,pr[1]-my); if(d<Math.max(26,sc)&&d<bd){bd=d;best=n;} }
   return best; }
+/* a disc galaxy's disc glow: the galaxy's two widest address axes
+   span its disc plane; project that plane's basis vectors to the
+   screen and draw the glow as the ellipse they define, so the disc
+   inclines and foreshortens exactly as the point cloud inside it
+   does. Faint and blue — the young disc around the warm bulge. */
+function drawDiscGlow(g,form,pc){
+  const Ru=globSize(g.count,g.bytes)*1.02, c=g.pos;
+  const A=[0,0,0], B=[0,0,0]; A[form.axes[0]]=1; B[form.axes[1]]=1;
+  const pa=project([c[0]+A[0]*Ru,c[1]+A[1]*Ru,c[2]+A[2]*Ru]);
+  const pb=project([c[0]+B[0]*Ru,c[1]+B[1]*Ru,c[2]+B[2]*Ru]);
+  if(!pa||!pb) return;
+  const ux=pa[0]-pc[0], uy=pa[1]-pc[1], vx=pb[0]-pc[0], vy=pb[1]-pc[1];
+  if(Math.hypot(ux,uy)<2&&Math.hypot(vx,vy)<2) return;
+  ctx.save();
+  ctx.transform(ux/Ru,uy/Ru,vx/Ru,vy/Ru,pc[0],pc[1]);
+  const gr=ctx.createRadialGradient(0,0,0,0,0,Ru);
+  gr.addColorStop(0,"hsla(215,80%,72%,.20)"); gr.addColorStop(0.55,"hsla(215,80%,66%,.10)"); gr.addColorStop(1,"hsla(215,80%,60%,0)");
+  ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(0,0,Ru,0,7); ctx.fill();
+  ctx.restore();
+}
 function draw3D(now){
   _B=basis();
   ctx.fillStyle="#04060e"; ctx.fillRect(0,0,cv.width,cv.height);
@@ -836,10 +929,34 @@ function draw3D(now){
        radius (~10200 worst case, portrait) plus the shell's own depth,
        or galaxy clouds vanish from the boot frame */
     for(const g of GAL){ const pc=project(g.pos); if(!pc||pc[2]>15000) continue;
+      const form=g.form||{kind:"globular",axes:[0,1]};
+      if(form.kind==="disc") drawDiscGlow(g,form,pc);
       for(const cp of g.cloud){ const fr=((now/11000)+cp.ph)%1, r=0.35+0.85*fr;
         const pp=project([g.pos[0]+cp.o[0]*r, g.pos[1]+cp.o[1]*r, g.pos[2]+cp.o[2]*r]); if(!pp) continue;
-        ctx.fillStyle="hsla("+g.hue+",85%,68%,"+(0.75*(1-fr)+0.1).toFixed(3)+")";
-        const sz=cp.n>40?2.4:1.6; ctx.fillRect(pp[0],pp[1],sz,sz); } }
+        /* cloud photometry (task 19.5.11/6.5.13/5.4.12): each point
+           is a star whose brightness, size and colour follow its
+           instantaneous radius fraction rr under the galaxy's form —
+           a King-profile falloff for globulars (with a few blue
+           stragglers, fixed by the point's own phase hash), a
+           de Vaucouleurs-style falloff for ellipticals, and for
+           discs a warm bulge inside rr 0.22 and a two-arm log-spiral
+           brightness modulation outside it. */
+        const rr=Math.min(1.15,cp.rad*r);
+        let b,h,s,l;
+        if(form.kind==="disc"){
+          if(rr<0.22){ b=1/(1+9*rr*rr); h=43; s=88; l=74; }
+          else { const arm=0.5+0.5*Math.cos(2*(cp.ang-2.3*Math.log(rr+0.1)));
+            b=(0.30+0.70*arm)*Math.exp(-1.05*rr);
+            if(arm>0.55){ h=214; s=85; l=78; } else { h=200; s=45; l=62; } }
+        } else if(form.kind==="elliptical"){
+          b=Math.max(0.05,Math.exp(-2.6*(Math.pow(rr,0.25)-0.18))); h=40-6*rr; s=84; l=72;
+        } else {
+          b=1/(1+9*rr*rr); h=43; s=90-45*Math.min(1,rr); l=74;
+          if(((cp.ph*997)|0)%100<6){ h=218; s=80; l=80; b*=1.2; }
+        }
+        const a=Math.min(1,(0.75*(1-fr)+0.1)*(0.2+0.8*b));
+        ctx.fillStyle="hsla("+h+","+s+"%,"+l+"%,"+a.toFixed(3)+")";
+        const sz=(cp.n>40?2.4:1.6)*(0.75+0.6*b); ctx.fillRect(pp[0],pp[1],sz,sz); } }
   }
   let hot=null,hotD=1e9; lastDrawn=[];
   for(const n of nodes){
@@ -852,11 +969,13 @@ function draw3D(now){
   S.hot=hot;
   S.target=(S.tabTarget&&nodes.includes(S.tabTarget))?S.tabTarget:hot;
   for(const [n,pr,sc] of lastDrawn){
-    const isT=n===S.target, col="hsl("+n.hue+",85%,"+(isT?72:58)+"%)";
+    const isT=n===S.target, tint=n.tint||[n.hue,85];
+    const prof=GLOW_STOPS[n.kind==="gal"?(n.form||"globular"):"star"];
+    const dim=n.kind==="gal"?1:1-0.25*(n.rho||0), tb=isT?6:0;
     const gr=ctx.createRadialGradient(pr[0],pr[1],0,pr[0],pr[1],sc*2.1);
-    gr.addColorStop(0,col); gr.addColorStop(0.35,"hsla("+n.hue+",85%,55%,.5)"); gr.addColorStop(1,"hsla("+n.hue+",85%,50%,0)");
+    for(const [off,al,li] of prof) gr.addColorStop(off,"hsla("+tint[0]+","+tint[1]+"%,"+(li+tb)+"%,"+(al*dim).toFixed(3)+")");
     ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(pr[0],pr[1],sc*2.1,0,7); ctx.fill();
-    ctx.fillStyle="#eaf3ff"; ctx.beginPath(); ctx.arc(pr[0],pr[1],Math.max(1.4,sc*0.22),0,7); ctx.fill();
+    ctx.fillStyle="hsl("+tint[0]+","+Math.min(60,tint[1])+"%,93%)"; ctx.beginPath(); ctx.arc(pr[0],pr[1],Math.max(1.4,sc*0.22),0,7); ctx.fill();
     if(n.matches>0){ ctx.strokeStyle="rgba(120,240,255,.75)"; ctx.lineWidth=1.2; ctx.beginPath(); ctx.arc(pr[0],pr[1],sc*0.75+13,0,7); ctx.stroke(); }
     if(isT){ ctx.strokeStyle="#ffd479"; ctx.lineWidth=1.6; ctx.beginPath(); ctx.arc(pr[0],pr[1],sc*0.75+7+Math.sin(now/240)*2,0,7); ctx.stroke();
       ctx.fillStyle="#ffe9a8"; ctx.font="13px ui-monospace,monospace"; ctx.textAlign="center"; ctx.fillText(n.label,pr[0],pr[1]-sc*0.75-16); }
