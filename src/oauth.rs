@@ -1150,6 +1150,42 @@ pub fn status_text(status: u16) -> &'static str {
     }
 }
 
+/// Whether a request only reads. The gate classifies by effect, not
+/// by method: every GET/HEAD on the editor API is a read, and so are
+/// the POSTs that move the editor's shared viewport without touching
+/// stored content — opening a hosted phext, moving the cursor,
+/// switching the active universe — plus search, a pure query whose
+/// text rides the body. The viewport is one server-side view shared
+/// by every visitor, exactly as it is already shared between two
+/// signed-in editors; the one viewport route with a write inside it
+/// (opening a TEI source converts it, creating a file) is gated
+/// again in the handler. Everything else — /api/update, /api/save,
+/// /api/images, unknown routes, and /mcp, whose cookie path calls
+/// `admit` directly — is a write and needs an editor session.
+fn read_only_request(method: &str, route: &str) -> bool {
+    if !route.starts_with("/api/") {
+        return false;
+    }
+    match method {
+        "GET" | "HEAD" => true,
+        "POST" => matches!(
+            route,
+            "/api/open"
+                | "/api/universe"
+                | "/api/dim"
+                | "/api/forward"
+                | "/api/backward"
+                | "/api/next"
+                | "/api/prev"
+                | "/api/goto"
+                | "/api/home"
+                | "/api/base"
+                | "/api/search"
+        ),
+        _ => false,
+    }
+}
+
 /// Access control for the editor servers: an OAuth session, or open when
 /// sign-in is not configured.
 pub struct Gate {
@@ -1349,6 +1385,14 @@ impl Gate {
     }
 
     /// Decides whether a non-auth request may proceed.
+    ///
+    /// The gate is by operation, not by surface (Will, 2026-11-19:
+    /// "only require a login to edit"). Reading — every GET/HEAD on
+    /// the API, plus the editor's viewport POSTs and its search —
+    /// is open to anyone, signed in or not. Writing requires a
+    /// session on the editor list, with the CSRF check writes have
+    /// always had; a signed-in non-editor's write keeps the
+    /// editor-list refusal.
     pub fn admit(&self, method: &str, path: &str, headers: &HashMap<String, String>) -> Result<(), Reply> {
         // `--local` is a process flag, not a header. Proxy markers withhold it.
         if self.is_local() {
@@ -1362,15 +1406,23 @@ impl Gate {
             return Ok(());
         }
         if let Some(session) = self.oauth.read_session(&cookies(headers)) {
-            if !self.editors.allows(&session.who, &session.email) {
-                return Err(self.denied(headers, 403, "This account is not on the editor list."));
-            }
-            if method != "GET" && method != "HEAD" {
-                let csrf = headers.get("x-csrf-token").map(String::as_str).unwrap_or("");
-                if !self.oauth.csrf_matches(&session, csrf) {
-                    return Err(self.denied(headers, 403, "That request did not match this sign-in."));
+            if self.editors.allows(&session.who, &session.email) {
+                if method != "GET" && method != "HEAD" {
+                    let csrf = headers.get("x-csrf-token").map(String::as_str).unwrap_or("");
+                    if !self.oauth.csrf_matches(&session, csrf) {
+                        return Err(self.denied(headers, 403, "That request did not match this sign-in."));
+                    }
                 }
+                return Ok(());
             }
+            // Signed in but not an editor: reads are open to everyone
+            // now; a write keeps the editor-list refusal.
+            if read_only_request(method, route) {
+                return Ok(());
+            }
+            return Err(self.denied(headers, 403, "This account is not on the editor list."));
+        }
+        if read_only_request(method, route) {
             return Ok(());
         }
         Err(self.denied(headers, 401, "unauthorized"))
@@ -2452,12 +2504,15 @@ mod tests {
         let gate = gate("github:1");
         gate.load_editors_file(&file);
         let cookie = format!("phext_session={}", Oauth::test_session_cookie());
-        // github:100 starts outside the list: the gate turns it away.
-        assert_eq!(gate.admit("GET", "/api/nav", &headers(&[("cookie", &cookie)])).unwrap_err().status, 403);
+        // github:100 starts outside the list: the gate turns its
+        // writes away. (Reads are open to everyone now, so the write
+        // is the leg that proves list membership.)
+        let write = headers(&[("cookie", &cookie), ("x-csrf-token", TEST_CSRF)]);
+        assert_eq!(gate.admit("POST", "/api/update", &write).unwrap_err().status, 403);
 
         assert!(gate.admit_account("github:100", "Octo@Example.com"));
-        // Live immediately: the same session now passes the gate.
-        assert!(gate.admit("GET", "/api/nav", &headers(&[("cookie", &cookie)])).is_ok());
+        // Live immediately: the same session's writes now pass the gate.
+        assert!(gate.admit("POST", "/api/update", &write).is_ok());
         assert!(gate.editors().matches("", "octo@example.com"));
         let view = gate.route("GET", "/api/session", &headers(&[("cookie", &cookie)])).unwrap();
         assert!(String::from_utf8_lossy(&view.body).contains("\"editor\":true"));
@@ -2486,19 +2541,30 @@ mod tests {
     #[test]
     fn a_bearer_header_no_longer_admits() {
         // The old static-token auth predated sign-in and was removed:
-        // an Authorization header, right or wrong, admits nobody now.
+        // an Authorization header, right or wrong, admits no WRITE
+        // now. (Reads are open to everyone, header or not — the
+        // header is ignored there, not honoured.)
         let gate = Gate::new(Oauth::test_ready(), Editors::default());
         assert!(gate.admit("GET", "/", &headers(&[])).is_ok());
-        assert_eq!(gate.admit("GET", "/api/nav", &headers(&[])).unwrap_err().status, 401);
-        assert_eq!(gate.admit("GET", "/api/nav", &headers(&[("authorization", "Bearer s3cret-token")])).unwrap_err().status, 401);
-        assert_eq!(gate.admit("GET", "/api/nav", &headers(&[("authorization", "Bearer nope")])).unwrap_err().status, 401);
+        assert_eq!(gate.admit("POST", "/api/update", &headers(&[])).unwrap_err().status, 401);
+        assert_eq!(gate.admit("POST", "/api/update", &headers(&[("authorization", "Bearer s3cret-token")])).unwrap_err().status, 401);
+        assert_eq!(gate.admit("POST", "/api/update", &headers(&[("authorization", "Bearer nope")])).unwrap_err().status, 401);
     }
 
     #[test]
     fn a_session_needs_the_editor_list_and_csrf_for_writes() {
         let cookie = format!("phext_session={}", Oauth::test_session_cookie());
         let outsider = gate("github:999");
-        assert_eq!(outsider.admit("GET", "/api/nav", &headers(&[("cookie", &cookie)])).unwrap_err().status, 403);
+        // Reads are open to any session (and to none); the editor
+        // list still decides writes.
+        assert!(outsider.admit("GET", "/api/nav", &headers(&[("cookie", &cookie)])).is_ok());
+        assert_eq!(
+            outsider
+                .admit("POST", "/api/update", &headers(&[("cookie", &cookie), ("x-csrf-token", TEST_CSRF)]))
+                .unwrap_err()
+                .status,
+            403
+        );
 
         let gate = gate("github:100");
         assert!(gate.admit("GET", "/api/zoom/y/1.1.1?x=1", &headers(&[("cookie", &cookie)])).is_ok());
@@ -2512,12 +2578,68 @@ mod tests {
     fn an_empty_editor_list_admits_any_signed_in_account() {
         let cookie = format!("phext_session={}", Oauth::test_session_cookie());
         let gate = gate("");
-        assert_eq!(gate.admit("GET", "/api/nav", &headers(&[])).unwrap_err().status, 401);
+        assert!(gate.admit("GET", "/api/nav", &headers(&[])).is_ok(), "reads are open signed-out");
+        assert_eq!(gate.admit("POST", "/api/update", &headers(&[])).unwrap_err().status, 401);
         assert!(gate.admit("GET", "/api/nav", &headers(&[("cookie", &cookie)])).is_ok());
         assert!(gate
             .admit("POST", "/api/update", &headers(&[("cookie", &cookie), ("x-csrf-token", TEST_CSRF)]))
             .is_ok());
         assert_eq!(gate.admit("POST", "/api/update", &headers(&[("cookie", &cookie)])).unwrap_err().status, 403);
+    }
+
+    #[test]
+    fn reads_are_open_and_writes_need_an_editor() {
+        // Will, 2026-11-19: "only require a login to edit" — the
+        // whole read surface answers signed-out; every write refuses.
+        let gate = gate("github:100");
+        let anon = headers(&[]);
+        for route in [
+            "/api/phexts",
+            "/api/status",
+            "/api/nav",
+            "/api/tree",
+            "/api/seed",
+            "/api/universes",
+            "/api/heatmap",
+            "/api/toc",
+            "/api/scroll",
+            "/api/scroll/1.1.1/1.1.1/1.1.1",
+            "/api/zoom/z",
+            "/api/zoom/y/1.1.1",
+            "/api/zoom/x/1.1.1/1.1.1",
+            "/api/media/abc",
+        ] {
+            assert!(gate.admit("GET", route, &anon).is_ok(), "GET {route} should be open");
+            assert!(gate.admit("HEAD", route, &anon).is_ok(), "HEAD {route} should be open");
+        }
+        // The viewport POSTs and search move no stored content.
+        for route in [
+            "/api/open",
+            "/api/universe",
+            "/api/dim",
+            "/api/forward",
+            "/api/backward",
+            "/api/next",
+            "/api/prev",
+            "/api/goto",
+            "/api/home",
+            "/api/base",
+            "/api/search",
+        ] {
+            assert!(gate.admit("POST", route, &anon).is_ok(), "POST {route} should be open");
+        }
+        // Writes refuse signed-out callers with 401.
+        for route in ["/api/update", "/api/save", "/api/images", "/api/unknown"] {
+            assert_eq!(gate.admit("POST", route, &anon).unwrap_err().status, 401, "POST {route}");
+        }
+        // /mcp calls admit directly with its own path: unchanged.
+        assert_eq!(gate.admit("POST", "/mcp", &anon).unwrap_err().status, 401);
+        assert_eq!(gate.admit("GET", "/mcp", &anon).unwrap_err().status, 401);
+        // An editor session writes, CSRF and all, exactly as before.
+        let cookie = format!("phext_session={}", Oauth::test_session_cookie());
+        let write = headers(&[("cookie", &cookie), ("x-csrf-token", TEST_CSRF)]);
+        assert!(gate.admit("POST", "/api/update", &write).is_ok());
+        assert!(gate.admit("POST", "/api/save", &write).is_ok());
     }
 
     #[test]
@@ -2982,8 +3104,8 @@ mod tests {
         assert!(!env_gate.is_local());
         let gate = gate("");
         let denied = gate.admit(
-            "GET",
-            "/api/nav",
+            "POST",
+            "/api/update",
             &headers(&[("x-phext-local", "1"), ("phext-local", "1"), ("authorization", "Bearer local")]),
         );
         assert_eq!(denied.unwrap_err().status, 401);
