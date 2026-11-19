@@ -12134,6 +12134,26 @@ mod http_tests {
     }
 
     #[test]
+    fn scrollspace_wheel_is_a_throttle_on_velocity() {
+        // Task 22.4.6/4.4.7/5.4.5 (Will, 2026-11-19): "mouse wheel
+        // should change your velocity forward/backward". The wheel
+        // drives S.throttle, a signed velocity along the camera's
+        // forward axis (40 u/s per notch, clamped to [-640, 640]),
+        // applied in moveCam as its own term and reset by
+        // enterLevel alongside S.vel. The old cruise-speed
+        // multiplier (S.speedMul) is retired: the wheel no longer
+        // merely raises the cap on key-driven speed, and it can
+        // reverse the camera. The wheel never triggers a zoom.
+        assert!(SCROLLSPACE_HTML.contains("S.throttle=0; S.wheelAcc=0;"));
+        assert!(SCROLLSPACE_HTML.contains("S.throttle=Math.min(640,S.throttle+40)"));
+        assert!(SCROLLSPACE_HTML.contains("S.throttle=Math.max(-640,S.throttle-40)"));
+        assert!(SCROLLSPACE_HTML.contains("if(S.throttle){ const th=S.throttle*taper*dt;"));
+        assert!(SCROLLSPACE_HTML.contains("\"throttle \""));
+        assert!(!SCROLLSPACE_HTML.contains("speedMul"));
+        assert!(!SCROLLSPACE_HTML.contains("cruise speed"));
+    }
+
+    #[test]
     fn favicon_ico_is_an_icon_and_the_svg_keeps_its_type() {
         let (ico_type, ico) = public_asset("/favicon.ico").unwrap();
         assert_eq!(ico_type, "image/x-icon");
