@@ -36,6 +36,8 @@ pub mod sponsor;
 #[cfg(feature = "web")]
 pub mod submissions;
 #[cfg(feature = "web")]
+pub mod traversals;
+#[cfg(feature = "web")]
 pub mod wavefront;
 pub mod search;
 pub mod sentron;
