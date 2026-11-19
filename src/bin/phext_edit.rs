@@ -12214,6 +12214,29 @@ mod http_tests {
     }
 
     #[test]
+    fn scrollspace_traversal_mode_flies_q_links() {
+        // Task 40.7.8/10.7.12/7.7.11, stage A (Will, 2026-11-19):
+        // "add a mode to scrollspace.html where we can share a
+        // traversal list via the query string? On load, the page
+        // navigates through a set of waypoints specified by the q
+        // variable" — plus zoom in or out after orienting on a
+        // node, and unbounded traversals. The page parses q by
+        // hand (a raw "+" is a zoom step, not a form space),
+        // resolves waypoints like jump() does, and flies them on
+        // the cast/flyTo machinery only. Any key, press, wheel
+        // notch or touch takes the controls back at the next step
+        // boundary (capture-phase takeover listeners).
+        assert!(SCROLLSPACE_HTML.contains("function parseTourSteps(q)"));
+        assert!(SCROLLSPACE_HTML.contains("function tourQueryRaw()"));
+        assert!(SCROLLSPACE_HTML.contains("function runTour(steps)"));
+        assert!(SCROLLSPACE_HTML.contains("function tourTakeover()"));
+        assert!(SCROLLSPACE_HTML.contains("addEventListener(\"keydown\",tourTakeover,true)"));
+        assert!(SCROLLSPACE_HTML.contains("id=\"tourctl\""));
+        assert!(SCROLLSPACE_HTML.contains("id=\"tourstop\""));
+        assert!(SCROLLSPACE_HTML.contains("tour links: ?q=waypoint;waypoint"));
+    }
+
+    #[test]
     fn scrollspace_progress_bar_is_large_and_above_the_buttons() {
         // Task 32.9.13/7.5.8/6.4.8 (Will, 2026-11-19): "polish: the
         // progress bar should be larger, and appear above the

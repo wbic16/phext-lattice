@@ -46,6 +46,13 @@
   #trailctl button{background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:12.5px;padding:7px 11px;cursor:pointer}
   #trailctl button:hover{border-color:#ffd479;color:#ffe9a8}
   #trailn{font-size:12px;color:#8fb7ff;text-shadow:0 1px 3px #000}
+  /* Traversal mode (task 40.7.8/10.7.12/7.7.11): the tour status +
+     stop cluster, top-left under the HUD. Shown only while a tour
+     runs (stage A); stage B grows it into the tours cluster. */
+  #tourctl{position:absolute;left:12px;top:124px;z-index:5;display:none;gap:6px;align-items:center}
+  #tourctl button{background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:12.5px;padding:7px 11px;cursor:pointer}
+  #tourctl button:hover{border-color:#ffd479;color:#ffe9a8}
+  #tourlabel{font-size:12px;color:#ffd479;text-shadow:0 1px 3px #000}
   #rebindbtn.on{border-color:#ffd479;color:#ffd479}
   #help{position:absolute;left:12px;bottom:10px;font-size:11.5px;color:#7d8aa5;line-height:1.55;pointer-events:none;text-shadow:0 1px 3px #000;max-width:30vw}
   #msg{position:absolute;left:50%;top:104px;transform:translateX(-50%);font-size:14px;color:#ffe9a8;text-shadow:0 1px 4px #000;pointer-events:none;opacity:0;transition:opacity .3s;z-index:6;text-align:center;max-width:90vw}
@@ -122,6 +129,7 @@
     #bars{left:0;right:0;width:100vw;transform:none;padding:0 4px}
     .bar{flex-wrap:wrap;justify-content:center;row-gap:5px;max-width:100vw}
     #trailctl{right:auto;left:12px;bottom:211px}
+    #tourctl{top:148px}
     #rebindbtn{top:auto;bottom:251px}
     #pad{grid-template-columns:repeat(3,44px);grid-template-rows:repeat(3,44px);bottom:251px}
     #castwrap{bottom:401px}
@@ -140,7 +148,7 @@
 <div id="hud">
   <div class="crumb" id="crumb">SCROLLSPACE</div>
   <div class="coord" id="coord">—</div>
-  <div class="hint" id="hint">click the view to lock the mouse — Descent layout: F forward · A back · W/E strafe · S/D turn · Q down · R up · mouse1 fires the zoom · wheel sets throttle (forward/backward velocity) · shift boosts · z/x roll · gold crumbs mark your trail — aim + enter returns to one, c steps back along it</div>
+  <div class="hint" id="hint">click the view to lock the mouse — Descent layout: F forward · A back · W/E strafe · S/D turn · Q down · R up · mouse1 fires the zoom · wheel sets throttle (forward/backward velocity) · shift boosts · z/x roll · gold crumbs mark your trail — aim + enter returns to one, c steps back along it · a ?q= tour link flies a shared traversal — any input takes the controls back</div>
 </div>
 <div id="target"><div class="t" id="tname">no target</div><div class="s" id="tsub">tab or fly close to acquire</div><div class="p" id="tprev" style="display:none"></div></div>
 <div id="nav">
@@ -149,6 +157,7 @@
 </div>
 <button id="readbtn">Read</button>
 <div id="trailctl"><button id="trailback" title="step back along your crumb trail">⟲ back</button><button id="trailclear" title="clear the crumb trail">clear</button><span id="trailn">trail · 0 crumbs</span></div>
+<div id="tourctl"><span id="tourlabel"></span><button id="tourstop" title="stop the tour and take the controls">■ stop tour</button></div>
 <div id="msg"></div>
 <div id="authpanel" role="dialog" aria-modal="true" aria-labelledby="authtitle">
   <h2 id="authtitle">Sign in to enter Scrollspace</h2>
@@ -166,7 +175,9 @@
 <div id="help">
   click a bar slot to cast · REBIND on, then click a slot and press a key, to rebind<br>
   on a plane: F/A/W/E (or arrows) walk the glyphs · Read opens clean text<br>
-  crumbs: c or ⟲ back steps back along your trail · click a gold crumb on a plane to return to it
+  crumbs: c or ⟲ back steps back along your trail · click a gold crumb on a plane to return to it<br>
+  tour links: ?q=waypoint;waypoint flies the list on load — a waypoint is phext@1.1.1/1.1.1/1.1.1 (fewer parts stop shallower; a bare phext enters its galaxy; a bare full coordinate finds its phext)<br>
+  after a waypoint, + zooms one level deeper toward its address and − pulls one level back out · any key, press or wheel stops the tour and hands you the controls
 </div>
 <div id="bars"></div>
 <footer id="planefoot">
@@ -677,6 +688,7 @@ const S={level:0, gal:null, macro:null, meso:null, planet:null, cam:[0,0,2700], 
          target:null, hot:null, tabTarget:null, tabIdx:-1, casting:null, trans:null, frameOnLoad:null, plane:null, px:2, py:2, msgT:0};
 S.vel=[0,0,0]; S.throttle=0; S.wheelAcc=0;
 S.trail=[]; S.trailStep=120; S.trailMute=false; S.trailPending=false;
+S.tour=null; S.tourPath=null;
 let nodes=[];
 function buildNodes(){
   nodes=[];
@@ -1448,6 +1460,259 @@ function frame(now){
   if(S.msgT&&now-S.msgT>3400){document.getElementById("msg").style.opacity=0;S.msgT=0;}
   requestAnimationFrame(frame);
 }
+/* ---------- traversal mode (task 40.7.8/10.7.12/7.7.11) ----------
+   Will, 2026-11-19: "add a mode to scrollspace.html where we can
+   share a traversal list via the query string? On load, the page
+   navigates through a set of waypoints specified by the q
+   variable" — with his refinements: zoom in or out after
+   orienting on a node, unbounded traversals ("share how you
+   linked two ideas"), and record/replay/account storage (the
+   record half is the crumb trail; account storage is stage B).
+   Grammar (also documented in #help):
+     q        = step (";" step)*
+     step     = waypoint | zooms
+     waypoint = [phext "@"] coord | phext
+     coord    = triple ["/" triple ["/" triple]]   (3, 6 or 9
+                numbers, slashes or dots)
+     zooms    = ("+" | "-")+     one char = one level
+   A waypoint's depth follows its parts: phext alone -> L1,
+   +macro -> L2, +meso -> L3, full 9-part -> L4 (the plane); a
+   full address implies the whole zoom path macro->meso->micro->
+   plane. "+" descends one level toward the tour's address path
+   (the parts the last waypoint named, else the home part 1.1.1,
+   else the first child in the level's sorted order); "-" ascends
+   one level. No cap on the number of steps — URL length is a
+   transport fact, not a format limit. Resolution follows jump():
+   a named phext is matched with or without ".phext"; a bare full
+   coordinate resolves through /api/toc matches (first holder);
+   a bare macro/meso resolves in the current galaxy first, then
+   by matches. The tour rides cast/flyTo only — never travelTo's
+   instant state-set — and lays the trail's entry crumbs as it
+   flies, so a played tour is itself a recorded trail. Takeover:
+   any key, press, wheel notch or touch ends the tour at the
+   next step boundary (an in-flight cast/flight lands first);
+   the input is never swallowed — it does its normal job too. */
+let tourSeq=0;
+function tourQueryRaw(){
+  const parts=(location.search||"").replace(/^\?/,"").split("&");
+  for(const p of parts){ if(p.indexOf("q=")===0){ const v=p.slice(2);
+    try{ return decodeURIComponent(v); }catch(e){ return v; } } }
+  return null;
+}
+function parseWaypoint(t){
+  let name=null, coordStr=t;
+  const at=t.indexOf("@");
+  if(at>=0){ name=t.slice(0,at).trim()||null; coordStr=t.slice(at+1).trim(); }
+  else {
+    /* no "@": a token shaped like a coordinate is a coordinate;
+       anything else must be a phext name (a bare galaxy step) */
+    const probe=t.replace(/\//g,".").split(".").map(Number);
+    const isCoord=[3,6,9].indexOf(probe.length)>=0&&probe.every(Number.isFinite);
+    if(!isCoord){
+      if(/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(t)&&/[A-Za-z]/.test(t)) return {name:t,parts:[]};
+      return null;
+    }
+  }
+  if(!coordStr) return name?{name:name,parts:[]}:null;
+  const nums=coordStr.replace(/\//g,".").split(".").map(Number);
+  if([3,6,9].indexOf(nums.length)<0||!nums.every(Number.isFinite)) return null;
+  const parts=[]; for(let i=0;i<nums.length;i+=3) parts.push(nums.slice(i,i+3).join("."));
+  return {name:name,parts:parts};
+}
+function parseTourSteps(q){
+  const steps=[];
+  for(const raw of String(q).split(";")){
+    const t=raw.trim(); if(!t) continue;
+    if(/^[+-]+$/.test(t)){ for(const ch of t) steps.push({zoom:ch==="+"?1:-1,src:t}); continue; }
+    const wp=parseWaypoint(t);
+    if(!wp) steps.push({bad:t,src:t}); else steps.push({wp:wp,src:t});
+  }
+  return steps;
+}
+function tourLive(id){ return !!(S.tour&&S.tour.id===id&&S.tour.active&&!S.tour.cancelled); }
+function tourUi(){
+  const el=document.getElementById("tourctl"); if(!el) return;
+  if(S.tour&&S.tour.active){ el.style.display="flex";
+    const st=S.tour.steps[S.tour.idx];
+    document.getElementById("tourlabel").textContent=
+      "tour · step "+(S.tour.idx+1)+"/"+S.tour.steps.length+(st?" · "+st.src:"");
+  } else el.style.display="none";
+}
+function tourFail(id,why){
+  if(S.tour&&S.tour.id===id){ S.tour.failed=why; S.tour.active=false; }
+  showMsg("tour stopped — "+why); tourUi();
+}
+function tourTakeover(){
+  if(S.tour&&S.tour.active){ S.tour.cancelled=true; S.tour.active=false;
+    showMsg("tour stopped — the view is yours"); tourUi(); }
+}
+addEventListener("keydown",tourTakeover,true);
+addEventListener("pointerdown",tourTakeover,true);
+addEventListener("wheel",tourTakeover,{capture:true,passive:true});
+addEventListener("touchstart",tourTakeover,{capture:true,passive:true});
+document.getElementById("tourstop").onclick=e=>{ tourTakeover(); e.currentTarget.blur(); };
+function tourSleep(ms,id){ return new Promise(res=>{ const t0=performance.now();
+  const tick=()=>{ if(!tourLive(id)) return res(false);
+    if(performance.now()-t0>=ms) return res(true); setTimeout(tick,90); }; tick(); }); }
+function tourLevelReady(){
+  if(S.level===4) return !!(S.plane&&S.plane.length&&!/^fetching the scroll/.test(S.plane[0]||""));
+  return nodes.length>0;
+}
+function tourWaitIdle(id){ return new Promise(res=>{ const t0=performance.now();
+  const tick=()=>{ if(!tourLive(id)) return res("cancelled");
+    if(!S.casting&&!S.trans&&!S.frameOnLoad&&tourLevelReady()) return res("idle");
+    if(performance.now()-t0>60000) return res("timeout");
+    setTimeout(tick,120); }; tick(); }); }
+function tourFindGalaxy(name){
+  const n=String(name||"").toLowerCase().replace(/\.phext$/,"");
+  return GAL.findIndex(g=>g.name.toLowerCase().replace(/\.phext$/,"")===n);
+}
+async function tourResolve(wp){
+  let fi=-1, macro=null, meso=null, coord=null;
+  if(wp.parts.length){ macro=wp.parts[0];
+    if(wp.parts[1]) meso=wp.parts[1];
+    if(wp.parts[2]) coord=wp.parts.join("/"); }
+  if(wp.name){ fi=tourFindGalaxy(wp.name);
+    if(fi<0) return {err:"no phext named “"+wp.name+"” is hosted here"}; }
+  else if(wp.parts.length===3){
+    const j=await fetchMatches(coord,9);
+    if(!j.matches.length) return {err:"no scroll at "+coord+" in any hosted phext"};
+    fi=GAL.findIndex(g=>g.name===j.matches[0].phext);
+    if(fi<0) return {err:"the phext holding "+coord+" is not in the galaxy list"};
+  }
+  else if(wp.parts.length===2){
+    const j=await fetchMatches(wp.parts.join("/"),6);
+    if(!j.matches.length) return {err:"no phext holds "+wp.parts.join("/")};
+    fi=GAL.findIndex(g=>g.name===j.matches[0].phext);
+    if(fi<0) return {err:"the phext holding "+wp.parts.join("/")+" is not in the galaxy list"};
+  }
+  else if(wp.parts.length===1){
+    if(S.gal){ await ensureMacros(S.gal); if(S.gal.macros&&S.gal.macros.has(macro)) fi=S.gal.fi; }
+    if(fi<0) for(const g of GAL){ await ensureMacros(g); if(g.macros&&g.macros.has(macro)){ fi=g.fi; break; } }
+    if(fi<0) return {err:"no macro address "+macro+" in any phext"};
+  }
+  if(fi<0) return {err:"that waypoint names no phext"};
+  return {fi:fi,macro:macro,meso:meso,coord:coord,depth:1+wp.parts.length};
+}
+function tourCtx(){
+  const c=[];
+  if(S.level>=1&&S.gal) c.push(S.gal.name);
+  if(S.level>=2&&S.macro) c.push(S.macro);
+  if(S.level>=3&&S.meso) c.push(S.meso);
+  if(S.level===4&&S.planet) c.push(S.planet.coord);
+  return c;
+}
+function tourTargetCtx(t){
+  const c=[GAL[t.fi].name];
+  if(t.depth>=2) c.push(t.macro);
+  if(t.depth>=3) c.push(t.meso);
+  if(t.depth>=4) c.push(t.coord);
+  return c;
+}
+function tourIsPrefix(a,b){ return a.length<=b.length&&a.every((x,i)=>x===b[i]); }
+function tourChildNode(t){
+  if(S.level===0) return nodes.find(n=>n.kind==="gal"&&n.ref===GAL[t.fi])||null;
+  if(S.level===1) return nodes.find(n=>n.kind==="macro"&&n.ref===t.macro)||null;
+  if(S.level===2) return nodes.find(n=>n.kind==="meso"&&n.ref===t.meso)||null;
+  if(S.level===3) return nodes.find(n=>n.kind==="micro"&&n.ref&&n.ref.coord===t.coord)||null;
+  return null;
+}
+async function tourDescendOne(id,t){
+  let w=await tourWaitIdle(id);
+  if(w!=="idle"){ if(tourLive(id)) tourFail(id,"the flight timed out"); return false; }
+  const n=tourChildNode(t);
+  if(!n){ tourFail(id,"no way down from here toward "+tourTargetCtx(t).join(" · ")); return false; }
+  S.tabTarget=n; S.target=n; doZoomIn();
+  w=await tourWaitIdle(id);
+  if(w!=="idle"){ if(tourLive(id)) tourFail(id,"the flight timed out"); return false; }
+  return true;
+}
+async function tourAscendOne(id){
+  let w=await tourWaitIdle(id);
+  if(w!=="idle"){ if(tourLive(id)) tourFail(id,"the flight timed out"); return false; }
+  doZoomOut();
+  w=await tourWaitIdle(id);
+  if(w!=="idle"){ if(tourLive(id)) tourFail(id,"the flight timed out"); return false; }
+  return true;
+}
+async function tourGoto(wp,id){
+  const t=await tourResolve(wp);
+  if(t.err){ tourFail(id,t.err); return false; }
+  if(!tourLive(id)) return false;
+  const tc=tourTargetCtx(t);
+  let guard=0;
+  while(!tourIsPrefix(tourCtx(),tc)){
+    if(++guard>6){ tourFail(id,"could not back out toward "+tc.join(" · ")); return false; }
+    if(!await tourAscendOne(id)) return false;
+    if(!tourLive(id)) return false;
+  }
+  guard=0;
+  while(S.level<t.depth){
+    if(++guard>6){ tourFail(id,"could not descend toward "+tc.join(" · ")); return false; }
+    if(!await tourDescendOne(id,t)) return false;
+    if(!tourLive(id)) return false;
+  }
+  S.tourPath={fi:t.fi,macro:t.macro,meso:t.meso,coord:t.coord};
+  return true;
+}
+async function tourZoomStep(dir,id){
+  if(dir<0){
+    if(S.level===0) return true; /* already at the top: a no-op */
+    return tourAscendOne(id);
+  }
+  const p=S.tourPath;
+  if(!p){ tourFail(id,"a zoom-in step needs a waypoint before it"); return false; }
+  if(S.level>=4) return true; /* on the plane: nowhere deeper */
+  const w=await tourWaitIdle(id);
+  if(w!=="idle"){ if(tourLive(id)) tourFail(id,"the flight timed out"); return false; }
+  const t={fi:p.fi,macro:p.macro,meso:p.meso,coord:p.coord,depth:S.level+1};
+  if(S.level===1&&!t.macro)
+    t.macro=nodes.some(n=>n.ref==="1.1.1")?"1.1.1":(nodes.length?nodes[0].ref:null);
+  if(S.level===2&&!t.meso)
+    t.meso=nodes.some(n=>n.ref==="1.1.1")?"1.1.1":(nodes.length?nodes[0].ref:null);
+  if(S.level===3&&!t.coord){
+    const home=S.macro+"/"+S.meso+"/1.1.1";
+    const hn=nodes.find(n=>n.ref&&n.ref.coord===home);
+    t.coord=hn?hn.ref.coord:(nodes.length?nodes[0].ref.coord:null);
+  }
+  if(!await tourDescendOne(id,t)) return false;
+  if(S.level===2) p.macro=t.macro;
+  if(S.level===3) p.meso=t.meso;
+  if(S.level===4) p.coord=t.coord;
+  return true;
+}
+function tourStandLabel(){
+  if(S.level===4&&S.planet) return {phext:S.gal.name,coord:S.planet.coord,level:4,label:S.gal.name+" · "+S.planet.coord};
+  if(S.level===3) return {phext:S.gal.name,coord:S.macro+"/"+S.meso,level:3,label:S.gal.name+" · "+S.macro+" / "+S.meso};
+  if(S.level===2) return {phext:S.gal.name,coord:S.macro,level:2,label:S.gal.name+" · "+S.macro};
+  if(S.level===1) return {phext:S.gal.name,coord:null,level:1,label:S.gal.name};
+  return {phext:null,coord:null,level:0,label:"the multiverse"};
+}
+async function runTour(steps){
+  const id=++tourSeq;
+  S.tour={active:true,id:id,steps:steps,idx:0,visited:[],done:false,cancelled:false,failed:null};
+  S.tourPath=null;
+  tourUi();
+  showMsg("tour starting — "+steps.length+" step"+(steps.length===1?"":"s")+" · any input takes the controls back");
+  if(!await tourSleep(700,id)){ if(S.tour&&S.tour.id===id) S.tour.done=true; return; }
+  for(let i=0;i<steps.length;i++){
+    if(!tourLive(id)) break;
+    S.tour.idx=i; tourUi();
+    const st=steps[i];
+    const ok=st.zoom?await tourZoomStep(st.zoom,id):await tourGoto(st.wp,id);
+    if(!tourLive(id)) break;
+    if(!ok) break; /* tourFail already spoke */
+    S.tour.visited.push(tourStandLabel());
+    tourUi();
+    if(i<steps.length-1&&!await tourSleep(1400,id)) break;
+  }
+  if(S.tour&&S.tour.id===id){
+    const cancelled=S.tour.cancelled, failed=S.tour.failed;
+    S.tour.active=false; S.tour.done=true; tourUi();
+    if(!cancelled&&!failed)
+      showMsg("tour complete — resting at "+(S.tour.visited.length?S.tour.visited[S.tour.visited.length-1].label:"the last waypoint"));
+  }
+}
 /* ---------- boot: the list, and nothing heavier ---------- */
 (async function boot(){
   try{
@@ -1467,6 +1732,11 @@ function frame(now){
     dropCrumb(true); /* the trail's origin crumb: where this session began */
     requestAnimationFrame(frame);
     backgroundIndex();
+    /* traversal mode: a shared ?q= link flies its waypoints on load */
+    const tq=tourQueryRaw();
+    if(tq!==null){ const tsteps=parseTourSteps(tq), tbad=tsteps.find(x=>x.bad);
+      if(tbad) showMsg("tour link has an unreadable step: “"+tbad.bad+"” — the tour did not start");
+      else if(tsteps.length) runTour(tsteps); }
   }catch(e){
     requestAnimationFrame(frame);
     if(!AUTH_DEAD) showMsg("could not list the hosted phexts: "+e.message);
