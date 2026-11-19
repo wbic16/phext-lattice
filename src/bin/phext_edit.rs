@@ -12098,6 +12098,23 @@ mod http_tests {
     }
 
     #[test]
+    fn scrollspace_nodes_repulse_around_their_anchors() {
+        // Task 21.5.7/6.5.9/6.5.8 (Will): clustered nodes were hard to
+        // read/navigate -- "have nodes generate 'repulsive gravity'
+        // that keeps them from overlapping, but not from getting away
+        // from view". buildNodes tags every node with its address-true
+        // anchor and runs the bounded, deterministic relaxLayout over
+        // the set; frameFor frames the displaced positions.
+        assert!(SCROLLSPACE_HTML.contains("function relaxLayout(nodes)"));
+        assert!(SCROLLSPACE_HTML.contains("relaxLayout(nodes);"));
+        assert!(SCROLLSPACE_HTML.contains("nd.anchor"));
+        assert!(SCROLLSPACE_HTML.contains("anchor:P.get(k)"));
+        assert!(SCROLLSPACE_HTML.contains("anchor:P.get(e.suffix)"));
+        assert!(SCROLLSPACE_HTML.contains("g.anchorPos"));
+        assert!(SCROLLSPACE_HTML.contains("const RELAX_CAP_FRAC=0.45;"));
+    }
+
+    #[test]
     fn favicon_ico_is_an_icon_and_the_svg_keeps_its_type() {
         let (ico_type, ico) = public_asset("/favicon.ico").unwrap();
         assert_eq!(ico_type, "image/x-icon");
