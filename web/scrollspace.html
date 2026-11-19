@@ -92,6 +92,46 @@
     #pad{display:grid}
     #castwrap{bottom:170px}
   }
+  /* Phone layout (task 21.10.14/8.8.16/16.5.7): Will's phone shot
+     (2026-11-19) showed the desktop HUD jumbled at ~412px — the
+     hint column and target text ran down over the plane panel and
+     the scroll's own words, the jump row sat on the header lines,
+     the 12-slot bar overflowed the viewport mid-button ("pect"
+     for Inspect), the trail cluster hid under the bars, the
+     REBIND chip lay across the panel, and the plane footer's
+     flex row squeezed the tagline into a ~90px tower. Below
+     480px: the hint (mouse guidance; #help is already hidden
+     <=760px) is hidden, the jump row drops below the header band
+     into its own row, the bars wrap inside the viewport, the
+     trail/D-pad/REBIND controls take a shelf above the bars, the
+     cast bar rides above the pad, and the plane footer stacks so
+     its tagline gets the full width. The plane panel itself
+     drops via planeOY(). Layout only — no behaviour changes. */
+  @media (max-width:480px){
+    #hud{max-width:50vw}
+    #hud .coord{font-size:14px}
+    #hud .hint{display:none}
+    #target{max-width:42vw;font-size:12px;line-height:1.45;max-height:88px;overflow:hidden}
+    #target .s{font-size:11px;max-height:32px;overflow:hidden}
+    #target .p{font-size:11px;max-height:32px;overflow:hidden}
+    #nav{top:100px;left:12px;right:84px;transform:none}
+    #nav input{flex:1;width:auto;min-width:0;padding:6px 9px;font-size:13px}
+    #nav button{padding:6px 12px}
+    #readbtn{top:100px;padding:6px 12px}
+    #msg{top:140px}
+    #bars{left:0;right:0;width:100vw;transform:none;padding:0 4px}
+    .bar{flex-wrap:wrap;justify-content:center;row-gap:5px;max-width:100vw}
+    #trailctl{right:auto;left:12px;bottom:211px}
+    #rebindbtn{top:auto;bottom:251px}
+    #pad{grid-template-columns:repeat(3,44px);grid-template-rows:repeat(3,44px);bottom:251px}
+    #castwrap{bottom:401px}
+    #planefoot{flex-direction:column;align-items:stretch;gap:8px}
+    #planefoot a{text-align:center}
+    body.onplane #trailctl{bottom:calc(211px + var(--planefoot-h,52px))}
+    body.onplane #rebindbtn{bottom:calc(251px + var(--planefoot-h,52px))}
+    body.onplane #pad{bottom:calc(251px + var(--planefoot-h,52px))}
+    body.onplane #castwrap{bottom:calc(401px + var(--planefoot-h,52px))}
+  }
 </style>
 </head>
 <body>
@@ -1098,7 +1138,7 @@ cv.addEventListener("touchend",()=>{ const wasDrag=moved>8; dragging=false;
 /* on a plane, clicking a crumb's cell returns to it (the plane has no
    crosshair targeting; cells are addressed with drawPlane's geometry) */
 cv.addEventListener("mousedown",e=>{ if(S.level!==4||document.pointerLockElement===cv) return;
-  const ox=Math.max(16,Math.min(70,cv.width*0.06)), oy=120, cw=13, chh=22;
+  const ox=Math.max(16,Math.min(70,cv.width*0.06)), oy=planeOY(), cw=13, chh=22;
   const col=Math.floor((e.clientX-ox)/cw), row=Math.floor((e.clientY-(oy-13))/chh);
   if(col<0||row<0) return;
   const key=trailCtxKey();
@@ -1289,9 +1329,16 @@ function draw3D(now){
   ctx.moveTo(cx,cy2-11); ctx.lineTo(cx,cy2-4); ctx.moveTo(cx,cy2+4); ctx.lineTo(cx,cy2+11); ctx.stroke();
 }
 const GLYPH_FONTS="ui-monospace,'Cascadia Mono','DejaVu Sans Mono',Menlo,Consolas,'Noto Sans Mono','Segoe UI Symbol','Segoe UI Historic','Noto Sans Symbols 2','Noto Sans Symbols','Noto Sans Cuneiform','Noto Sans Egyptian Hieroglyphs','Apple Symbols','Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',monospace";
+/* Plane panel top (task 21.10.14/8.8.16/16.5.7): oy is 120
+   everywhere except phone width (<=480px), where the stacked
+   header band (hud, jump row, target readout) needs the room and
+   the panel drops to 168 so no chrome can lie across the
+   scroll's words. drawPlane and the plane crumb-click geometry
+   share this one helper so they can never disagree. */
+function planeOY(){ return innerWidth<=480?168:120; }
 function drawPlane(){
   ctx.fillStyle="#070b18"; ctx.fillRect(0,0,cv.width,cv.height);
-  const lines=S.plane, cw=13, ch=22, ox=Math.max(16,Math.min(70,cv.width*0.06)), oy=120;
+  const lines=S.plane, cw=13, ch=22, ox=Math.max(16,Math.min(70,cv.width*0.06)), oy=planeOY();
   ctx.font="15px "+GLYPH_FONTS;
   const maxr=Math.min(lines.length, Math.floor((cv.height-oy-170)/ch));
   /* ONE uniform background for the whole text field (task 23.6.7/7.6.10):
