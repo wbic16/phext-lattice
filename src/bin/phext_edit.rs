@@ -11380,6 +11380,31 @@ mod public_route_tests {
     }
 
     #[test]
+    fn scrollspace_plane_tagline_lives_in_the_footer() {
+        // The plane tagline is UI chrome, not scroll text: it renders
+        // in the page's #planefoot footer and is never pushed into
+        // S.plane (standing on Glassfruit, Will could not tell where
+        // the scroll ended and the tagline began). The footer also
+        // carries the jump back into the editor at the phext + scroll
+        // being viewed, in the shell's own canonical share form
+        // /<stem>/#<coord> (phextNameFromLocation + readFragment).
+        assert!(SCROLLSPACE_HTML.contains("id=\"planefoot\""), "footer element");
+        assert!(SCROLLSPACE_HTML.contains("id=\"planeedit\""), "edit button");
+        assert!(
+            SCROLLSPACE_HTML.contains("you are standing on a plane of existence: a scroll, walked like a zelda room. every glyph a floor tile."),
+            "tagline text lives in the footer"
+        );
+        assert!(
+            !SCROLLSPACE_HTML.contains("lines.push(\"you are standing on a plane of existence:\")"),
+            "tagline is not scroll text"
+        );
+        assert!(
+            SCROLLSPACE_HTML.contains("\"/\"+stemOf(S.gal.name)+\"/#\"+S.planet.coord"),
+            "edit link is the shell's /<stem>/#<coord> deep link"
+        );
+    }
+
+    #[test]
     fn sign_in_returns_to_the_loaded_scrollspace_page() {
         // The full round-trip the panel relies on: start with next =
         // a Scrollspace URL carrying a query string (a shared
