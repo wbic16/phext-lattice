@@ -24,6 +24,7 @@ use phext_lattice::joins;
 use phext_lattice::oauth::{forwarded_https, security_header_block, security_header_block_csp, status_text, Gate, Reply, Session};
 use phext_lattice::sponsor::{self, SponsorOffer};
 use phext_lattice::submissions::{self, Submission, SubmissionStatus};
+use phext_lattice::traversals::{self, Traversal};
 use phext_lattice::wavefront;
 use sha2::Digest;
 use xxhash_rust::xxh3::xxh3_128;
@@ -1985,6 +1986,11 @@ fn handle_request(
     // Submissions sit between sign-in and the editor gate: uploading a
     // phext for review needs a signed-in account, not an editor's place.
     if handle_submissions(stream, &mut reader, &method, &path, &headers, state, gate) {
+        return;
+    }
+    // Traversals sit with submissions: a saved tour is the account's
+    // own data — the session is the gate, not an editor's place.
+    if handle_traversals(stream, &mut reader, &method, &path, &headers, state, gate) {
         return;
     }
     if let Err(reply) = gate.admit(&method, &path, &headers) {
@@ -5913,6 +5919,111 @@ fn handle_submissions(
                         Ok(sub) => json_status(stream, headers, 200, serde_json::to_value(&sub).unwrap_or_default()),
                         Err(e) => json_error(stream, headers, 500, &e),
                     }
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
+}
+
+/// Where saved traversals live: a `traversals` subdirectory of the
+/// phext library, beside `claims` and `submissions`, so a record never
+/// reads as a library file. Mirrors `claims_dir`, fallback included.
+fn traversals_dir(state: &Arc<Mutex<AppState>>) -> std::path::PathBuf {
+    let state = state.lock().unwrap();
+    match &state.phext_dir {
+        Some(dir) => std::path::Path::new(dir).join("traversals"),
+        None => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            resolve_data_dir(std::env::var("PHEXT_DATA_DIR").ok().as_deref(), &cwd).join("traversals")
+        }
+    }
+}
+
+/// Routes for `/api/traversals*`: a signed-in account's own saved
+/// Scrollspace tours. Viewing a traversal is anonymous — the `?q=`
+/// link is the share — but the account shelf is the owner's own data,
+/// so every route here needs the session, editor or not, and writes
+/// carry the session's CSRF token, exactly as submissions require.
+/// Returns true when the request was answered here; unknown shapes
+/// return false and fall through to the usual JSON 404.
+fn handle_traversals(
+    stream: &mut std::net::TcpStream,
+    reader: &mut BufReader<std::net::TcpStream>,
+    method: &str,
+    path: &str,
+    headers: &HashMap<String, String>,
+    state: &Arc<Mutex<AppState>>,
+    gate: &Gate,
+) -> bool {
+    let route = path_route(path);
+    if route != "/api/traversals" && !route.starts_with("/api/traversals/") {
+        return false;
+    }
+    let Some(session) = gate.session(headers) else {
+        json_error(stream, headers, 401, "sign in to use saved traversals");
+        return true;
+    };
+    if method != "GET" && method != "HEAD" && !gate.is_local() {
+        let csrf = headers.get("x-csrf-token").map(String::as_str).unwrap_or("");
+        if !gate.oauth().csrf_matches(&session, csrf) {
+            json_error(stream, headers, 403, "that request did not match this sign-in");
+            return true;
+        }
+    }
+    let dir = traversals_dir(state);
+
+    match (method, route) {
+        ("GET", "/api/traversals") => {
+            let mine: Vec<Traversal> = traversals::list(&dir)
+                .into_iter()
+                .filter(|rec| rec.who == session.who)
+                .collect();
+            json_status(stream, headers, 200, serde_json::to_value(&mine).unwrap_or_default());
+            true
+        }
+        ("POST", "/api/traversals") => {
+            let body = read_body(reader, headers);
+            let value: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+            let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let q = value.get("q").and_then(|v| v.as_str()).unwrap_or("");
+            match traversals::create(&dir, &session.who, name, q) {
+                Ok(rec) => json_status(stream, headers, 200, serde_json::to_value(&rec).unwrap_or_default()),
+                Err(e) => json_error(stream, headers, 400, &e),
+            }
+            true
+        }
+        _ => {
+            // /api/traversals/{id} (update) | /api/traversals/{id}/delete
+            let rest = &route["/api/traversals/".len()..];
+            let (id, action) = match rest.split_once('/') {
+                Some((id, action)) => (id, Some(action)),
+                None => (rest, None),
+            };
+            let Some(rec) = traversals::get(&dir, id) else {
+                json_error(stream, headers, 404, "traversal not found");
+                return true;
+            };
+            if rec.who != session.who {
+                json_error(stream, headers, 403, "that traversal is not yours");
+                return true;
+            }
+            match (method, action) {
+                ("POST", None) => {
+                    let body = read_body(reader, headers);
+                    let value: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+                    let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let q = value.get("q").and_then(|v| v.as_str()).unwrap_or("");
+                    match traversals::update(&dir, id, name, q) {
+                        Ok(rec) => json_status(stream, headers, 200, serde_json::to_value(&rec).unwrap_or_default()),
+                        Err(e) => json_error(stream, headers, 400, &e),
+                    }
+                    true
+                }
+                ("POST", Some("delete")) => {
+                    traversals::remove(&dir, id);
+                    json_status(stream, headers, 200, serde_json::json!({"deleted": id}));
                     true
                 }
                 _ => false,
@@ -12234,6 +12345,33 @@ mod http_tests {
         assert!(SCROLLSPACE_HTML.contains("id=\"tourctl\""));
         assert!(SCROLLSPACE_HTML.contains("id=\"tourstop\""));
         assert!(SCROLLSPACE_HTML.contains("tour links: ?q=waypoint;waypoint"));
+    }
+
+    #[test]
+    fn scrollspace_traversal_accounts_store_tours() {
+        // Traversal mode stage B: the page records the flown
+        // trail into a q string, copies it as a shareable link without
+        // an account, and — signed in — saves, lists, replays and
+        // deletes tours through /api/traversals.
+        let html = SCROLLSPACE_HTML;
+        for needle in [
+            "id=\"tourtools\"",
+            "id=\"tourlink\"",
+            "id=\"toursbtn\"",
+            "id=\"tourspanel\"",
+            "id=\"tourname\"",
+            "id=\"toursave\"",
+            "id=\"tourslist\"",
+            "function trailToQ(",
+            "c.level>=2&&c.coord",
+            "fetch(\"/api/session\")",
+            "fetch(\"/api/traversals\")",
+            "toursPost(\"/api/traversals\"",
+            "/delete",
+            "parseTourSteps(rec.q)",
+        ] {
+            assert!(html.contains(needle), "scrollspace.html is missing {needle}");
+        }
     }
 
     #[test]
