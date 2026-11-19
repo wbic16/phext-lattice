@@ -37,6 +37,12 @@
   #rebindbtn.on{border-color:#ffd479;color:#ffd479}
   #help{position:absolute;left:12px;bottom:10px;font-size:11.5px;color:#7d8aa5;line-height:1.55;pointer-events:none;text-shadow:0 1px 3px #000;max-width:30vw}
   #msg{position:absolute;left:50%;top:104px;transform:translateX(-50%);font-size:14px;color:#ffe9a8;text-shadow:0 1px 4px #000;pointer-events:none;opacity:0;transition:opacity .3s;z-index:6;text-align:center;max-width:90vw}
+  #authpanel{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(430px,92vw);background:#070d1f;border:1px solid #3c5a8f;border-radius:12px;z-index:20;display:none;flex-direction:column;gap:12px;padding:22px 24px;box-shadow:0 12px 44px rgba(0,0,0,.65)}
+  #authpanel h2{font-size:16px;color:#ffe9a8;margin:0;line-height:1.4}
+  #authpanel p{font-size:13px;line-height:1.6;color:#b9d2ff;margin:0}
+  #authpanel .auth-btn{display:block;width:100%;text-align:center;background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:14px;padding:10px 12px;cursor:pointer;text-decoration:none;margin:0 0 8px}
+  #authpanel .auth-btn:hover{border-color:#ffd479;color:#ffe9a8}
+  #authpanel .note{font-size:12px;color:#7d8aa5}
   #pad{position:absolute;right:10px;bottom:196px;display:none;z-index:5;grid-template-columns:repeat(3,52px);grid-template-rows:repeat(3,52px);gap:5px}
   #pad button{background:rgba(10,20,44,.85);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:17px;cursor:pointer}
   #pad button:active{border-color:#ffd479;color:#ffd479}
@@ -75,6 +81,12 @@
 </div>
 <button id="readbtn">Read</button>
 <div id="msg"></div>
+<div id="authpanel" role="dialog" aria-modal="true" aria-labelledby="authtitle">
+  <h2 id="authtitle">Sign in to enter Scrollspace</h2>
+  <p>The hosted phexts sit behind the editor's sign-in. Sign in here and you'll be returned to this exact page — address and query string intact, so a shared traversal link survives the trip.</p>
+  <div id="authproviders"></div>
+  <p class="note" id="authnote">checking sign-in options…</p>
+</div>
 <div id="castwrap"><div id="castlabel">Casting…</div><div id="castbar"><div id="castfill"></div></div></div>
 <button id="rebindbtn">REBIND: off</button>
 <div id="pad">
@@ -124,8 +136,50 @@ async function apiJson(url){
   if(!r.ok) throw new Error("HTTP "+r.status);
   return r.json();
 }
-function authBlocked(){ if(AUTH_DEAD) return; AUTH_DEAD=true;
-  showMsg("the structure endpoints sit behind the editor's sign-in — sign in on edit.phext.io, then reload Scrollspace"); }
+function authBlocked(){ if(AUTH_DEAD) return; AUTH_DEAD=true; showAuthPanel(); }
+/* The sign-in panel. The structure endpoints sit behind the editor's
+   sign-in, so a bare "go sign in elsewhere" message is a dead end.
+   The panel runs the same /api/auth/<provider>?next= flow the editor
+   shell uses, with next = this page exactly as loaded (path + query
+   + hash): after the provider round-trip the callback redirects back
+   here, so a shared traversal link survives sign-in. The server
+   re-clamps next with safe_next when it seals the pending cookie.
+   Providers come from /api/session (the configured set, in the
+   shell's order); if that read fails, fall back to the shell's
+   static three and let the server answer for each. */
+async function showAuthPanel(){
+  const panel=document.getElementById("authpanel");
+  const box=document.getElementById("authproviders");
+  const note=document.getElementById("authnote");
+  if(!panel||!box||!note) return;
+  panel.style.display="flex";
+  const label={github:"Sign in with GitHub",google:"Sign in with Google",x:"Sign in with X"};
+  const next=encodeURIComponent(location.pathname+location.search+location.hash);
+  const paint=list=>{ box.innerHTML="";
+    for(const p of list){ const a=document.createElement("a");
+      a.className="auth-btn"; a.href="/api/auth/"+p+"?next="+next;
+      a.textContent=label[p]||("Sign in with "+p); box.appendChild(a); } };
+  try{
+    const r=await fetch("/api/session",{headers:{Accept:"application/json"}});
+    const s=await r.json();
+    if(s.signed_in){
+      note.textContent=s.editor
+        ? "You're signed in — reload to continue."
+        : "You're signed in as "+(s.name||s.handle||s.who)+", but this account is not on the editor list.";
+      if(s.editor){ const b=document.createElement("button");
+        b.className="auth-btn"; b.textContent="Reload Scrollspace";
+        b.addEventListener("click",()=>location.reload()); box.appendChild(b); }
+    }else if(Array.isArray(s.providers)&&s.providers.length){
+      paint(s.providers);
+      note.textContent="After sign-in you land back on this page.";
+    }else{
+      note.textContent="Sign-in is not configured on this server.";
+    }
+  }catch(e){
+    paint(["github","google","x"]);
+    note.textContent="After sign-in you land back on this page.";
+  }
+}
 const stemOf=name=>name.replace(/\.phext$/,"");
 const tocUrl=(name,params)=>"/api/toc?name="+encodeURIComponent(stemOf(name))+"&"+params;
 async function fetchSummary(g){ const j=await apiJson(tocUrl(g.name,"mode=summary")); g.count=j.scrolls; g.bytes=j.bytes; }

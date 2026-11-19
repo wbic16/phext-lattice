@@ -11360,6 +11360,69 @@ mod public_route_tests {
     }
 
     #[test]
+    fn scrollspace_page_carries_the_sign_in_panel() {
+        // The page's answer to a 401 is a sign-in panel, not a dead
+        // end: it reads the configured providers from /api/session
+        // and links each one through /api/auth/<provider>?next= with
+        // next = the page exactly as loaded, query string included.
+        assert!(SCROLLSPACE_HTML.contains("id=\"authpanel\""), "panel element");
+        assert!(SCROLLSPACE_HTML.contains("/api/session"), "provider discovery");
+        assert!(SCROLLSPACE_HTML.contains("/api/auth/"), "auth start links");
+        assert!(
+            SCROLLSPACE_HTML.contains("location.pathname+location.search+location.hash"),
+            "return target is the loaded page"
+        );
+        assert!(SCROLLSPACE_HTML.contains("Sign in with Google"), "provider labels");
+        assert!(
+            !SCROLLSPACE_HTML.contains("sign in on edit.phext.io, then reload"),
+            "the old dead-end message is gone"
+        );
+    }
+
+    #[test]
+    fn sign_in_returns_to_the_loaded_scrollspace_page() {
+        // The full round-trip the panel relies on: start with next =
+        // a Scrollspace URL carrying a query string (a shared
+        // traversal link), and the callback must redirect to that
+        // exact URL and seal a session the API then admits.
+        let gate = Gate::new(Oauth::test_ready(), Editors::parse("google:sub-1"));
+        let plain: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let loaded = "/scrollspace.html?q=1.1.1%2F1.1.1%2F1.1.1&marker=waU-31";
+        let start = gate
+            .route(
+                "GET",
+                "/api/auth/google?next=%2Fscrollspace.html%3Fq%3D1.1.1%252F1.1.1%252F1.1.1%26marker%3DwaU-31",
+                &plain,
+            )
+            .unwrap();
+        let location = start.headers.iter().find(|(n, _)| *n == "Location").unwrap().1.clone();
+        let state = location.split("state=").nth(1).unwrap().split('&').next().unwrap().to_string();
+        let pending = start.headers.iter().find(|(n, _)| *n == "Set-Cookie").unwrap().1
+            .split(';').next().unwrap().to_string();
+        let mut cb: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        cb.insert("cookie".into(), pending);
+        let back = gate
+            .route("GET", &format!("/api/auth/google/callback?code=ok&state={state}"), &cb)
+            .unwrap();
+        let back_location = back.headers.iter().find(|(n, _)| *n == "Location").unwrap().1.clone();
+        assert_eq!(back_location, format!("http://127.0.0.1:8080{loaded}"));
+        let session = back.headers.iter()
+            .filter(|(n, _)| *n == "Set-Cookie")
+            .map(|(_, v)| v.split(';').next().unwrap().to_string())
+            .find(|c| c.starts_with("phext_session="))
+            .expect("session cookie sealed");
+        let mut auth: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        auth.insert("cookie".into(), session);
+        let view = gate.route("GET", "/api/session", &auth).unwrap();
+        let view_body = String::from_utf8_lossy(&view.body);
+        assert!(view_body.contains("\"signed_in\":true"), "{view_body}");
+        assert!(view_body.contains("\"editor\":true"), "{view_body}");
+        // The boot call the returned page makes first is admitted —
+        // no 401 loop on return.
+        assert!(gate.admit("GET", "/api/phexts", &auth).is_ok());
+    }
+
+    #[test]
     fn zero_index_page_is_public_and_linked() {
         let gate = locked_gate();
         let page = get(&gate, "/zeros");
