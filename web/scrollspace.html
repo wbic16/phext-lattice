@@ -54,6 +54,20 @@
   #read .row button,#read .row a{background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:13px;padding:8px 12px;cursor:pointer;text-decoration:none}
   #read .row button:hover,#read .row a:hover{border-color:#ffd479}
   #readclose{align-self:flex-end}
+  /* Plane footer (task 26.9.10/11.7.14/7.7.8): the plane tagline is UI
+     chrome, not scroll text — it lives in this bar, never in S.plane.
+     Shown only on a plane (level 4); while it is up, body.onplane lifts
+     the bottom chrome by the footer's measured height (--planefoot-h)
+     so nothing overlaps it. Levels 0-3 are pixel-identical to before. */
+  #planefoot{position:absolute;left:0;right:0;bottom:0;display:none;align-items:center;justify-content:space-between;gap:14px;padding:8px 14px;background:#070d1f;border-top:1px solid #3c5a8f;z-index:5;font-size:13.5px;line-height:1.45;color:#b9d2ff}
+  #planefoot .pftag{min-width:0}
+  #planefoot a{flex:none;background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:13px;padding:7px 12px;cursor:pointer;text-decoration:none}
+  #planefoot a:hover{border-color:#ffd479;color:#ffe9a8}
+  body.onplane #bars{bottom:calc(10px + var(--planefoot-h,52px))}
+  body.onplane #help{bottom:calc(10px + var(--planefoot-h,52px))}
+  body.onplane #castwrap{bottom:calc(128px + var(--planefoot-h,52px))}
+  body.onplane #rebindbtn{bottom:calc(196px + var(--planefoot-h,52px))}
+  body.onplane #pad{bottom:calc(196px + var(--planefoot-h,52px))}
   @media (max-width:760px){
     .slot{width:44px;height:44px}
     .slot .a{font-size:8.5px}
@@ -61,6 +75,7 @@
     #target{max-width:44%}
     #hud{font-size:12px}
     #rebindbtn{bottom:auto;top:104px}
+    body.onplane #rebindbtn{bottom:auto}
     #pad{display:grid}
     #castwrap{bottom:170px}
   }
@@ -99,6 +114,10 @@
   on a plane: F/A/W/E (or arrows) walk the glyphs · Read opens clean text
 </div>
 <div id="bars"></div>
+<footer id="planefoot">
+  <span class="pftag">you are standing on a plane of existence: a scroll, walked like a zelda room. every glyph a floor tile.</span>
+  <a id="planeedit" href="/" target="_blank" rel="noopener">✎ edit this scroll in edit.phext.io</a>
+</footer>
 <aside id="read">
   <button id="readclose">✕ close</button>
   <h2 id="readtitle"></h2>
@@ -441,8 +460,9 @@ async function enterPlane(){
     lines.push("scroll "+ref.coord+" in "+g.name); lines.push("");
     for(const para of String(rec.text).split("\n")) for(const w of wrap(para,58)) lines.push(w);
     if(lines.length>600){ lines.length=600; lines.push("… plane view caps at 600 lines — Read carries the full text"); }
-    lines.push(""); lines.push("you are standing on a plane of existence:");
-    lines.push("a scroll, walked like a zelda room. every glyph a floor tile.");
+    /* The plane tagline is NOT pushed here (task 26.9.10/11.7.14/7.7.8):
+       S.plane carries the scroll's own text only — the tagline renders
+       in the #planefoot footer, where it cannot be mistaken for it. */
     S.plane=lines;
   }catch(e){ if(S.level===4) S.plane=["could not fetch "+ref.coord+": "+e.message]; }
 }
@@ -752,6 +772,27 @@ function drawPlane(){
   const ax=ox+S.px*cw-1, ay=oy+S.py*ch-13;
   ctx.strokeStyle="#ffd479"; ctx.lineWidth=2; ctx.strokeRect(ax-3,ay-3,cw+3,ch+2);
 }
+/* Plane footer sync (task 26.9.10/11.7.14/7.7.8): the footer exists
+   only on a plane. Its Edit button deep-links the editor shell at the
+   scroll being stood on, in the shell's own canonical share form —
+   /<stem>/#<coord> (phextNameFromLocation + readFragment in the
+   shell's INDEX_HTML; publishCoord builds exactly this). The footer
+   height is mirrored into --planefoot-h so the bottom chrome lifts
+   clear of it; the footer's own height never depends on that var, so
+   reading offsetHeight here cannot oscillate. */
+const planefootEl=document.getElementById("planefoot");
+const planeeditEl=document.getElementById("planeedit");
+let planeFootKey="", planeFootH=0;
+function syncPlaneFoot(){
+  if(S.level===4&&S.gal&&S.planet){
+    const key=S.gal.name+"|"+S.planet.coord;
+    if(key!==planeFootKey){ planeFootKey=key;
+      planeeditEl.href="/"+stemOf(S.gal.name)+"/#"+S.planet.coord; }
+    if(planefootEl.style.display!=="flex"){ planefootEl.style.display="flex"; document.body.classList.add("onplane"); }
+    const h=planefootEl.offsetHeight;
+    if(h&&h!==planeFootH){ planeFootH=h; document.documentElement.style.setProperty("--planefoot-h",h+"px"); }
+  }else if(planeFootKey){ planeFootKey=""; planefootEl.style.display="none"; document.body.classList.remove("onplane"); }
+}
 let lastT=performance.now();
 function frame(now){
   const dt=Math.min(0.05,(now-lastT)/1000); lastT=now;
@@ -779,6 +820,7 @@ function frame(now){
     S.px=Math.min(S.px, Math.max(0,(S.plane[S.py]||"").length-1));
     drawPlane();
   }
+  syncPlaneFoot();
   document.getElementById("crumb").textContent=crumb();
   const known=GAL.reduce((a,g)=>a+(g.count||0),0);
   document.getElementById("coord").textContent= S.level===4? S.planet.coord+" · plane" :
