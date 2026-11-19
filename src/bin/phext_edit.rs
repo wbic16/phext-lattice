@@ -12175,6 +12175,28 @@ mod http_tests {
     }
 
     #[test]
+    fn scrollspace_nodes_carry_hover_labels() {
+        // Task 30.8.9/11.10.17/15.6.8 (Will, 2026-11-19): "the nodes
+        // that are displayed should show the first few words or a
+        // holographic summary word" / "load the label on hover,
+        // including how many pages are found there". Hover is the
+        // crosshair target (S.target, TAB-lock included): the label
+        // is a third readout line (#tprev) carrying the first 7
+        // words of the node's representative scroll plus the page
+        // count at the node, loaded lazily after a ~250 ms dwell,
+        // cached per node for the session. The holographic summary
+        // word is deliberately not faked client-side (see the
+        // hover block in the page): first words are the shipped
+        // branch of Will's "or".
+        assert!(SCROLLSPACE_HTML.contains("id=\"tprev\""));
+        assert!(SCROLLSPACE_HTML.contains("function syncHover()"));
+        assert!(SCROLLSPACE_HTML.contains("function hoverResolve(n,gal,macro)"));
+        assert!(SCROLLSPACE_HTML.contains("function firstWords(text)"));
+        assert!(SCROLLSPACE_HTML.contains("hoverCache"));
+        assert!(SCROLLSPACE_HTML.contains("1 page here"));
+    }
+
+    #[test]
     fn scrollspace_progress_bar_is_large_and_above_the_buttons() {
         // Task 32.9.13/7.5.8/6.4.8 (Will, 2026-11-19): "polish: the
         // progress bar should be larger, and appear above the
