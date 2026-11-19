@@ -12197,6 +12197,23 @@ mod http_tests {
     }
 
     #[test]
+    fn scrollspace_mobile_layout_unjumbles_the_hud() {
+        // Task 21.10.14/8.8.16/16.5.7 (Will, 2026-11-19): "the layout
+        // is jumbled, though" — at phone width the desktop HUD
+        // overlapped the plane panel and itself. The page carries a
+        // max-width:480px block that stacks/wraps the chrome (hint
+        // hidden, jump row in its own band, bars wrapping inside
+        // the viewport, controls shelved above the bars, plane
+        // footer stacked) and a planeOY() helper that drops the
+        // plane panel below the header band at phone width (120
+        // everywhere else, so desktop geometry is untouched).
+        assert!(SCROLLSPACE_HTML.contains("@media (max-width:480px)"));
+        assert!(SCROLLSPACE_HTML.contains("function planeOY()"));
+        assert!(SCROLLSPACE_HTML.contains("#hud .hint{display:none}"));
+        assert!(SCROLLSPACE_HTML.contains("flex-wrap:wrap"));
+    }
+
+    #[test]
     fn scrollspace_progress_bar_is_large_and_above_the_buttons() {
         // Task 32.9.13/7.5.8/6.4.8 (Will, 2026-11-19): "polish: the
         // progress bar should be larger, and appear above the
