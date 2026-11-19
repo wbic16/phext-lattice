@@ -35,6 +35,12 @@
   .slot .a{font-size:9.5px;line-height:1.15;color:#b9d2ff;text-align:center}
   .slot.rebind{border-color:#ffd479;box-shadow:0 0 8px #ffd479}
   #rebindbtn{position:absolute;left:12px;bottom:196px;z-index:5;font-size:11.5px;padding:6px 9px}
+  /* Traversal breadcrumbs control cluster (task 25.7.9/10.7.11/8.7.9):
+     back-step / clear / count for the crumb trail, bottom-right. */
+  #trailctl{position:absolute;right:12px;bottom:10px;z-index:5;display:flex;gap:6px;align-items:center}
+  #trailctl button{background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:12.5px;padding:7px 11px;cursor:pointer}
+  #trailctl button:hover{border-color:#ffd479;color:#ffe9a8}
+  #trailn{font-size:12px;color:#8fb7ff;text-shadow:0 1px 3px #000}
   #rebindbtn.on{border-color:#ffd479;color:#ffd479}
   #help{position:absolute;left:12px;bottom:10px;font-size:11.5px;color:#7d8aa5;line-height:1.55;pointer-events:none;text-shadow:0 1px 3px #000;max-width:30vw}
   #msg{position:absolute;left:50%;top:104px;transform:translateX(-50%);font-size:14px;color:#ffe9a8;text-shadow:0 1px 4px #000;pointer-events:none;opacity:0;transition:opacity .3s;z-index:6;text-align:center;max-width:90vw}
@@ -69,6 +75,7 @@
   body.onplane #castwrap{bottom:calc(128px + var(--planefoot-h,52px))}
   body.onplane #rebindbtn{bottom:calc(196px + var(--planefoot-h,52px))}
   body.onplane #pad{bottom:calc(196px + var(--planefoot-h,52px))}
+  body.onplane #trailctl{bottom:calc(10px + var(--planefoot-h,52px))}
   @media (max-width:760px){
     .slot{width:44px;height:44px}
     .slot .a{font-size:8.5px}
@@ -88,7 +95,7 @@
 <div id="hud">
   <div class="crumb" id="crumb">SCROLLSPACE</div>
   <div class="coord" id="coord">—</div>
-  <div class="hint" id="hint">click the view to lock the mouse — Descent layout: F forward · A back · W/E strafe · S/D turn · Q down · R up · mouse1 fires the zoom · wheel sets throttle (forward/backward velocity) · shift boosts · z/x roll</div>
+  <div class="hint" id="hint">click the view to lock the mouse — Descent layout: F forward · A back · W/E strafe · S/D turn · Q down · R up · mouse1 fires the zoom · wheel sets throttle (forward/backward velocity) · shift boosts · z/x roll · gold crumbs mark your trail — aim + enter returns to one, c steps back along it</div>
 </div>
 <div id="target"><div class="t" id="tname">no target</div><div class="s" id="tsub">tab or fly close to acquire</div></div>
 <div id="nav">
@@ -96,6 +103,7 @@
   <button id="jumpgo">Go</button>
 </div>
 <button id="readbtn">Read</button>
+<div id="trailctl"><button id="trailback" title="step back along your crumb trail">⟲ back</button><button id="trailclear" title="clear the crumb trail">clear</button><span id="trailn">trail · 0 crumbs</span></div>
 <div id="msg"></div>
 <div id="authpanel" role="dialog" aria-modal="true" aria-labelledby="authtitle">
   <h2 id="authtitle">Sign in to enter Scrollspace</h2>
@@ -112,7 +120,8 @@
 </div>
 <div id="help">
   click a bar slot to cast · REBIND on, then click a slot and press a key, to rebind<br>
-  on a plane: F/A/W/E (or arrows) walk the glyphs · Read opens clean text
+  on a plane: F/A/W/E (or arrows) walk the glyphs · Read opens clean text<br>
+  crumbs: c or ⟲ back steps back along your trail · click a gold crumb on a plane to return to it
 </div>
 <div id="bars"></div>
 <footer id="planefoot">
@@ -533,6 +542,7 @@ async function backgroundIndex(){
 const S={level:0, gal:null, macro:null, meso:null, planet:null, cam:[0,0,2700], yaw:0, pitch:0, roll:0,
          target:null, hot:null, tabTarget:null, tabIdx:-1, casting:null, trans:null, frameOnLoad:null, plane:null, px:2, py:2, msgT:0};
 S.vel=[0,0,0]; S.throttle=0; S.wheelAcc=0;
+S.trail=[]; S.trailStep=120; S.trailMute=false; S.trailPending=false;
 let nodes=[];
 function buildNodes(){
   nodes=[];
@@ -570,6 +580,121 @@ function buildNodes(){
   relaxLayout(nodes);
   if(S.level===0) for(const nd of nodes){ const g=nd.ref; g.pos[0]=nd.pos[0]; g.pos[1]=nd.pos[1]; g.pos[2]=nd.pos[2]; }
 }
+/* ---------- traversal breadcrumbs (task 25.7.9/10.7.11/8.7.9) ----------
+   Will, 2026-11-19: "traversal bread crumbs - have the viewer show a
+   trail of dots as you fly around phext space - make it easy to return
+   to a path". S.trail is an ordered list of crumbs — the in-session
+   ancestor of traversal mode's shareable waypoint list (task
+   40.7.8/10.7.12/7.7.11): each crumb's core is the waypoint triple
+   {phext, coord, level} (coord = the fullest address at that level:
+   the full 9-part coordinate on a plane, macro/meso at L3, macro at
+   L2, null at L1/L0 where the galaxy itself is the address), and it
+   also carries the return payload: the camera position + orientation
+   in that level's space, the gal/macro/meso/planet context needed to
+   rebuild the level, and the plane cell at L4. Crumbs are never
+   nodes: frameFor/frameNodes/relaxLayout only ever read `nodes`, so
+   the trail cannot enter the framing set — continuity is safe by
+   construction. Sampling: an entry crumb on every level/context
+   entry (enterLevel at the framed landing, enterPlane at the entry
+   cell), distance crumbs in flight (step = clamp(0.06 * the space's
+   bounding radius, 30, 500)), and a crumb every 4 cells on a plane.
+   Lifetime: this session only, capped at TRAIL_MAX with the oldest
+   dropped first; the trail cluster's clear button restarts it from
+   where you stand. Returning truncates the trail to the crumb you
+   returned to — rewind semantics; flying onward appends afresh. */
+const TRAIL_MAX=400, TRAIL_PLANE_STEP=4;
+let lastCrumbs=[]; /* [pseudoNode, projected, radius, crumb] — touch + ring picking */
+function trailCtxKey(){ return S.level+"|"+(S.gal?S.gal.name:"")+"|"+(S.macro||"")+"|"+(S.meso||"")+"|"+(S.level===4&&S.planet?S.planet.coord:""); }
+function trailCoord(){ if(S.level===4&&S.planet) return S.planet.coord;
+  if(S.level===3) return S.macro+"/"+S.meso; if(S.level===2) return S.macro; return null; }
+function trailN(){ const el=document.getElementById("trailn"); if(el) el.textContent="trail · "+S.trail.length+(S.trail.length===1?" crumb":" crumbs"); }
+function dropCrumb(force,atPos){
+  const key=trailCtxKey(), last=S.trail[S.trail.length-1];
+  if(last&&last.key===key&&!force){
+    if(S.level===4){ if(Math.abs(S.px-last.px)+Math.abs(S.py-last.py)<2) return; }
+    else { const p=atPos||S.cam; if(Math.hypot(p[0]-last.pos[0],p[1]-last.pos[1],p[2]-last.pos[2])<S.trailStep/2) return; }
+  }
+  S.trail.push({ phext:S.gal?S.gal.name:null, coord:trailCoord(), level:S.level,
+    pos:S.level<4?(atPos?atPos.slice():S.cam.slice()):null, yaw:S.yaw, pitch:S.pitch, roll:S.roll,
+    gal:S.gal||null, macro:S.macro||null, meso:S.meso||null,
+    planet:S.level===4&&S.planet?S.planet.coord:null, px:S.px, py:S.py,
+    key, t:performance.now() });
+  while(S.trail.length>TRAIL_MAX) S.trail.shift();
+  trailN();
+}
+/* in-flight sampler (3D levels): an entry crumb if the context moved
+   under us without one, else a distance crumb every trailStep.
+   Muted while a crumb return is in flight: the trail's tail is then
+   already the target crumb in the TARGET context, and the context
+   mismatch against the space still on screen is the rewind itself,
+   not a fresh entry — dropping here would plant phantom crumbs in
+   both spaces (caught by walk12, 2026-11-19). */
+function trailSample(){
+  if(S.trailMute) return;
+  const last=S.trail[S.trail.length-1];
+  if(!last||last.key!==trailCtxKey()){ dropCrumb(true); return; }
+  if(Math.hypot(S.cam[0]-last.pos[0],S.cam[1]-last.pos[1],S.cam[2]-last.pos[2])>=S.trailStep) dropCrumb(false);
+}
+function trailPlaneSample(){
+  if(S.trailMute) return;
+  const last=S.trail[S.trail.length-1];
+  if(!last||last.key!==trailCtxKey()){ dropCrumb(true); return; }
+  if(Math.abs(S.px-last.px)+Math.abs(S.py-last.py)>=TRAIL_PLANE_STEP) dropCrumb(false);
+}
+/* Fly back to crumb idx along the existing cast/flyTo machinery — no
+   teleport cuts. Cross-level returns rebuild the crumb's context in
+   the transition's mid, exactly as doZoomIn/doZoomOut/travelTo do,
+   and land on the crumb's recorded camera position + orientation
+   (enterLevel's framed landing is deliberately NOT settleTrans()ed
+   to). trailMute suppresses the entry crumb enterLevel/enterPlane
+   would drop: the crumb returned to stays the trail's end. */
+function returnToCrumb(idx){
+  if(S.casting||S.trans) return;
+  const c=S.trail[idx]; if(!c) return;
+  const sameCtx=c.key===trailCtxKey();
+  if(sameCtx&&c.level<4&&Math.hypot(S.cam[0]-c.pos[0],S.cam[1]-c.pos[1],S.cam[2]-c.pos[2])<1){
+    S.trail.length=idx+1; trailN(); showMsg("already standing on this crumb"); return; }
+  if(sameCtx&&c.level===4){
+    S.trail.length=idx+1; trailN();
+    if(S.px===c.px&&S.py===c.py){ showMsg("already standing on this crumb"); return; }
+    S.px=c.px; S.py=c.py; showMsg("back along the trail · "+c.coord); return; }
+  closeRead();
+  S.trail.length=idx+1; trailN();
+  S.trailMute=true;
+  const done=()=>{ S.trailMute=false; };
+  if(c.level===4){
+    cast("Returning along your trail…",450,()=>{ S.gal=c.gal; S.macro=c.macro; S.meso=c.meso;
+      S.planet={coord:c.planet,suffix:suffixOf(c.planet),title:""};
+      S.level=4; enterPlane(); S.px=c.px; S.py=c.py; done(); });
+    return;
+  }
+  if(sameCtx){
+    cast("Returning along your trail…",350,()=>flyTo(c.pos,()=>{ S.yaw=c.yaw; S.pitch=c.pitch; S.roll=c.roll; done(); },true));
+    return;
+  }
+  if(S.level===4){
+    /* stepping off a plane back into 3D mirrors doZoomOut's plane exit */
+    cast("Returning along your trail…",450,()=>{ S.level=c.level; S.gal=c.gal; S.macro=c.macro; S.meso=c.meso; S.planet=null;
+      S.trans={t0:performance.now(),dur:700,from:S.cam.slice(),to:c.pos.slice(),mid:()=>{ enterLevel(1500); S.trans.to=c.pos.slice(); S.yaw=c.yaw; S.pitch=c.pitch; S.roll=c.roll; done(); },midDone:false,fade:"in"}; });
+    return;
+  }
+  cast("Returning along your trail…",500,()=>flyTo(c.pos,()=>{ S.gal=c.gal; S.macro=c.macro; S.meso=c.meso; S.level=c.level; S.planet=null; enterLevel(1500); S.yaw=c.yaw; S.pitch=c.pitch; S.roll=c.roll; done(); },true));
+}
+/* Back-step: fly to the previous distinct crumb, skipping the cluster
+   at your feet (same-context crumbs within reach of where you stand). */
+function trailBack(){
+  if(S.casting||S.trans) return;
+  if(!S.trail.length){ showMsg("no trail yet — fly somewhere first"); return; }
+  const key=trailCtxKey();
+  for(let i=S.trail.length-1;i>=0;i--){ const c=S.trail[i];
+    if(c.key===key){
+      if(c.level===4){ if(Math.abs(S.px-c.px)+Math.abs(S.py-c.py)<=2) continue; }
+      else if(Math.hypot(S.cam[0]-c.pos[0],S.cam[1]-c.pos[1],S.cam[2]-c.pos[2])<=S.trailStep*0.75) continue;
+    }
+    returnToCrumb(i); return;
+  }
+  showMsg("start of the trail — nowhere further back");
+}
 function crumb(){
   if(S.level===0) return "SCROLLSPACE · GALAXIES (phexts)";
   if(S.level===1) return S.gal.name+" · MACRO (LB.SR.SF)";
@@ -579,6 +704,7 @@ function crumb(){
 }
 /* ---------- actions & keybinds ---------- */
 const ACTIONS={ tab:{name:"Next Target",def:"Tab"}, zoomIn:{name:"Zoom In",def:"Enter"}, zoomOut:{name:"Zoom Out",def:"Backspace"},
+  trailback:{name:"Trail Back",def:"c"},
   inspect:{name:"Inspect",def:"i"}, tag:{name:"Tag WAU",def:"t"}, record:{name:"Record",def:"n"},
   grade:{name:"Grade",def:"g"}, handoff:{name:"Handoff",def:"h"}, sync:{name:"Sync",def:"b"}, view:{name:"View",def:"v"},
   queue:{name:"Queue",def:"q2"}, delegate:{name:"Delegate",def:"u"},
@@ -624,6 +750,8 @@ function fireTarget(){
 }
 function doZoomIn(){
   if(S.casting||S.trans) return;
+  const tn=S.target;
+  if(tn&&tn.kind==="crumb"){ returnToCrumb(tn.crumbIdx); return; }
   const n=fireTarget();
   if(!n){ showMsg("no target under the crosshair — aim at a node, or TAB to lock one"); return; }
   if(S.level===0) cast("Entering "+n.ref.name+"…",650,()=>flyTo(n.pos,()=>{S.gal=n.ref;S.level=1;enterLevel(1500);settleTrans();}));
@@ -652,10 +780,21 @@ function enterLevel(dist){ S.vel=[0,0,0]; S.throttle=0; S.wheelAcc=0; S.yaw=0;S.
   buildNodes();
   const F=frameNodes();
   if(F){ S.cam=F.cam; S.frameOnLoad=null; }
-  else { S.cam=[0,0,dist]; S.frameOnLoad={level:S.level,gal:S.gal,macro:S.macro,meso:S.meso,at:S.cam.slice()}; } }
+  else { S.cam=[0,0,dist]; S.frameOnLoad={level:S.level,gal:S.gal,macro:S.macro,meso:S.meso,at:S.cam.slice()}; }
+  /* breadcrumbs: entering a space drops its entry crumb at the framed
+     landing (and sizes the in-flight sampling step to the space). If
+     framing is still pending on data, frame()'s settle drops it at
+     the settle target instead. Muted during a crumb return, whose
+     target crumb is itself the entry record. The plane's entry crumb
+     is enterPlane's job, so L4 skips this. */
+  if(S.level<4&&!S.trailMute){
+    if(F){ S.trailStep=Math.max(30,Math.min(500,F.R*0.06)); dropCrumb(true); }
+    else S.trailPending=true;
+  } }
 async function enterPlane(){
   const ref=S.planet, g=S.gal;
   S.plane=["fetching the scroll from "+g.name+" …"]; S.px=2; S.py=2;
+  if(!S.trailMute) dropCrumb(true); /* the plane's entry crumb, at the entry cell */
   document.getElementById("readbtn").style.display="block";
   try{
     const rec=await fetchBody(g.name, ref.coord);
@@ -679,6 +818,7 @@ function travelTo(fi,coord){
 }
 function doAction(k){
   if(k==="tab"){ if(!nodes.length)return; S.tabIdx=(S.tabIdx+1)%nodes.length; S.tabTarget=nodes[S.tabIdx]; showMsg("target locked: "+S.tabTarget.label); }
+  else if(k==="trailback") trailBack();
   else if(k==="zoomIn") doZoomIn();
   else if(k==="zoomOut") doZoomOut();
   else if(k==="inspect"){ const t=S.target; if(!t){ showMsg("nothing targeted"); return; }
@@ -852,7 +992,18 @@ addEventListener("wheel",e=>{ if(S.level>=4) return;
 cv.addEventListener("touchstart",e=>{const t=e.touches[0];ptrDown(t.clientX,t.clientY);},{passive:true});
 cv.addEventListener("touchmove",e=>{const t=e.touches[0];ptrMove(t.clientX,t.clientY);e.preventDefault();},{passive:false});
 cv.addEventListener("touchend",()=>{ const wasDrag=moved>8; dragging=false;
-  if(!wasDrag&&S.level<4){ const nd=nodeAt(lx,ly); if(nd){ S.tabTarget=nd; doZoomIn(); } } });
+  if(!wasDrag&&S.level<4){ const nd=nodeAt(lx,ly); if(nd){ if(nd.kind==="crumb") returnToCrumb(nd.crumbIdx); else { S.tabTarget=nd; doZoomIn(); } } } });
+/* on a plane, clicking a crumb's cell returns to it (the plane has no
+   crosshair targeting; cells are addressed with drawPlane's geometry) */
+cv.addEventListener("mousedown",e=>{ if(S.level!==4||document.pointerLockElement===cv) return;
+  const ox=Math.max(16,Math.min(70,cv.width*0.06)), oy=120, cw=13, chh=22;
+  const col=Math.floor((e.clientX-ox)/cw), row=Math.floor((e.clientY-(oy-13))/chh);
+  if(col<0||row<0) return;
+  const key=trailCtxKey();
+  for(let i=S.trail.length-1;i>=0;i--){ const c=S.trail[i]; if(c.key===key&&c.px===col&&c.py===row){ returnToCrumb(i); return; } }
+});
+document.getElementById("trailback").onclick=e=>{ trailBack(); e.currentTarget.blur(); };
+document.getElementById("trailclear").onclick=e=>{ S.trail=[]; dropCrumb(true); showMsg("trail cleared — a fresh crumb marks where you stand"); e.currentTarget.blur(); };
 document.querySelectorAll("#pad button").forEach(b=>{
   const k=b.dataset.k;
   const on=e=>{e.preventDefault(); if(k==="Enter")doZoomIn(); else if(k==="Backspace")doZoomOut(); else keys[k]=true;};
@@ -919,6 +1070,7 @@ function moveCam(dt){
 /* MATH-END */
 function nodeAt(mx,my){ let best=null,bd=1e9;
   for(const [n,pr,sc] of lastDrawn){ const d=Math.hypot(pr[0]-mx,pr[1]-my); if(d<Math.max(26,sc)&&d<bd){bd=d;best=n;} }
+  for(const [pn,pr,r] of lastCrumbs){ const d=Math.hypot(pr[0]-mx,pr[1]-my); if(d<Math.max(26,r*2.4)&&d<bd){bd=d;best=pn;} }
   return best; }
 /* a disc galaxy's disc glow: the galaxy's two widest address axes
    span its disc plane; project that plane's basis vectors to the
@@ -982,6 +1134,24 @@ function draw3D(now){
         ctx.fillStyle="hsla("+h+","+s+"%,"+l+"%,"+a.toFixed(3)+")";
         const sz=(cp.n>40?2.4:1.6)*(0.75+0.6*b); ctx.fillRect(pp[0],pp[1],sz,sz); } }
   }
+  /* traversal breadcrumbs: this space's crumbs as gold dots on a thin
+     path line, oldest faintest. Only the current context's crumbs are
+     drawn — the rest belong to other spaces. They are picked like
+     nodes (lastCrumbs) but are never nodes themselves. */
+  lastCrumbs=[];
+  { const key=trailCtxKey(), here=S.trail.filter(c=>c.key===key);
+    ctx.lineWidth=1;
+    for(let i=0;i<here.length;i++){ const c=here[i], pr=project(c.pos); if(!pr) continue;
+      const idx=S.trail.indexOf(c), back=S.trail.length-1-idx;
+      const age=here.length<=1?0.95:0.30+0.65*(i/(here.length-1));
+      const r=Math.max(1.5,Math.min(7,1980/pr[2]));
+      lastCrumbs.push([{kind:"crumb",pos:c.pos,crumbIdx:idx,
+        label:"crumb · "+(back===0?"here":back+" back"),
+        sub:(c.phext?c.phext+" · ":"")+"dropped on your way here · enter or mouse1 flies back along the trail"},pr,r,c]);
+      if(i>0){ const p0=project(here[i-1].pos); if(p0){ ctx.strokeStyle="rgba(255,212,121,"+(age*0.35).toFixed(3)+")"; ctx.beginPath(); ctx.moveTo(p0[0],p0[1]); ctx.lineTo(pr[0],pr[1]); ctx.stroke(); } }
+      ctx.fillStyle="rgba(255,212,121,"+age.toFixed(3)+")"; ctx.beginPath(); ctx.arc(pr[0],pr[1],r,0,7); ctx.fill();
+      ctx.fillStyle="rgba(255,244,214,"+age.toFixed(3)+")"; ctx.beginPath(); ctx.arc(pr[0],pr[1],Math.max(0.8,r*0.45),0,7); ctx.fill();
+    } }
   let hot=null,hotD=1e9; lastDrawn=[];
   for(const n of nodes){
     const pr=project(n.pos); if(!pr) continue;
@@ -990,8 +1160,11 @@ function draw3D(now){
     const d=Math.hypot(pr[0]-cv.width/2,pr[1]-cv.height/2);
     if(d<Math.max(34,sc*0.95)&&d<hotD){hotD=d;hot=n;}
   }
+  let crumbHot=null,crumbD=1e9;
+  for(const [pn,pr,r] of lastCrumbs){ const d=Math.hypot(pr[0]-cv.width/2,pr[1]-cv.height/2);
+    if(d<Math.max(20,r*2.4)&&d<crumbD){crumbD=d;crumbHot=pn;} }
   S.hot=hot;
-  S.target=(S.tabTarget&&nodes.includes(S.tabTarget))?S.tabTarget:hot;
+  S.target=(S.tabTarget&&nodes.includes(S.tabTarget))?S.tabTarget:(crumbHot&&crumbD<hotD?crumbHot:hot);
   for(const [n,pr,sc] of lastDrawn){
     const isT=n===S.target, tint=n.tint||[n.hue,85];
     const prof=GLOW_STOPS[n.kind==="gal"?(n.form||"globular"):"star"];
@@ -1005,6 +1178,10 @@ function draw3D(now){
       ctx.fillStyle="#ffe9a8"; ctx.font="13px ui-monospace,monospace"; ctx.textAlign="center"; ctx.fillText(n.label,pr[0],pr[1]-sc*0.75-16); }
     else if(pr[2]<950){ ctx.fillStyle="rgba(180,205,255,.55)"; ctx.font="10.5px ui-monospace,monospace"; ctx.textAlign="center"; ctx.fillText(n.label,pr[0],pr[1]-sc*0.6-8); }
   }
+  if(S.target&&S.target.kind==="crumb"){ const e=lastCrumbs.find(x=>x[0]===S.target);
+    if(e){ const pr=e[1], r=e[2];
+      ctx.strokeStyle="#ffd479"; ctx.lineWidth=1.6; ctx.beginPath(); ctx.arc(pr[0],pr[1],r+6+Math.sin(now/240)*2,0,7); ctx.stroke();
+      ctx.fillStyle="#ffe9a8"; ctx.font="13px ui-monospace,monospace"; ctx.textAlign="center"; ctx.fillText(S.target.label,pr[0],pr[1]-r-14); } }
   ctx.strokeStyle="rgba(255,212,121,.8)"; ctx.lineWidth=1; const cx=cv.width/2,cy2=cv.height/2;
   ctx.beginPath(); ctx.moveTo(cx-11,cy2); ctx.lineTo(cx-4,cy2); ctx.moveTo(cx+4,cy2); ctx.lineTo(cx+11,cy2);
   ctx.moveTo(cx,cy2-11); ctx.lineTo(cx,cy2-4); ctx.moveTo(cx,cy2+4); ctx.lineTo(cx,cy2+11); ctx.stroke();
@@ -1042,6 +1219,14 @@ function drawPlane(){
       c+=glyph.length;
     }
   }
+  /* this plane's crumbs (task 25.7.9): gold dots in the cells you have
+     stood on, oldest faintest; the cursor cell keeps its own highlight */
+  { const pkey=trailCtxKey();
+    S.trail.forEach((c,i)=>{ if(c.key!==pkey||c.py>=maxr||ox+c.px*cw>cv.width-20) return;
+      if(c.px===S.px&&c.py===S.py) return;
+      const a=S.trail.length<=1?0.9:0.3+0.6*(i/(S.trail.length-1));
+      ctx.fillStyle="rgba(255,212,121,"+a.toFixed(3)+")";
+      ctx.beginPath(); ctx.arc(ox+c.px*cw+2.5, oy+c.py*ch-10.5, 2.2, 0, 7); ctx.fill(); }); }
   ctx.fillStyle="#8fb7ff"; ctx.font="13px "+GLYPH_FONTS;
   ctx.fillText("the line under your feet:  "+(lines[S.py]||""), ox, cv.height-140);
   const ax=ox+S.px*cw-1, ay=oy+S.py*ch-13;
@@ -1077,8 +1262,10 @@ function frame(now){
   if(S.frameOnLoad&&!S.trans&&!S.casting){ const f=S.frameOnLoad;
     if(f.level===S.level&&f.gal===S.gal&&f.macro===S.macro&&f.meso===S.meso){
       if(nodes.length){ const F=frameNodes(); S.frameOnLoad=null;
-        if(F&&Math.hypot(S.cam[0]-f.at[0],S.cam[1]-f.at[1],S.cam[2]-f.at[2])<1)
-          S.trans={t0:now,dur:650,from:S.cam.slice(),to:F.cam,mid:null,midDone:true,fade:"none"}; }
+        if(F&&S.trailPending){ S.trailPending=false; S.trailStep=Math.max(30,Math.min(500,F.R*0.06)); }
+        if(F&&Math.hypot(S.cam[0]-f.at[0],S.cam[1]-f.at[1],S.cam[2]-f.at[2])<1){
+          S.trans={t0:now,dur:650,from:S.cam.slice(),to:F.cam,mid:null,midDone:true,fade:"none"};
+          if(!S.trailMute) dropCrumb(true,F.cam); } }
     } else S.frameOnLoad=null; }
   if(S.trans){ const tr=S.trans, p=Math.min(1,(now-tr.t0)/tr.dur), e=p<0.5?2*p*p:1-Math.pow(-2*p+2,2)/2;
     S.cam=[0,1,2].map(i=>tr.from[i]+(tr.to[i]-tr.from[i])*e);
@@ -1086,13 +1273,14 @@ function frame(now){
     if(tr.fade==="in") fo.style.opacity=String(p<0.6?Math.min(1,Math.max(0,(p-0.35)/0.25)):Math.max(0,1-(p-0.72)/0.28));
     if(p>=0.58&&!tr.midDone){ tr.midDone=true; if(tr.mid) tr.mid(); }
     if(p>=1){ S.trans=null; fo.style.opacity=0; } }
-  if(S.level<4){ if(!S.trans) moveCam(dt); draw3D(now); }
+  if(S.level<4){ if(!S.trans){ moveCam(dt); trailSample(); } draw3D(now); }
   else {
     if(keys["w"]||keys["ArrowLeft"]){S.px=Math.max(0,S.px-1);keys["w"]=keys["ArrowLeft"]=false;}
     if(keys["e"]||keys["ArrowRight"]){S.px=S.px+1;keys["e"]=keys["ArrowRight"]=false;}
     if(keys["f"]||keys["ArrowUp"]){S.py=Math.max(0,S.py-1);keys["f"]=keys["ArrowUp"]=false;}
     if(keys["a"]||keys["ArrowDown"]){S.py=Math.min(S.plane.length-1,S.py+1);keys["a"]=keys["ArrowDown"]=false;}
     S.px=Math.min(S.px, Math.max(0,(S.plane[S.py]||"").length-1));
+    trailPlaneSample();
     drawPlane();
   }
   syncPlaneFoot();
@@ -1125,6 +1313,8 @@ function frame(now){
     layoutMultiverse();
     buildNodes();
     const BF=frameNodes(); if(BF) S.cam=BF.cam;
+    if(BF) S.trailStep=Math.max(30,Math.min(500,BF.R*0.06));
+    dropCrumb(true); /* the trail's origin crumb: where this session began */
     requestAnimationFrame(frame);
     backgroundIndex();
   }catch(e){

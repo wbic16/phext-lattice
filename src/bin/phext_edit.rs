@@ -12154,6 +12154,26 @@ mod http_tests {
     }
 
     #[test]
+    fn scrollspace_breadcrumbs_mark_the_trail() {
+        // Task 25.7.9/10.7.11/8.7.9 (Will, 2026-11-19): "traversal
+        // bread crumbs - have the viewer show a trail of dots as you
+        // fly around phext space - make it easy to return to a path".
+        // S.trail is the ordered crumb list: entry crumbs drop in
+        // enterLevel/enterPlane, distance crumbs from the frame-loop
+        // samplers, and returnToCrumb flies back along the cast/flyTo
+        // machinery, truncating the trail to the crumb returned to.
+        // Crumbs are never nodes, so framing cannot see them.
+        assert!(SCROLLSPACE_HTML.contains("S.trail=[]"));
+        assert!(SCROLLSPACE_HTML.contains("function dropCrumb(force,atPos)"));
+        assert!(SCROLLSPACE_HTML.contains("function trailSample()"));
+        assert!(SCROLLSPACE_HTML.contains("function returnToCrumb(idx)"));
+        assert!(SCROLLSPACE_HTML.contains("function trailBack()"));
+        assert!(SCROLLSPACE_HTML.contains("trailback:{name:\"Trail Back\",def:\"c\"}"));
+        assert!(SCROLLSPACE_HTML.contains("id=\"trailctl\""));
+        assert!(SCROLLSPACE_HTML.contains("kind:\"crumb\""));
+    }
+
+    #[test]
     fn favicon_ico_is_an_icon_and_the_svg_keeps_its_type() {
         let (ico_type, ico) = public_asset("/favicon.ico").unwrap();
         assert_eq!(ico_type, "image/x-icon");
