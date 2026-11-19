@@ -210,10 +210,19 @@ function ensureMesos(g,macro){ if(g.mesos.has(macro)) return Promise.resolve();
   return loadOnce("mesos:"+g.fi+":"+macro,async()=>{ await fetchMesos(g,macro); if(S.level===2&&S.gal===g&&S.macro===macro) buildNodes(); prefetchMicros(g,macro); }); }
 function ensureMicros(g,macro,meso){ if(g.micros.has(macro+"/"+meso)) return Promise.resolve();
   return loadOnce("micros:"+g.fi+":"+macro+":"+meso,async()=>{ await fetchMicros(g,macro,meso); if(S.level===3&&S.gal===g&&S.macro===macro&&S.meso===meso) buildNodes(); }); }
+/* Prefetch runs through a 2-wide queue so background warming can never
+   starve a user-driven fetch: ensure* calls loadOnce directly (immediate),
+   and a queued prefetch whose data already landed is skipped. */
+const pfQueue=[]; let pfActive=0;
+function prefetch(key,fn,has){ if(inflight.has(key)||pfQueue.some(q=>q.key===key)) return;
+  pfQueue.push({key,fn,has}); pfPump(); }
+function pfPump(){ while(pfActive<2&&pfQueue.length){ const q=pfQueue.shift();
+    if(inflight.has(q.key)||(q.has&&q.has())) continue;
+    pfActive++; loadOnce(q.key,q.fn).finally(()=>{ pfActive--; pfPump(); }); } }
 function prefetchMesos(g){ if(!g.macros) return;
-  for(const macro of g.macros.keys()) loadOnce("mesos:"+g.fi+":"+macro,async()=>{ await fetchMesos(g,macro); }); }
+  for(const macro of g.macros.keys()) prefetch("mesos:"+g.fi+":"+macro,async()=>{ await fetchMesos(g,macro); },()=>g.mesos.has(macro)); }
 function prefetchMicros(g,macro){ const m=g.mesos.get(macro); if(!m) return;
-  for(const meso of m.keys()) loadOnce("micros:"+g.fi+":"+macro+":"+meso,async()=>{ await fetchMicros(g,macro,meso); }); }
+  for(const meso of m.keys()) prefetch("micros:"+g.fi+":"+macro+":"+meso,async()=>{ await fetchMicros(g,macro,meso); },()=>g.micros.has(macro+"/"+meso)); }
 /* background indexing: summaries, clouds, then full coordinate lists so the
    relationship web (9D links, halos) fills in without blocking first paint */
 async function backgroundIndex(){
@@ -421,7 +430,7 @@ async function jump(q){
   if(hit>=0){ S.gal=GAL[hit]; S.level=1; S.macro=null; S.meso=null; enterLevel(1500); ensureMacros(S.gal); showMsg("found galaxy "+GAL[hit].name); return; }
   showMsg("nothing matches “"+q+"” in the loaded structure (title search covers fetched scrolls only)");
 }
-document.getElementById("jumpgo").onclick=()=>jump(document.getElementById("jump").value);
+document.getElementById("jumpgo").onclick=e=>{ jump(document.getElementById("jump").value); e.currentTarget.blur(); };
 document.getElementById("jump").addEventListener("keydown",e=>{ if(e.key==="Enter") jump(e.target.value); e.stopPropagation(); });
 
 /* ---------- action bars (bar1 = 1-6 + shift layer, bar2 = zxcvqsdrgbth) ---------- */
@@ -445,7 +454,7 @@ function slotEl(action,keyLabel,shift){
   barsEl.appendChild(r2); barsEl.appendChild(r1); barsEl.appendChild(r1s);
 })();
 const rbBtn=document.getElementById("rebindbtn");
-rbBtn.onclick=()=>{ rebindMode=!rebindMode; rbBtn.textContent="REBIND: "+(rebindMode?"on":"off"); rbBtn.classList.toggle("on",rebindMode); if(!rebindMode){rebindSlot=null;document.querySelectorAll(".slot").forEach(e=>e.classList.remove("rebind"));} };
+rbBtn.onclick=()=>{ rebindMode=!rebindMode; rbBtn.textContent="REBIND: "+(rebindMode?"on":"off"); rbBtn.classList.toggle("on",rebindMode); if(!rebindMode){rebindSlot=null;document.querySelectorAll(".slot").forEach(e=>e.classList.remove("rebind"));} rbBtn.blur(); };
 /* ---------- input ---------- */
 const keys={};
 addEventListener("keydown",e=>{
