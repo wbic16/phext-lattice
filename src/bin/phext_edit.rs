@@ -12174,6 +12174,24 @@ mod http_tests {
     }
 
     #[test]
+    fn scrollspace_progress_bar_is_large_and_above_the_buttons() {
+        // Task 32.9.13/7.5.8/6.4.8 (Will, 2026-11-19): "polish: the
+        // progress bar should be larger, and appear above the
+        // buttons". The progress bar is the cast bar (#castwrap /
+        // #castbar / #castfill): it was 340px wide x 12px tall with
+        // its wrap at bottom:128px — inside the button stack's band
+        // (#bars tops out at bottom:178px). Now 520px x 22px with
+        // the wrap at bottom:196px, 18px above the buttons; the
+        // on-plane lift follows the same offset.
+        assert!(SCROLLSPACE_HTML.contains("#castwrap{position:absolute;left:50%;bottom:196px"));
+        assert!(SCROLLSPACE_HTML.contains("width:min(520px,88vw)"));
+        assert!(SCROLLSPACE_HTML.contains("#castbar{height:22px"));
+        assert!(SCROLLSPACE_HTML.contains("body.onplane #castwrap{bottom:calc(196px + var(--planefoot-h,52px))}"));
+        assert!(!SCROLLSPACE_HTML.contains("#castbar{height:12px"));
+        assert!(!SCROLLSPACE_HTML.contains("bottom:calc(128px + var(--planefoot-h,52px))"));
+    }
+
+    #[test]
     fn favicon_ico_is_an_icon_and_the_svg_keeps_its_type() {
         let (ico_type, ico) = public_asset("/favicon.ico").unwrap();
         assert_eq!(ico_type, "image/x-icon");
