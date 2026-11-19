@@ -1616,6 +1616,7 @@ fn public_document(path: &str) -> Option<PublicDocument> {
         "/learn-you-phext.html" => ("text/html; charset=utf-8", LEARN_YOU_PHEXT_HTML),
         "/learn-you-phext.phext" => ("text/plain; charset=utf-8", LEARN_YOU_PHEXT),
         "/ascii-map.html" => ("text/html; charset=utf-8", ASCII_MAP_HTML),
+        "/scrollspace.html" => ("text/html; charset=utf-8", SCROLLSPACE_HTML),
         "/ascii-map.phext" => ("text/plain; charset=utf-8", ASCII_MAP),
         "/singular.html" => ("text/html; charset=utf-8", SINGULAR_HTML),
         "/phext-previewer.html" => ("text/html; charset=utf-8", PREVIEWER_HTML),
@@ -8240,6 +8241,11 @@ with those files from a browser:</p>
   itself a phext, scroll by scroll.</li>
   <li><a href="ascii-map.html">The Map With Pages Behind It</a>: a game map drawn
   once per layer (ground, things, what happened). Each layer is one scroll of plain text you can read in any text editor — simple enough for a child.</li>
+  <li><a href="scrollspace.html">Scrollspace</a>: fly the hosted phexts like a
+  stellar cartography — galaxies, star systems, planets, and the plane of
+  existence inside each scroll. Descent controls and WoW action bars steer;
+  a jump box flies straight to a coordinate, and reading mode drops out of
+  exploration into clean, selectable text.</li>
   <li><a href="singular.html">Singular</a>: an Up Goer Five variant whose word list is one
   person's Twitter archive — read, write, and read/write with only those words.</li>
   <li><a href="phext-previewer.html">Phext Previewer</a>: open a phext file from your
@@ -8478,6 +8484,15 @@ const ASCII_MAP_HTML: &str = include_str!("../../web/ascii-map.html");
 // teaches from and open it in any text editor.
 const ASCII_MAP: &str = include_str!("../../web/ascii-map.phext");
 
+// Scrollspace likewise lives as a file under web/ and is compiled in: a
+// stellar-cartography flight through the hosted phexts — galaxies, star
+// systems, planets, and the plane of existence inside each scroll —
+// steered with Descent controls and WoW action bars, with a jump box
+// that flies straight to a coordinate and a reading mode that drops out
+// of exploration into clean, selectable text. The page carries its
+// dataset inline and makes no requests of its own.
+const SCROLLSPACE_HTML: &str = include_str!("../../web/scrollspace.html");
+
 // The Singular page likewise lives as a file under web/ and is compiled in:
 // an Up Goer Five variant whose word list is one person's Twitter archive.
 // Its modes pick which list flags the text: Read (what he read), Write
@@ -8553,6 +8568,7 @@ const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>https://edit.phext.io/tts-demo.html</loc></url>
   <url><loc>https://edit.phext.io/learn-you-phext.html</loc></url>
   <url><loc>https://edit.phext.io/ascii-map.html</loc></url>
+  <url><loc>https://edit.phext.io/scrollspace.html</loc></url>
   <url><loc>https://edit.phext.io/singular.html</loc></url>
   <url><loc>https://edit.phext.io/phext-previewer.html</loc></url>
   <url><loc>https://edit.phext.io/submit</loc></url>
@@ -9207,7 +9223,7 @@ button.axon, button.nt-group, button.nt-scroll, button.hit { width: 100%; }
     <p class="explain">Nine numbers name a scroll: library, shelf, series, collection, volume, book, chapter, section, scroll. The scroll is a page of lines and columns, which makes eleven. The file stays plain text.</p>
     <p class="hint">Sign in to save and edit your own files. The demo is a sample you can walk through; nothing in it is saved.</p>
     <p class="links"><a href="/about">About</a> · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a> · <a href="mailto:will+support@phext.io">Contact</a><br>
-      No sign-in needed: <a href="/up-goer-five.html">Up Goer Five</a> · <a href="/tts-demo.html">Coordinate TTS demo</a> · <a href="/learn-you-phext.html">Learn You Phext</a> · <a href="/ascii-map.html">The Map With Pages Behind It</a> · <a href="/singular.html">Singular</a> · <a href="/phext-previewer.html">Phext Previewer</a> · <a href="/wiki/">Example wiki</a> · <a href="/zeros">The Zero Index</a> · <a href="/heatmap">Heat map</a><br>
+      No sign-in needed: <a href="/up-goer-five.html">Up Goer Five</a> · <a href="/tts-demo.html">Coordinate TTS demo</a> · <a href="/learn-you-phext.html">Learn You Phext</a> · <a href="/ascii-map.html">The Map With Pages Behind It</a> · <a href="/scrollspace.html">Scrollspace</a> · <a href="/singular.html">Singular</a> · <a href="/phext-previewer.html">Phext Previewer</a> · <a href="/wiki/">Example wiki</a> · <a href="/zeros">The Zero Index</a> · <a href="/heatmap">Heat map</a><br>
       Have a phext of your own? <a href="/submit">Upload it for review</a> — if an editor accepts it, you become an editor too. Signing in with X makes you an editor at once.<br>
       Placed in the wavefront map? <a href="/claim">Claim your space</a> — a significant hosted space is already yours if your X account is in the map. Or <a href="/explore">explore the map</a> first. No ads, ever.<!--phext-sponsor--><br>
       Running build: <!--phext-build--></p>
@@ -10615,7 +10631,7 @@ mod public_route_tests {
         AppState, DemoCatalog, ABOUT_HTML, BACKGROUND_WEBP, BANNER_WEBP, BUILD_SLOT, BUILD_STAMP,
         CLAIM_HTML, EXPLORE_HTML, HEATMAP_HTML, INDEX_HTML,
         LEARN_YOU_PHEXT_HTML, NOT_FOUND_HTML, PREVIEWER_HTML, PRIVACY_HTML, ROBOTS_TXT, SHELL_CACHE,
-        SINGULAR_HTML, SITEMAP_XML, STATIC_CACHE, SUBMIT_HTML, TERMS_HTML, TTS_DEMO_HTML,
+        SCROLLSPACE_HTML, SINGULAR_HTML, SITEMAP_XML, STATIC_CACHE, SUBMIT_HTML, TERMS_HTML, TTS_DEMO_HTML,
         UP_GOER_FIVE_HTML, ZERO_INDEX_HTML, DEFAULT_COORD,
     };
     use phext_lattice::oauth::{Editors, Gate, Oauth};
@@ -11107,6 +11123,23 @@ mod public_route_tests {
         assert!(INDEX_HTML.contains("Heat map</a>"), "shell link label");
         assert!(ABOUT_HTML.contains("href=\"heatmap\""), "about link");
         assert!(SITEMAP_XML.contains("https://edit.phext.io/heatmap</loc>"), "sitemap entry");
+    }
+
+    #[test]
+    fn scrollspace_page_is_public_and_linked() {
+        let gate = locked_gate();
+        let page = get(&gate, "/scrollspace.html");
+        assert_eq!(page.status, 200);
+        assert!(page.content_type.contains("text/html"), "{}", page.content_type);
+        assert!(page.body.contains("SCROLLSPACE"));
+        // The compiled bytes are the web/ file, dataset and all.
+        assert_eq!(public_document("/scrollspace.html").unwrap().body, SCROLLSPACE_HTML);
+
+        // Discoverability: the shell's sign-in screen, the About page's
+        // utility list, and the sitemap all link it.
+        assert!(INDEX_HTML.contains("href=\"/scrollspace.html\""), "shell link");
+        assert!(ABOUT_HTML.contains("href=\"scrollspace.html\""), "about link");
+        assert!(SITEMAP_XML.contains("https://edit.phext.io/scrollspace.html</loc>"), "sitemap entry");
     }
 
     #[test]
