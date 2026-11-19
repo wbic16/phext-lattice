@@ -12192,6 +12192,25 @@ mod http_tests {
     }
 
     #[test]
+    fn scrollspace_opening_a_scroll_releases_mouse_capture() {
+        // Task 28.5.7/6.5.9/4.5.8 (Will, 2026-11-19): "Automatically
+        // drop out of mouse-capture mode when opening a scroll on
+        // scrollspace". Pointer lock is canvas flight steering at
+        // L0-L3 (click canvas to capture); it persisted onto the
+        // plane, where plane cell clicks are dead while locked and
+        // the #planefoot editor link is unreachable. enterPlane()
+        // and openRead() — the two funnels every scroll opening
+        // passes through — now release capture first. Re-capture
+        // stays the existing canvas click at a flight level.
+        assert!(SCROLLSPACE_HTML.contains("function releaseCapture(){ if(document.pointerLockElement&&document.exitPointerLock) document.exitPointerLock(); }"));
+        assert!(SCROLLSPACE_HTML.contains("async function enterPlane(){\n  releaseCapture();"));
+        assert!(SCROLLSPACE_HTML.contains("async function openRead(ref){\n  releaseCapture();"));
+        // capture itself is untouched: still requested only from the
+        // canvas click handler at flight levels
+        assert!(SCROLLSPACE_HTML.contains("if(S.level<4&&document.pointerLockElement!==cv&&cv.requestPointerLock) cv.requestPointerLock();"));
+    }
+
+    #[test]
     fn favicon_ico_is_an_icon_and_the_svg_keeps_its_type() {
         let (ico_type, ico) = public_asset("/favicon.ico").unwrap();
         assert_eq!(ico_type, "image/x-icon");
