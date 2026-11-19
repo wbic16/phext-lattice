@@ -2106,7 +2106,28 @@ fn handle_request(
             let target = std::path::Path::new(&path_str);
             let tei = state.phext_dir.is_some()
                 && ((target.is_file() && is_tei_xml(target)) || target.is_dir());
+            // Opening a phext is a viewport move, open to everyone
+            // since the gate went by operation — with two guards for
+            // what a switch can do beyond moving the view.
+            let editor_session = matches!(gate.session(&headers), Some(s) if gate.is_editor(&s));
+            if state.dirty && gate.locked() && !gate.is_local() && !editor_session {
+                // open_phext resets the dirty flag without saving, so
+                // a switch strands unsaved edits. Editors keep the
+                // behaviour they have always had; anyone else waits
+                // until the edits are saved (as go_home and
+                // set_universe already refuse dirty switches).
+                json_response(stream, &headers, &ApiOk { ok: false, message: "unsaved changes are being edited; sign in as an editor to switch phexts".into() });
+                return;
+            }
             if tei {
+                // Converting a TEI source WRITES a new phext into
+                // the library — a write inside a viewport route, so
+                // the conversion keeps the editor requirement even
+                // though opening an existing phext no longer has one.
+                if gate.locked() && !gate.is_local() && !editor_session {
+                    send_response(stream, 401, "application/json", br#"{"ok":false,"error":"unauthorized"}"#, CacheClass::NoStore, &headers, false);
+                    return;
+                }
                 match state.open_tei(target) {
                     Ok(message) => json_response(stream, &headers, &ApiOk { ok: true, message }),
                     Err(e) => json_response(stream, &headers, &ApiOk { ok: false, message: e }),
@@ -6553,12 +6574,25 @@ mod local_mode_tests {
     }
 
     #[test]
-    fn protected_routes_require_auth_without_local() {
+    fn reads_are_open_and_writes_require_auth_without_local() {
         let (port, _dir) = serve(false);
+        // Reads answer signed-out (Will, 2026-11-19: "only require
+        // a login to edit").
         let (code, body) = http(port, "GET", "/api/status", "");
-        assert_eq!(code, 401, "{body}");
+        assert_eq!(code, 200, "{body}");
+        assert!(response_body(&body).contains("note.phext"), "{body}");
         let (code, _) = http(port, "GET", "/api/nav", "");
-        assert_eq!(code, 401);
+        assert_eq!(code, 200);
+        // Writes refuse signed-out callers with the app's 401.
+        let (code, body) = http_with_body(
+            port, "POST", "/api/update", "Content-Type: application/json\r\n",
+            "{\"coordinate\":\"1.1.1/1.1.1/1.1.1\",\"content\":\"draft\"}",
+        );
+        assert_eq!(code, 401, "{body}");
+        let (code, body) = http_with_body(port, "POST", "/api/save", "", "");
+        assert_eq!(code, 401, "{body}");
+        let (code, body) = http_with_body(port, "POST", "/api/images", "", "");
+        assert_eq!(code, 401, "{body}");
         let (code, body) = http(port, "GET", "/api/session", "");
         assert_eq!(code, 200, "{body}");
         assert!(body.contains("\"signed_in\":false"));
@@ -7511,10 +7545,11 @@ mod local_mode_tests {
     }
 
     #[test]
-    fn seed_requires_the_editor_gate() {
+    fn seed_is_a_read_open_signed_out() {
         let (port, _dir) = serve(false);
-        let (code, _) = http(port, "GET", "/api/seed", "");
-        assert_eq!(code, 401);
+        let (code, body) = http(port, "GET", "/api/seed", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(response_body(&body).contains("note.phext"), "{body}");
     }
 
     #[test]
@@ -7585,7 +7620,7 @@ mod local_mode_tests {
     }
 
     #[test]
-    fn switching_phexts_changes_nav_when_local_and_when_signed_in() {
+    fn switching_phexts_changes_nav_locally_signed_out_and_signed_in() {
         assert!(INDEX_HTML.contains("p.file"));
         assert!(INDEX_HTML.contains("await initApp();"));
         assert!(INDEX_HTML.contains("lastNav.position?.file"));
@@ -7594,16 +7629,91 @@ mod local_mode_tests {
         assert_switch_changes_scroll(port, dir.path(), "");
 
         let (port, dir) = serve(false);
-        let other = dir.path().join("other.phext");
-        std::fs::write(&other, b"other scroll\n").unwrap();
-        let (code, denied) = open_phext(port, &other, "");
-        assert_eq!(code, 401, "{denied}");
+        // Signed out: opening a hosted phext is a viewport move and
+        // works without an account now.
+        assert_switch_changes_scroll(port, dir.path(), "");
+        // Signed in as an editor: the same switch, as before.
         let cookie = Oauth::test_session_cookie();
         let session = format!("Cookie: phext_session={cookie}\r\nx-csrf-token: {TEST_CSRF}\r\n");
         let (code, status) = http(port, "GET", "/api/status", &session);
         assert_eq!(code, 200, "{status}");
         assert!(response_body(&status).contains("note.phext"), "{status}");
         assert_switch_changes_scroll(port, dir.path(), &session);
+    }
+
+    #[test]
+    fn tei_conversion_still_requires_an_editor() {
+        // Opening an existing phext is a signed-out viewport move
+        // now, but opening a TEI source CONVERTS it — writing a new
+        // phext into the library — so that leg keeps the editor
+        // requirement (task 23.4.7/7.4.7/5.4.6).
+        let (port, dir) = serve(false);
+        let xml = dir.path().join("book.xml");
+        std::fs::write(&xml, b"<TEI xmlns=\"http://www.tei-c.org/ns/1.0\"><text><body><p>hi</p></body></text></TEI>").unwrap();
+
+        let (code, denied) = open_phext(port, &xml, "");
+        assert_eq!(code, 401, "{denied}");
+        assert!(response_body(&denied).contains("\"error\":\"unauthorized\""), "{denied}");
+        assert!(!dir.path().join("book.phext").exists(), "no conversion happened");
+
+        // A signed-in non-editor is refused the same way.
+        let (port2, dir2, _gate) = serve_gate(
+            Gate::new(Oauth::test_ready(), Editors::parse("google:sub-1")),
+            false,
+        );
+        let xml2 = dir2.path().join("book.xml");
+        std::fs::write(&xml2, b"<TEI xmlns=\"http://www.tei-c.org/ns/1.0\"><text><body><p>hi</p></body></text></TEI>").unwrap();
+        let outsider = format!("Cookie: phext_session={}\r\n", Oauth::test_session_cookie());
+        let (code, denied) = open_phext(port2, &xml2, &outsider);
+        assert_eq!(code, 401, "{denied}");
+        assert!(!dir2.path().join("book.phext").exists(), "no conversion happened");
+
+        // An editor session converts and opens, as before. (With an
+        // empty editor list any signed-in account is an editor.)
+        let cookie = Oauth::test_session_cookie();
+        let session = format!("Cookie: phext_session={cookie}\r\nx-csrf-token: {TEST_CSRF}\r\n");
+        let (code, opened) = open_phext(port, &xml, &session);
+        assert_eq!(code, 200, "{opened}");
+        assert!(!response_body(&opened).contains("\"error\":\"unauthorized\""), "{opened}");
+    }
+
+    #[test]
+    fn a_signed_out_switch_cannot_strand_unsaved_edits() {
+        // While the open phext holds unsaved edits, a signed-out
+        // (or non-editor) phext switch is refused — open_phext
+        // would reset the dirty flag and strand the edits. Saving
+        // releases the switch (task 23.4.7/7.4.7/5.4.6).
+        let (port, dir) = serve(false);
+        let other = dir.path().join("other.phext");
+        std::fs::write(&other, b"other scroll\n").unwrap();
+        let cookie = Oauth::test_session_cookie();
+        let session = format!("Cookie: phext_session={cookie}\r\nx-csrf-token: {TEST_CSRF}\r\n");
+
+        // The editor drafts a change: the file is now dirty.
+        let (code, updated) = http_with_body(
+            port, "POST", "/api/update", &session,
+            "{\"coordinate\":\"1.1.1/1.1.1/1.1.1\",\"content\":\"draft in progress\"}",
+        );
+        assert_eq!(code, 200, "{updated}");
+        assert!(response_body(&updated).contains("\"ok\":true"), "{updated}");
+
+        // Signed out, the switch is refused and the view stays put.
+        let (code, refused) = open_phext(port, &other, "");
+        assert_eq!(code, 200, "{refused}");
+        assert!(response_body(&refused).contains("\"ok\":false"), "{refused}");
+        assert!(response_body(&refused).contains("unsaved changes"), "{refused}");
+        let (code, status) = http(port, "GET", "/api/status", "");
+        assert_eq!(code, 200, "{status}");
+        assert!(response_body(&status).contains("note.phext"), "{status}");
+        assert!(response_body(&status).contains("\"dirty\":true"), "{status}");
+
+        // The editor saves; the same signed-out switch now works.
+        let (code, saved) = http_with_body(port, "POST", "/api/save", &session, "");
+        assert_eq!(code, 200, "{saved}");
+        assert!(response_body(&saved).contains("\"ok\":true"), "{saved}");
+        let (code, opened) = open_phext(port, &other, "");
+        assert_eq!(code, 200, "{opened}");
+        assert!(response_body(&opened).contains("\"ok\":true"), "{opened}");
     }
 }
 
@@ -10797,7 +10907,9 @@ function bootEditor() {
     .then(async nav => { await serveScrollFromCache(nav); render(nav); initApp(); });
 }
 
-// Initial load. Signed-out visitors stay on the intro and do not call the editor API.
+// Initial load. The boot IIFE at the end of this script chooses between
+// the demo, the wiki, a sign-in handoff, and the editor itself — which
+// signed-out visitors now get in read mode (sign-in is for editing).
 window.addEventListener('popstate', () => {
   if (demoMode && !new URLSearchParams(location.search).has('demo')) location.reload();
   if (wikiMode && phextNameFromLocation() !== 'wiki') location.reload();
@@ -10822,15 +10934,31 @@ $('try-demo').addEventListener('click', (e) => {
     if (wantDemo) { await startDemo(); return; }
     const signedIn = session && (session.editor || !session.locked);
     if (signedIn) { await bootEditor(); return; }
+    // A ?next= handoff (Mutable SSO, the MCP authorize redirect)
+    // arrived here in order to sign in: the auth screen is that
+    // flow's destination, not an obstacle, so it stays up for it.
+    const handoff = nextOk(new URLSearchParams(location.search).get('next'));
     if (session && session.signed_in && !session.editor) {
-      needsAuth = true;
-      await showAuthScreen('', true);
+      if (handoff) {
+        needsAuth = true;
+        await showAuthScreen('', true);
+        return;
+      }
+      // Signed in without an editor's place: reading is open to
+      // everyone now, so browse; the editor-list refusal arrives
+      // with the first edit attempt instead of at the door.
+      await bootEditor();
       return;
     }
     // Signed out at /wiki/: the example wiki reads without an
     // account. Signed-in visitors took the editor branches above.
     if (phextNameFromLocation() === 'wiki') { await startWiki(); return; }
-    paintProviders();
+    if (handoff) { paintProviders(); return; }
+    // Signed out: browse and read without an account — sign-in is
+    // for editing. The first edit attempt answers 401/403 in api(),
+    // which raises the auth screen with next = this page, so the
+    // sign-in returns to the scroll being edited.
+    await bootEditor();
   } catch (e) {
     if (!needsAuth) console.error(e);
   }
@@ -11635,26 +11763,29 @@ mod public_route_tests {
     }
 
     #[test]
-    fn api_paths_still_return_json_and_bearer_headers_no_longer_admit() {
+    fn api_paths_return_json_reads_open_and_bearer_headers_admit_no_writes() {
         let gate = locked_gate();
-        let denied = get(&gate, "/api/nav");
-        assert_eq!(denied.status, 401);
-        assert!(denied.content_type.starts_with("application/json"));
-        assert!(denied.body.contains("\"error\":\"unauthorized\""));
-        assert!(!denied.body.contains("<html"));
-        assert!(!denied.head.to_ascii_lowercase().contains("access-control-allow-origin"));
-        assert!(header_line(&denied.head, "cache-control").contains("no-store"));
+        // Reads are open signed-out now (Will, 2026-11-19: "only
+        // require a login to edit") — and still JSON, never HTML.
+        let nav = get(&gate, "/api/nav");
+        assert_eq!(nav.status, 200);
+        assert!(nav.content_type.starts_with("application/json"));
+        assert!(!nav.body.contains("<html"));
+        assert!(!nav.head.to_ascii_lowercase().contains("access-control-allow-origin"));
+        assert!(header_line(&nav.head, "cache-control").contains("no-store"));
 
         let unknown = get(&gate, "/api/does-not-exist");
-        assert_eq!(unknown.status, 401);
+        assert_eq!(unknown.status, 404);
         assert!(unknown.content_type.starts_with("application/json"));
+        assert!(unknown.body.contains("\"error\":\"not found\""));
         assert!(!unknown.body.contains("<html"));
 
-        // The old static-token auth was removed: a Bearer header admits
-        // nobody now, on known or unknown paths alike.
+        // The old static-token auth was removed: a Bearer header
+        // admits no WRITE now, on known or unknown paths alike.
+        // (On a read it is simply ignored — reads are open.)
         let bearer = http(
             &gate,
-            "GET /api/status HTTP/1.1\r\nHost: edit.phext.io\r\nAuthorization: Bearer s3cret-token\r\nConnection: close\r\n\r\n",
+            "POST /api/update HTTP/1.1\r\nHost: edit.phext.io\r\nAuthorization: Bearer s3cret-token\r\nConnection: close\r\n\r\n",
         );
         assert_eq!(bearer.status, 401, "{}", bearer.body);
         assert!(bearer.content_type.starts_with("application/json"));
@@ -11662,7 +11793,7 @@ mod public_route_tests {
 
         let bearer_missing = http(
             &gate,
-            "GET /api/does-not-exist HTTP/1.1\r\nHost: edit.phext.io\r\nAuthorization: Bearer s3cret-token\r\nConnection: close\r\n\r\n",
+            "POST /api/does-not-exist HTTP/1.1\r\nHost: edit.phext.io\r\nAuthorization: Bearer s3cret-token\r\nConnection: close\r\n\r\n",
         );
         assert_eq!(bearer_missing.status, 401);
         assert!(bearer_missing.content_type.starts_with("application/json"));
@@ -12113,7 +12244,7 @@ mod share_metadata_tests {
         let state_bg = Arc::clone(&state);
         let gate_bg = Arc::clone(&gate);
         let server = std::thread::spawn(move || {
-            for _ in 0..17 {
+            for _ in 0..18 {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
                 stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
@@ -12227,18 +12358,25 @@ mod share_metadata_tests {
         assert!(sitemap.contains("https://edit.phext.io/terms"));
         assert!(sitemap.contains("https://edit.phext.io/about"));
 
+        // Reads are open even on a locked server (Will, 2026-11-19:
+        // "only require a login to edit"); writes are not.
         let (status, _, _) = http(
             port,
             "GET /api/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
         );
-        assert_eq!(status, 401);
+        assert_eq!(status, 200);
         let (status, headers, _) = http(
             port,
             "GET /api/nav HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
         );
-        assert_eq!(status, 401);
+        assert_eq!(status, 200);
         assert!(header(&headers, "access-control-allow-origin").is_empty());
         assert!(header(&headers, "cache-control").contains("no-store"));
+        let (status, _, _) = http(
+            port,
+            "POST /api/update HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        assert_eq!(status, 401);
 
         let (status, headers, _) = http(
             port,
@@ -12551,9 +12689,12 @@ mod link_tests {
         assert_eq!(status, 200);
         assert!(header(&head, "Content-Type").starts_with("image/"));
         assert!(!body.contains(secret));
+        // The open file's nav is a read — open signed-out now. It
+        // still carries only the OPEN file's view: jonas's scroll
+        // text does not leak into aaa's nav.
         let (status, _, body) = get(port, "/api/nav", "");
-        assert_eq!(status, 401);
-        assert!(body.contains("unauthorized"));
+        assert_eq!(status, 200);
+        assert!(!body.contains("unauthorized"));
         assert!(!body.contains(marker));
 
         let cookie = Oauth::test_session_cookie();
@@ -12879,7 +13020,7 @@ mod demo_tests {
     }
 
     #[test]
-    fn signed_out_demo_is_public_and_real_files_stay_locked() {
+    fn signed_out_demo_is_public_and_real_files_are_readable_but_not_writable() {
         let dir = tempfile::tempdir().unwrap();
         let phext = dir.path().join("real.phext");
         std::fs::write(&phext, b"hello-real-file-marker").unwrap();
@@ -12921,16 +13062,20 @@ mod demo_tests {
         assert!(body.contains("1.1.1/1.1.1/1.1.2"));
         assert!(body.contains("tenth and eleventh"));
 
+        // Reading the real file is open signed-out now (Will,
+        // 2026-11-19: "only require a login to edit") — the marker
+        // is the file's scroll text, served by its nav like any
+        // reader's. A Bearer header changes nothing either way.
         let (status, body) = exchange(port, "GET /api/nav HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-        assert_eq!(status, 401, "{body}");
-        assert!(!body.contains("hello-real-file-marker"));
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("hello-real-file-marker"));
 
         let (status, body) = exchange(
             port,
             "GET /api/nav HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer s3cret\r\nConnection: close\r\n\r\n",
         );
-        assert_eq!(status, 401, "{body}");
-        assert!(!body.contains("hello-real-file-marker"));
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("hello-real-file-marker"));
 
         let cookie = format!("phext_session={}", Oauth::test_session_cookie());
         let (status, body) = exchange(
@@ -12959,7 +13104,7 @@ mod demo_tests {
     }
 
     #[test]
-    fn signed_out_example_wiki_is_public_and_other_files_stay_locked() {
+    fn signed_out_example_wiki_is_public_and_other_files_are_readable_but_not_writable() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("real.phext"), b"hello-real-file-marker").unwrap();
         // A two-scroll example wiki beside the real file.
@@ -13032,13 +13177,22 @@ mod demo_tests {
         assert_eq!(status, 405, "{body}");
         assert!(body.contains("read-only"));
 
-        // The real file and the file list stay behind the gate: the
-        // public routes expose the example wiki and nothing else.
+        // The wiki routes still expose only the wiki — but the real
+        // file and the file list are READS, open signed-out since
+        // the gate went by operation (Will, 2026-11-19). What stays
+        // behind the gate is writing, asserted below.
         let (status, body) = exchange(port, "GET /api/nav HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-        assert_eq!(status, 401, "{body}");
-        assert!(!body.contains("hello-real-file-marker"));
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("hello-real-file-marker"));
 
-        let (status, _body) = exchange(port, "GET /api/phexts HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        let (status, body) = exchange(port, "GET /api/phexts HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("real.phext"), "{body}");
+
+        let (status, _) = exchange(
+            port,
+            "POST /api/update HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+        );
         assert_eq!(status, 401);
     }
 
@@ -14828,8 +14982,10 @@ mod image_tests {
         assert_eq!(status, 404);
         let (status, _h, _b) = get(port, "/api/media/nope", true);
         assert_eq!(status, 404);
+        // Media is a read: signed out it 404s like any empty slot
+        // instead of hiding behind the gate.
         let (status, _h, _b) = get(port, "/api/media/9.9.9/9.9.9/1.1.1", false);
-        assert_eq!(status, 401);
+        assert_eq!(status, 404);
     }
 
     #[test]
