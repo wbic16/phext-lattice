@@ -1,13 +1,20 @@
-/// Memory-mapped phext file access.
+/// Memory-mapped phext file access — re-implemented on HoloPhext.
 ///
-/// The editor's I/O foundation. Instead of loading entire phext files into
-/// a String (which libphext-rs does everywhere), we memory-map the file and
-/// build a LatticeIndex over the raw bytes. Scroll content is only read
-/// when navigated to.
+/// This module was the editor's I/O foundation: a memory-mapped file,
+/// a LatticeIndex over the raw bytes, and a copy-on-write overlay,
+/// merged back into the file on save. Since the layer2 split
+/// (wbic16/holo-phext, DESIGN.md step 2) the plain-document mode is
+/// backed by the HoloPhext engine through its `MappedLattice`-shaped
+/// facade (`holo_phext::compat::LatticeStore`): the overlay is a
+/// staged transaction, and `save` is a commit plus a checkpoint —
+/// the same merged document lands in the file, but the staged batch
+/// is now crash-safe in a phext WAL on the way, and the base file is
+/// memory-mapped inside the engine.
 ///
-/// For mutation, we use a copy-on-write model: the mmap is read-only,
-/// and edits go into an overlay HashMap. On save, we reconstruct the
-/// phext from the overlay merged with the original spans.
+/// Chain files (multiverses) keep the original read path — one mmap,
+/// one index per member — because chains are read-only in the
+/// editor by design and HoloPhext stores are single documents.
+/// Every public signature is unchanged.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,6 +22,7 @@ use std::io;
 use memmap2::Mmap;
 use libphext::phext::Coordinate;
 use crate::index::{LatticeIndex, ScrollSpan};
+use holo_phext::compat::LatticeStore;
 
 /// One member phext (a "universe") of a chain file: its content byte
 /// range within the whole buffer, chain separators excluded.
@@ -100,29 +108,46 @@ fn chain_layout(bytes: &[u8]) -> (Vec<MemberSpan>, Vec<LatticeIndex>, bool) {
     (members, indexes, chain_class)
 }
 
-/// A memory-mapped phext document with copy-on-write editing.
+/// An overlay entry for a scroll that has been modified (chain mode;
+/// plain mode stages its edits inside the HoloPhext store instead).
+#[derive(Debug, Clone)]
+enum ScrollOverlay {
+    /// Modified content.
+    Modified(String),
+    /// Scroll has been deleted (exists in mmap but should be omitted on save).
+    Deleted,
+    /// New scroll inserted (no corresponding mmap span).
+    Inserted(String),
+}
+
+/// The mode-specific state behind the unified surface.
+enum Mode {
+    /// A plain phext, backed by a HoloPhext store: the engine holds
+    /// the memory-mapped base, the staged transaction is the overlay,
+    /// and the WAL beside the document carries commits until save
+    /// checkpoints them into the base file.
+    Plain { store: LatticeStore },
+    /// A chain file: the original read path — one mmap, per-member
+    /// indexes, and a local overlay. Read-only through `save`.
+    Chain {
+        mmap: Option<Mmap>,
+        overlay: HashMap<Coordinate, ScrollOverlay>,
+    },
+}
+
+/// A phext document with copy-on-write editing.
 ///
 /// The document may be a chain (a multiverse): several member phexts —
 /// universes — in one file. All read/write methods operate on the
 /// *active* universe (see `universe` / `set_universe`); a plain phext
 /// is a chain of one universe and behaves exactly as it always has.
 pub struct MappedLattice {
-    /// The underlying memory-mapped file (read-only).
-    ///
-    /// `None` only while `save` has dropped the map so the file can be
-    /// replaced. Windows refuses that rename while a view is still mapped.
-    mmap: Option<Mmap>,
-    /// Path to the backing file.
+    /// Path to the backing file (empty for `from_bytes`).
     path: PathBuf,
-    /// The active universe's coordinate → byte-span index.
-    /// Mirrors `member_indexes[active_member]`.
+    /// The active universe's coordinate → byte-span index over the
+    /// committed document. Mirrors `member_indexes[active_member]`.
     index: LatticeIndex,
-    /// Copy-on-write overlay: edited scrolls stored as owned Strings.
-    /// If a coordinate is in the overlay, it supersedes the mmap span.
-    /// The overlay belongs to the active universe; switching universes
-    /// is refused while it is non-empty.
-    overlay: HashMap<Coordinate, ScrollOverlay>,
-    /// Temp file handle kept alive for from_bytes mmap backing.
+    /// Temp file kept alive for from_bytes backing (removed on drop).
     _temp_file: Option<PathBuf>,
     /// Member ranges of the chain this file holds; exactly one entry
     /// covering the whole buffer for a plain (chain-free) phext.
@@ -134,17 +159,11 @@ pub struct MappedLattice {
     /// True when the file's stream structure is a real chain (see
     /// `is_chain_layout`). Chain files are read-only through `save`.
     chain_class: bool,
-}
-
-/// An overlay entry for a scroll that has been modified.
-#[derive(Debug, Clone)]
-enum ScrollOverlay {
-    /// Modified content.
-    Modified(String),
-    /// Scroll has been deleted (exists in mmap but should be omitted on save).
-    Deleted,
-    /// New scroll inserted (no corresponding mmap span).
-    Inserted(String),
+    /// Plain mode: the committed document's bytes (the index's
+    /// source, and the raw buffer while the store is clean).
+    /// Refreshed at open and at every save. Unused in chain mode.
+    doc_bytes: Vec<u8>,
+    mode: Mode,
 }
 
 /// Attach the operation and full path to an I/O failure.
@@ -155,24 +174,54 @@ fn io_at(op: &str, path: &Path, err: io::Error) -> io::Error {
     io::Error::new(err.kind(), format!("{op} {}: {err}", path.display()))
 }
 
+/// The WAL sibling HoloPhext keeps beside a base document.
+fn wal_sibling(base: &Path) -> PathBuf {
+    let name = base.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let stem = name.strip_suffix(".phext").unwrap_or(&name);
+    base.with_file_name(format!("{}.wal.phext", stem))
+}
+
 impl MappedLattice {
     /// Open a phext file and build the lattice index.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<MappedLattice> {
         let path = path.as_ref().to_path_buf();
         let mmap = map_file(&path)?;
-        let (members, member_indexes, chain_class) = chain_layout(&mmap);
-        let index = member_indexes[0].clone();
-
+        let (members, chains, closed) = split_chain(&mmap);
+        let chain_class = is_chain_layout(&members, chains, closed);
+        if chain_class {
+            let member_indexes: Vec<LatticeIndex> =
+                members.iter().map(|m| member_index(&mmap, *m)).collect();
+            let index = member_indexes[0].clone();
+            return Ok(MappedLattice {
+                path,
+                index,
+                _temp_file: None,
+                members,
+                member_indexes,
+                active_member: 0,
+                chain_class,
+                doc_bytes: Vec::new(),
+                mode: Mode::Chain { mmap: Some(mmap), overlay: HashMap::new() },
+            });
+        }
+        // Plain document: the index built here is the only full
+        // scan — it is handed to the store (open_with_index) rather
+        // than built a second time inside the engine.
+        let index = LatticeIndex::build(&mmap);
+        let member_indexes = vec![index.clone()];
+        let doc_bytes = mmap.to_vec();
+        drop(mmap);
+        let store = LatticeStore::open_with_index(&path, index.clone())?;
         Ok(MappedLattice {
-            mmap: Some(mmap),
             path,
             index,
-            overlay: HashMap::new(),
             _temp_file: None,
             members,
             member_indexes,
             active_member: 0,
             chain_class,
+            doc_bytes,
+            mode: Mode::Plain { store },
         })
     }
 
@@ -194,16 +243,19 @@ impl MappedLattice {
             drop(mmap);
             return MappedLattice::open(&path);
         }
+        let doc_bytes = mmap.to_vec();
+        drop(mmap);
+        let store = LatticeStore::open_with_index(&path, index.clone())?;
         Ok(MappedLattice {
-            mmap: Some(mmap),
             path,
             index: index.clone(),
-            overlay: HashMap::new(),
             _temp_file: None,
             members,
             member_indexes: vec![index],
             active_member: 0,
             chain_class: false,
+            doc_bytes,
+            mode: Mode::Plain { store },
         })
     }
 
@@ -219,25 +271,66 @@ impl MappedLattice {
         }
     }
 
+    // ── mode helpers ────────────────────────────────────────────────
+
+    fn chain_overlay(&self) -> Option<&HashMap<Coordinate, ScrollOverlay>> {
+        match &self.mode {
+            Mode::Chain { overlay, .. } => Some(overlay),
+            Mode::Plain { .. } => None,
+        }
+    }
+
+    fn chain_overlay_mut(&mut self) -> Option<&mut HashMap<Coordinate, ScrollOverlay>> {
+        match &mut self.mode {
+            Mode::Chain { overlay, .. } => Some(overlay),
+            Mode::Plain { .. } => None,
+        }
+    }
+
+    /// The bytes the member indexes address: the mmap in chain mode,
+    /// the committed document bytes in plain mode.
+    fn member_bytes(&self) -> &[u8] {
+        match &self.mode {
+            Mode::Chain { mmap, .. } => mmap.as_deref().expect("phext file is not mapped"),
+            Mode::Plain { .. } => &self.doc_bytes,
+        }
+    }
+
+    fn bytes(&self) -> &[u8] {
+        self.member_bytes()
+    }
+
+    /// Plain mode: re-derive the committed bytes and the index after
+    /// a save (or a save whose checkpoint leg failed — the commit is
+    /// durable in the WAL, so the committed view still advances).
+    fn refresh_committed(&mut self) {
+        if let Mode::Plain { store } = &self.mode {
+            self.doc_bytes = store.committed_bytes();
+            self.index = LatticeIndex::build(&self.doc_bytes);
+            self.member_indexes[0] = self.index.clone();
+        }
+    }
+
     /// Read the content of a scroll at the given coordinate.
     /// Returns the overlay version if edited, otherwise reads from mmap.
     pub fn read_scroll(&self, coord: &Coordinate) -> Option<String> {
-        // Check overlay first
-        if let Some(entry) = self.overlay.get(coord) {
-            return match entry {
-                ScrollOverlay::Modified(s) | ScrollOverlay::Inserted(s) => Some(s.clone()),
-                ScrollOverlay::Deleted => None,
-            };
-        }
-
-        // Fall back to mmap
-        if let Some(span) = self.index.get(coord) {
-            let bytes = self.bytes();
-            let bytes = &bytes[span.start..span.end];
-            // Phext content is UTF-8
-            Some(String::from_utf8_lossy(bytes).into_owned())
-        } else {
-            None
+        match &self.mode {
+            Mode::Plain { store } => store.read_scroll(coord),
+            Mode::Chain { .. } => {
+                if let Some(entry) = self.chain_overlay().and_then(|o| o.get(coord)) {
+                    return match entry {
+                        ScrollOverlay::Modified(s) | ScrollOverlay::Inserted(s) => Some(s.clone()),
+                        ScrollOverlay::Deleted => None,
+                    };
+                }
+                if let Some(span) = self.index.get(coord) {
+                    let bytes = self.bytes();
+                    let bytes = &bytes[span.start..span.end];
+                    Some(String::from_utf8_lossy(bytes).into_owned())
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -247,17 +340,22 @@ impl MappedLattice {
     /// is text (header + base64), but payloads are recovered from these
     /// bytes without any lossy conversion.
     pub fn read_scroll_bytes(&self, coord: &Coordinate) -> Option<Vec<u8>> {
-        if let Some(entry) = self.overlay.get(coord) {
-            return match entry {
-                ScrollOverlay::Modified(s) | ScrollOverlay::Inserted(s) => {
-                    Some(s.clone().into_bytes())
+        match &self.mode {
+            Mode::Plain { store } => store.read_scroll(coord).map(String::into_bytes),
+            Mode::Chain { .. } => {
+                if let Some(entry) = self.chain_overlay().and_then(|o| o.get(coord)) {
+                    return match entry {
+                        ScrollOverlay::Modified(s) | ScrollOverlay::Inserted(s) => {
+                            Some(s.clone().into_bytes())
+                        }
+                        ScrollOverlay::Deleted => None,
+                    };
                 }
-                ScrollOverlay::Deleted => None,
-            };
+                self.index
+                    .get(coord)
+                    .map(|span| self.bytes()[span.start..span.end].to_vec())
+            }
         }
-        self.index
-            .get(coord)
-            .map(|span| self.bytes()[span.start..span.end].to_vec())
     }
 
     /// The payload a fetch of this scroll returns, mirroring
@@ -319,7 +417,7 @@ impl MappedLattice {
                 ),
             ));
         }
-        if !self.overlay.is_empty() {
+        if self.is_dirty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unsaved changes; save or discard them before switching universes",
@@ -339,7 +437,7 @@ impl MappedLattice {
         }
         let idx = self.member_indexes.get(universe.checked_sub(1)?)?;
         idx.get(coord)
-            .map(|span| self.bytes()[span.start..span.end].to_vec())
+            .map(|span| self.member_bytes()[span.start..span.end].to_vec())
     }
 
     /// A scroll's content in `universe` (numbered from 1), without
@@ -376,10 +474,20 @@ impl MappedLattice {
     /// already validated. Prefer `write_scroll` for text and
     /// `write_binary` / `write_bytes` for payloads.
     pub fn write_scroll_raw(&mut self, coord: Coordinate, content: String) {
-        if self.index.contains(&coord) {
-            self.overlay.insert(coord, ScrollOverlay::Modified(content));
-        } else {
-            self.overlay.insert(coord, ScrollOverlay::Inserted(content));
+        match &mut self.mode {
+            Mode::Plain { store } => {
+                store.write_scroll(coord, content);
+            }
+            Mode::Chain { .. } => {
+                let entry = if self.index.contains(&coord) {
+                    ScrollOverlay::Modified(content)
+                } else {
+                    ScrollOverlay::Inserted(content)
+                };
+                if let Some(overlay) = self.chain_overlay_mut() {
+                    overlay.insert(coord, entry);
+                }
+            }
         }
     }
 
@@ -403,41 +511,57 @@ impl MappedLattice {
 
     /// Delete a scroll at the given coordinate.
     pub fn delete_scroll(&mut self, coord: Coordinate) {
-        if self.index.contains(&coord) {
-            self.overlay.insert(coord, ScrollOverlay::Deleted);
-        } else {
-            // If it was only in the overlay, just remove it
-            self.overlay.remove(&coord);
+        match &mut self.mode {
+            Mode::Plain { store } => store.delete_scroll(coord),
+            Mode::Chain { .. } => {
+                if self.index.contains(&coord) {
+                    if let Some(overlay) = self.chain_overlay_mut() {
+                        overlay.insert(coord, ScrollOverlay::Deleted);
+                    }
+                } else if let Some(overlay) = self.chain_overlay_mut() {
+                    overlay.remove(&coord);
+                }
+            }
         }
     }
 
     /// Check if a coordinate has content (considering overlay).
     pub fn has_scroll(&self, coord: &Coordinate) -> bool {
-        if let Some(entry) = self.overlay.get(coord) {
-            return !matches!(entry, ScrollOverlay::Deleted);
+        match &self.mode {
+            Mode::Plain { store } => store.has_scroll(coord),
+            Mode::Chain { .. } => {
+                if let Some(entry) = self.chain_overlay().and_then(|o| o.get(coord)) {
+                    return !matches!(entry, ScrollOverlay::Deleted);
+                }
+                self.index.contains(coord)
+            }
         }
-        self.index.contains(coord)
     }
 
     /// Get all populated coordinates, including overlay insertions,
     /// excluding overlay deletions. Returned in sorted order.
     pub fn populated_coordinates(&self) -> Vec<Coordinate> {
-        let mut coords: Vec<Coordinate> = self.index.coordinates()
-            .iter()
-            .copied()
-            .filter(|c| !matches!(self.overlay.get(c), Some(ScrollOverlay::Deleted)))
-            .collect();
-
-        // Add inserted coordinates from overlay
-        for (coord, entry) in &self.overlay {
-            if matches!(entry, ScrollOverlay::Inserted(_)) {
-                coords.push(*coord);
+        match &self.mode {
+            Mode::Plain { store } => store.populated_coordinates(),
+            Mode::Chain { .. } => {
+                let overlay = self.chain_overlay();
+                let mut coords: Vec<Coordinate> = self.index.coordinates()
+                    .iter()
+                    .copied()
+                    .filter(|c| !matches!(overlay.and_then(|o| o.get(c)), Some(ScrollOverlay::Deleted)))
+                    .collect();
+                if let Some(overlay) = overlay {
+                    for (coord, entry) in overlay {
+                        if matches!(entry, ScrollOverlay::Inserted(_)) {
+                            coords.push(*coord);
+                        }
+                    }
+                }
+                coords.sort();
+                coords.dedup();
+                coords
             }
         }
-
-        coords.sort();
-        coords.dedup();
-        coords
     }
 
     /// Number of populated scrolls (considering overlay).
@@ -447,23 +571,42 @@ impl MappedLattice {
 
     /// Check if there are unsaved modifications.
     pub fn is_dirty(&self) -> bool {
-        !self.overlay.is_empty()
+        match &self.mode {
+            Mode::Plain { store } => store.is_dirty(),
+            Mode::Chain { .. } => {
+                self.chain_overlay().map(|o| !o.is_empty()).unwrap_or(false)
+            }
+        }
     }
 
     /// Number of modified/inserted/deleted scrolls.
     pub fn pending_changes(&self) -> usize {
-        self.overlay.len()
+        match &self.mode {
+            Mode::Plain { store } => store.pending_changes(),
+            Mode::Chain { .. } => self.chain_overlay().map(|o| o.len()).unwrap_or(0),
+        }
     }
 
     /// Coordinates with unsaved edits (modified, inserted, or deleted), sorted.
     pub fn pending_coordinates(&self) -> Vec<Coordinate> {
-        let mut coords: Vec<Coordinate> = self.overlay.keys().copied().collect();
-        coords.sort();
-        coords
+        match &self.mode {
+            Mode::Plain { store } => store.pending_coordinates(),
+            Mode::Chain { .. } => {
+                let mut coords: Vec<Coordinate> = self
+                    .chain_overlay()
+                    .map(|o| o.keys().copied().collect())
+                    .unwrap_or_default();
+                coords.sort();
+                coords
+            }
+        }
     }
 
-    /// Save to the backing file. Reconstructs the phext from mmap + overlay.
-    /// Uses atomic rename via NamedTempFile to prevent partial-write corruption.
+    /// Save to the backing file. Plain documents commit their staged
+    /// transaction and checkpoint — the base file ends up holding
+    /// exactly the merged document, as the original rewrite save did,
+    /// and the staged batch was durable in the WAL on the way.
+    /// Chain files stay read-only here, with the reason named.
     pub fn save(&mut self) -> io::Result<()> {
         if self.chain_class {
             // The editor's save is a whole-file rewrite of one universe;
@@ -484,93 +627,94 @@ impl MappedLattice {
         if self.path.as_os_str().is_empty() {
             return Err(io::Error::new(io::ErrorKind::Other, "save: no backing file path"));
         }
-        let dest = self.path.clone();
-        let (content, spans, clean) = self.serialize();
+        // The replace contract: a destination that cannot be replaced
+        // (a directory sits where the file was) fails before anything
+        // commits, with the staged edits still in the overlay — the
+        // same shape the original's failed persist produced.
+        if self.path.exists() && !self.path.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::IsADirectory,
+                format!("replace {}: Is a directory (os error 21)", self.path.display()),
+            ));
+        }
+        let store = match &mut self.mode {
+            Mode::Plain { store } => store,
+            Mode::Chain { .. } => unreachable!("chain saves refused above"),
+        };
+        store.commit_staged()?;
+        if let Err(err) = store.checkpoint() {
+            // The commit is durable in the WAL; only the fold into
+            // the base file failed. Advance the committed view, then
+            // report in the shape the original's replace step used.
+            self.refresh_committed();
+            return Err(io_at("replace", &self.path, err));
+        }
+        self.refresh_committed();
+        Ok(())
+    }
 
-        // Write to a temp file in the same directory, then atomically rename.
-        // This ensures no partial-write state is ever visible on disk.
+    /// Save to a specific path.
+    pub fn save_as<P: AsRef<Path>>(&mut self, path: P) -> io::Result<()> {
+        let dest = path.as_ref().to_path_buf();
+        if self.chain_class {
+            // The original set the path, then let save() refuse.
+            self.path = dest;
+            return self.save();
+        }
+        if dest == self.path {
+            return self.save();
+        }
+        if self.path.as_os_str().is_empty() && self._temp_file.is_none() {
+            return Err(io::Error::new(io::ErrorKind::Other, "save: no backing file path"));
+        }
+        // Write the merged document to the new path with the
+        // original's temp + sync + rename discipline and error shapes.
+        let content = self.to_phext_bytes();
         let parent = dest.parent().unwrap_or_else(|| Path::new("."));
         let mut tmp = tempfile::NamedTempFile::new_in(parent)
             .map_err(|err| io_at("create temp file in", parent, err))?;
         {
             use std::io::Write;
-            let write_result = tmp.write_all(&content);
-            if let Err(err) = write_result {
-                return Err(io_at("write", tmp.path(), err));
-            }
+            tmp.write_all(&content).map_err(|err| io_at("write", tmp.path(), err))?;
         }
         tmp.as_file().sync_all().map_err(|err| io_at("sync", tmp.path(), err))?;
+        tmp.persist(&dest).map_err(|err| io_at("replace", &dest, err.error))?;
 
-        // Drop the map before the rename. On Windows the destination still
-        // has a mapped view, and MoveFileEx fails with ERROR_USER_MAPPED_FILE
-        // (os error 1224): "The requested operation cannot be performed on a
-        // file with a user-mapped section open." memmap2 also holds a
-        // duplicated file handle until the map is dropped. A zero-length file
-        // is not mapped, so the failure shows up once the phext has bytes —
-        // edit, insert a scroll, save. Linux rename succeeds either way.
-        drop(self.mmap.take());
-        let file = match tmp.persist(&dest) {
-            Ok(file) => file,
-            Err(err) => {
-                let replace_err = io_at("replace", &dest, err.error);
-                if let Err(reopen) = self.remap(&dest) {
-                    return Err(io::Error::new(
-                        replace_err.kind(),
-                        format!("{replace_err}; reopening the original file failed: {reopen}"),
-                    ));
-                }
-                return Err(replace_err);
-            }
-        };
-        // Map the handle persist just renamed. If that fails, reopen by path.
-        self.mmap = Some(match unsafe { Mmap::map(&file) } {
-            Ok(mmap) => mmap,
-            Err(err) => {
-                drop(file);
-                map_file(&dest).map_err(|_| io_at("memory-map", &dest, err))?
-            }
-        });
-
-        // The spans recorded while serializing are the index, unless an edit
-        // smuggled in delimiter bytes; then rescan.
-        let index = if clean {
-            LatticeIndex::from_entries(spans, self.bytes().len())
+        // Rebind the store to the new path. The old store's WAL is
+        // fully reflected in the bytes just written (the merged
+        // document includes every committed and staged edit), so it
+        // is removed rather than left as a stale log.
+        let old_base = if let Some(tmp) = &self._temp_file {
+            Some(tmp.clone())
+        } else if !self.path.as_os_str().is_empty() {
+            Some(self.path.clone())
         } else {
-            LatticeIndex::build(self.bytes())
+            None
         };
-        self.index = index;
-        // Single-member files only reach here (save refuses chains), so
-        // the active index is the one and only member index.
+        let store = LatticeStore::open(&dest)?;
+        self.mode = Mode::Plain { store };
+        self.path = dest;
+        if let Some(old) = old_base {
+            std::fs::remove_file(wal_sibling(&old)).ok();
+        }
+        self.doc_bytes = content;
+        self.index = LatticeIndex::build(&self.doc_bytes);
         self.member_indexes[0] = self.index.clone();
-        self.overlay.clear();
-
         Ok(())
-    }
-
-    /// Map `path` into `self.mmap`, replacing whatever was there.
-    fn remap(&mut self, path: &Path) -> io::Result<()> {
-        self.mmap = Some(map_file(path)?);
-        Ok(())
-    }
-
-    fn bytes(&self) -> &[u8] {
-        self.mmap.as_deref().expect("phext file is not mapped")
-    }
-
-    /// Save to a specific path.
-    pub fn save_as<P: AsRef<Path>>(&mut self, path: P) -> io::Result<()> {
-        self.path = path.as_ref().to_path_buf();
-        self.save()
     }
 
     /// Reconstruct the full phext as bytes from mmap + overlay.
     pub fn to_phext_bytes(&self) -> Vec<u8> {
-        self.serialize().0
+        match &self.mode {
+            Mode::Plain { store } => store.to_phext_bytes(),
+            Mode::Chain { .. } => self.serialize().0,
+        }
     }
 
-    /// Serialize mmap + overlay, recording each non-empty scroll's span as it is
-    /// written. The flag is false if an overlay scroll contains delimiter bytes,
-    /// in which case the recorded spans don't describe the output.
+    /// Serialize the active universe (chain mode), recording each
+    /// non-empty scroll's span as it is written. The flag is false if
+    /// an overlay scroll contains delimiter bytes, in which case the
+    /// recorded spans don't describe the output.
     fn serialize(&self) -> (Vec<u8>, Vec<(Coordinate, ScrollSpan)>, bool) {
         use libphext::phext::{
             SCROLL_BREAK, SECTION_BREAK, CHAPTER_BREAK, BOOK_BREAK,
@@ -583,9 +727,9 @@ impl MappedLattice {
         let mut spans: Vec<(Coordinate, ScrollSpan)> = Vec::with_capacity(coords.len());
         let mut clean = true;
         let mut current = default_coordinate();
+        let overlay = self.chain_overlay();
 
         for coord in coords {
-            // Emit delimiters to advance from `current` to `coord`
             while current.z.library < coord.z.library {
                 output.push(LIBRARY_BREAK as u8);
                 current.library_break();
@@ -623,9 +767,10 @@ impl MappedLattice {
                 current.scroll_break();
             }
 
-            // Write scroll content
             if let Some(content) = self.read_scroll(&coord) {
-                if self.overlay.contains_key(&coord) && content.bytes().any(crate::sidecar::is_break) {
+                if overlay.map(|o| o.contains_key(&coord)).unwrap_or(false)
+                    && content.bytes().any(crate::sidecar::is_break)
+                {
                     clean = false;
                 }
                 let start = output.len();
@@ -644,10 +789,23 @@ impl MappedLattice {
     /// Access the raw mmap buffer for search operations.
     /// Returns None if overlay has modifications (use to_phext_bytes instead).
     pub fn raw_buffer(&self) -> Option<&[u8]> {
-        if self.overlay.is_empty() {
-            self.mmap.as_deref()
-        } else {
-            None
+        match &self.mode {
+            // The store is clean exactly when the base file's bytes
+            // are the whole document; doc_bytes holds those bytes.
+            Mode::Plain { store } => {
+                if store.is_clean() {
+                    Some(&self.doc_bytes)
+                } else {
+                    None
+                }
+            }
+            Mode::Chain { mmap, overlay } => {
+                if overlay.is_empty() {
+                    mmap.as_deref()
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -663,7 +821,14 @@ impl MappedLattice {
 
     /// Discard all unsaved changes, reverting to the mmap state.
     pub fn revert(&mut self) {
-        self.overlay.clear();
+        match &mut self.mode {
+            Mode::Plain { store } => store.revert(),
+            Mode::Chain { .. } => {
+                if let Some(overlay) = self.chain_overlay_mut() {
+                    overlay.clear();
+                }
+            }
+        }
     }
 }
 
@@ -671,6 +836,7 @@ impl Drop for MappedLattice {
     fn drop(&mut self) {
         if let Some(ref tmp) = self._temp_file {
             std::fs::remove_file(tmp).ok();
+            std::fs::remove_file(wal_sibling(tmp)).ok();
         }
     }
 }
@@ -682,17 +848,32 @@ fn mapped_from_bytes(bytes: &[u8]) -> io::Result<MappedLattice> {
     // and, on Windows, fails with "The system cannot find the file specified.
     // (os error 2)" when the temp path does not resolve.
     let (tmp, file) = tempfile_from_bytes(bytes)?;
-    let mmap = unsafe { Mmap::map(&file) }.map_err(|err| io_at("memory-map", &tmp, err))?;
+    if chain_class {
+        let mmap = unsafe { Mmap::map(&file) }.map_err(|err| io_at("memory-map", &tmp, err))?;
+        return Ok(MappedLattice {
+            path: PathBuf::new(),
+            index,
+            _temp_file: Some(tmp),
+            members,
+            member_indexes,
+            active_member: 0,
+            chain_class,
+            doc_bytes: Vec::new(),
+            mode: Mode::Chain { mmap: Some(mmap), overlay: HashMap::new() },
+        });
+    }
+    drop(file);
+    let store = LatticeStore::open(&tmp)?;
     Ok(MappedLattice {
-        mmap: Some(mmap),
         path: PathBuf::new(),
         index,
-        overlay: HashMap::new(),
         _temp_file: Some(tmp),
         members,
         member_indexes,
         active_member: 0,
         chain_class,
+        doc_bytes: bytes.to_vec(),
+        mode: Mode::Plain { store },
     })
 }
 
@@ -722,7 +903,6 @@ fn tempfile_from_bytes(bytes: &[u8]) -> io::Result<(PathBuf, std::fs::File)> {
     file.sync_all().map_err(|err| io_at("sync", &path, err))?;
     Ok((path, file))
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

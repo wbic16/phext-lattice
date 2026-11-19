@@ -43,6 +43,25 @@ pub enum Dimension {
     Library = 9,
 }
 
+/// The lattice index lives in holo-phext now, and its
+/// `dimension_extent` takes holo-phext's own `Dimension`. The two
+/// enums name the same nine dimensions; this conversion is the seam.
+impl From<Dimension> for holo_phext::Dimension {
+    fn from(d: Dimension) -> Self {
+        match d {
+            Dimension::Library => holo_phext::Dimension::Library,
+            Dimension::Shelf => holo_phext::Dimension::Shelf,
+            Dimension::Series => holo_phext::Dimension::Series,
+            Dimension::Collection => holo_phext::Dimension::Collection,
+            Dimension::Volume => holo_phext::Dimension::Volume,
+            Dimension::Book => holo_phext::Dimension::Book,
+            Dimension::Chapter => holo_phext::Dimension::Chapter,
+            Dimension::Section => holo_phext::Dimension::Section,
+            Dimension::Scroll => holo_phext::Dimension::Scroll,
+        }
+    }
+}
+
 impl Dimension {
     /// Convert 1-9 key index to dimension. Returns None for out of range.
     pub fn from_index(i: u8) -> Option<Dimension> {
