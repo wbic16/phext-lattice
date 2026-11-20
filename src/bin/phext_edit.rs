@@ -1591,6 +1591,30 @@ fn response_bytes_with_csp(
     head_only: bool,
     csp_override: Option<&str>,
 ) -> Vec<u8> {
+    response_bytes_full(status, content_type, body, class, req_headers, head_only, csp_override, &[])
+}
+
+/// `response_bytes_with_csp` plus caller-supplied extra headers, emitted
+/// on both the 200 and the 304 head. Exists for the one deliberate
+/// cross-origin exception: /emise.woff2 carries
+/// `Access-Control-Allow-Origin: *` so Will can load the font from any
+/// origin (e.g. a browser userstyle on muse.ai, 2026-11-19). The font is
+/// a public pre-gate asset; font fetches carry no credentials and no
+/// session data rides the response.
+fn response_bytes_full(
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    class: CacheClass,
+    req_headers: &HashMap<String, String>,
+    head_only: bool,
+    csp_override: Option<&str>,
+    extra_headers: &[(&str, &str)],
+) -> Vec<u8> {
+    let extra = extra_headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect::<String>();
     let https = forwarded_https(req_headers);
     let etag = match class {
         CacheClass::NoStore => None,
@@ -1604,7 +1628,7 @@ fn response_bytes_with_csp(
                     _ => "",
                 };
                 let head = format!(
-                    "HTTP/1.1 304 Not Modified\r\nETag: {tag}\r\nCache-Control: {}\r\nContent-Length: 0\r\n{vary}Connection: close\r\n{}\r\n",
+                    "HTTP/1.1 304 Not Modified\r\nETag: {tag}\r\nCache-Control: {}\r\nContent-Length: 0\r\n{vary}{extra}Connection: close\r\n{}\r\n",
                     cache_control(class),
                     security_header_block_csp(https, csp_override)
                 );
@@ -1618,7 +1642,7 @@ fn response_bytes_with_csp(
         _ => "",
     };
     let mut out = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: {}\r\n{etag_line}{vary}Connection: close\r\n{}\r\n",
+        "HTTP/1.1 {} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: {}\r\n{etag_line}{vary}{extra}Connection: close\r\n{}\r\n",
         status,
         status_text(status),
         body.len(),
@@ -1642,6 +1666,22 @@ fn send_response(
     head_only: bool,
 ) {
     let bytes = response_bytes(status, content_type, body, class, req_headers, head_only);
+    let _ = stream.write_all(&bytes);
+    let _ = stream.flush();
+}
+
+/// `send_response` with extra response headers (see `response_bytes_full`).
+fn send_response_extra(
+    stream: &mut std::net::TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    class: CacheClass,
+    req_headers: &HashMap<String, String>,
+    head_only: bool,
+    extra_headers: &[(&str, &str)],
+) {
+    let bytes = response_bytes_full(status, content_type, body, class, req_headers, head_only, None, extra_headers);
     let _ = stream.write_all(&bytes);
     let _ = stream.flush();
 }
@@ -1820,12 +1860,20 @@ fn handle_request(
     // Same-origin fetches do not need CORS. Nothing else in this repo calls
     // the editor from another origin, and a wildcard would let any site read
     // responses alongside the session cookie. There is no OPTIONS preflight.
+    // The single exception is the Emise font below: a public asset Will
+    // loads cross-origin from other sites he uses, so its route — and only
+    // its route — answers Access-Control-Allow-Origin: *.
     // Icons and the share image stay before the auth gate, so a browser or a
     // crawler can fetch them without signing in. The bytes are compiled in.
     if let Some((content_type, body)) = public_asset(&path) {
+        let extra: &[(&str, &str)] = if path_route(&path) == "/emise.woff2" {
+            &[("Access-Control-Allow-Origin", "*")]
+        } else {
+            &[]
+        };
         match method.as_str() {
-            "GET" => send_response(stream, 200, content_type, body, CacheClass::Static, &headers, false),
-            "HEAD" => send_response(stream, 200, content_type, body, CacheClass::Static, &headers, true),
+            "GET" => send_response_extra(stream, 200, content_type, body, CacheClass::Static, &headers, false, extra),
+            "HEAD" => send_response_extra(stream, 200, content_type, body, CacheClass::Static, &headers, true, extra),
             _ => send_response(stream, 405, "text/plain", b"method not allowed", CacheClass::NoStore, &headers, false),
         }
         return;
@@ -8066,6 +8114,7 @@ const FAVICON_SVG: &[u8] = include_bytes!("../../web/favicon.svg");
 const APPLE_TOUCH_PNG: &[u8] = include_bytes!("../../web/apple-touch-icon.png");
 const OG_PNG: &[u8] = include_bytes!("../../web/og.png");
 const WILLBOT_MONO_WOFF2: &[u8] = include_bytes!("../../web/willbot-mono.woff2");
+const EMISE_WOFF2: &[u8] = include_bytes!("../../web/emise.woff2");
 
 /// Public icon and share-image routes. `path` may include a query string.
 /// Anything else (including `/robots.txt`, `/sitemap.xml`) is left for other routes.
@@ -8078,6 +8127,7 @@ fn public_asset(path: &str) -> Option<(&'static str, &'static [u8])> {
         }
         "/og.png" => Some(("image/png", OG_PNG)),
         "/willbot-mono.woff2" => Some(("font/woff2", WILLBOT_MONO_WOFF2)),
+        "/emise.woff2" => Some(("font/woff2", EMISE_WOFF2)),
         "/banner.webp" => Some(("image/webp", BANNER_WEBP)),
         "/background.webp" => Some(("image/webp", BACKGROUND_WEBP)),
         _ => None,
@@ -9078,12 +9128,21 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
   --z-color: #4dc9c9; --y-color: #c964c9; --x-color: #6bc96b;
   --active: #e8c547; --danger: #e05555;
   --trans-fast: 120ms ease; --trans-med: 200ms ease;
-  --font-text: 'Willbot Mono', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  --font-text: 'Emise', 'Willbot Mono', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-/* Willbot Mono — Will's own monospace face (web/willbot-mono.woff2,
-   served pre-gate by public_asset so signed-out readers load it too).
-   The scroll-text face: #content (read view) and the editor textarea. */
+/* Emise — the scroll-text face since 2026-11-19 (web/emise.woff2,
+   served pre-gate by public_asset so signed-out readers load it too):
+   #content (read view) and the editor textarea. A flowing, sharp, witty
+   monospace drawn as the evolution of Willbot Mono. */
+@font-face {
+  font-family: 'Emise';
+  src: url("/emise.woff2") format("woff2");
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+/* Willbot Mono — Will's own handwriting monospace (web/willbot-mono.woff2).
+   The former scroll-text face; now the fallback in --font-text and the
+   one-line rollback — its route and @font-face stay. */
 @font-face {
   font-family: 'Willbot Mono';
   src: url("/willbot-mono.woff2") format("woff2");
@@ -12189,24 +12248,34 @@ mod http_tests {
     }
 
     #[test]
-    fn willbot_mono_is_served_and_wired_for_scroll_text() {
-        // Will (2026-11-19): the jumped-to scroll text was unreadable in
-        // the old ligature-programming stacks ("the font is weird, the
-        // kernel is bad") — it renders in Willbot Mono now. The asset
-        // rides the pre-gate static route so signed-out readers load
-        // it too.
-        let (font_type, font) = public_asset("/willbot-mono.woff2").unwrap();
+    fn emise_is_served_and_wired_for_scroll_text() {
+        // Will (2026-11-19): "make an Emise font and use it instead -
+        // crafted to be a beautiful evolution of my intent" / "flowing
+        // lines, sharp and witty". Emise leads every reading stack; the
+        // asset rides the pre-gate static route so signed-out readers
+        // load it too. Willbot Mono stays served (fallback + rollback).
+        let (font_type, font) = public_asset("/emise.woff2").unwrap();
         assert_eq!(font_type, "font/woff2");
         assert!(font.starts_with(b"wOF2"));
-        assert!(public_asset("/willbot-mono.woff2?v=1").is_some());
+        assert!(public_asset("/emise.woff2?v=1").is_some());
+        assert!(public_asset("/willbot-mono.woff2").is_some(), "rollback route kept");
         for page in [INDEX_HTML, SCROLLSPACE_HTML] {
             assert!(page.contains("@font-face"), "font-face declared");
-            assert!(page.contains("'Willbot Mono'"), "face named");
-            assert!(page.contains("/willbot-mono.woff2"), "face src wired");
+            assert!(page.contains("'Emise'"), "face named");
+            assert!(page.contains("/emise.woff2"), "face src wired");
         }
-        assert!(INDEX_HTML.contains("--font-text: 'Willbot Mono'"));
+        // Will (2026-11-19 23:21 CST): the font must load cross-origin —
+        // he uses it on other sites via a browser userstyle — so the
+        // response head for its route carries the wildcard allow-origin.
+        let bytes = response_bytes_full(
+            200, font_type, font, CacheClass::Static, &hdr(&[]), false, None,
+            &[("Access-Control-Allow-Origin", "*")],
+        );
+        assert!(head_of(&bytes).contains("Access-Control-Allow-Origin: *\r\n"));
+        assert!(INDEX_HTML.contains("--font-text: 'Emise'"));
         assert!(INDEX_HTML.contains("font-family: var(--font-text);"));
-        assert!(SCROLLSPACE_HTML.contains("#read .body{font-family:'Willbot Mono'"));
+        assert!(SCROLLSPACE_HTML.contains("#read .body{font-family:'Emise'"));
+        assert!(SCROLLSPACE_HTML.contains("GLYPH_FONTS=\"'Emise'"));
     }
 
     #[test]
