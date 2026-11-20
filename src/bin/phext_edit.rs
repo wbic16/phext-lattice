@@ -27,6 +27,7 @@ use phext_lattice::submissions::{self, Submission, SubmissionStatus};
 use phext_lattice::traversals::{self, Traversal};
 use phext_lattice::wavefront;
 use sha2::Digest;
+#[cfg(test)]
 use xxhash_rust::xxh3::xxh3_128;
 
 // ── API Types ──────────────────────────────────────────────────────────
@@ -207,6 +208,42 @@ struct ApiScrollUnchanged {
     coordinate: String,
     hash: String,
     unchanged: bool,
+}
+
+/// The answer to `POST /api/diff`: how the open phext and a peer's
+/// envelope differ, scroll by scroll. Content-free — coordinates and
+/// hashes only, the seed envelope's discipline.
+#[derive(Serialize)]
+struct ApiDiff {
+    changed: Vec<ApiChangedEntry>,
+    only_local: Vec<ApiSeedEntry>,
+    only_peer: Vec<ApiSeedEntry>,
+}
+
+#[derive(Serialize)]
+struct ApiChangedEntry {
+    coordinate: String,
+    local_hash: String,
+    peer_hash: String,
+}
+
+/// The answer to `POST /api/merge`: which change scrolls were applied,
+/// which were already in place, and which were refused as conflicts
+/// (with the hashes that prove the refusal). A conflicted scroll is
+/// never silently overwritten.
+#[derive(Serialize)]
+struct ApiMerge {
+    applied: Vec<String>,
+    already_applied: Vec<String>,
+    conflicts: Vec<ApiConflict>,
+}
+
+#[derive(Serialize)]
+struct ApiConflict {
+    coordinate: String,
+    base_hash: Option<String>,
+    current_hash: Option<String>,
+    incoming_hash: Option<String>,
 }
 
 /// Available phext file metadata
@@ -657,16 +694,18 @@ fn scroll_view(
 /// The stored bytes are hashed — for a binary scroll that is its stored
 /// form (header + base64), the same bytes a fetch returns — so a client
 /// can verify any fetched scroll against the seed before trusting it.
+/// The implementation is the sync module's, so the seed envelope and a
+/// sync envelope built by the library are the same envelope.
 fn scroll_hash(lattice: &MappedLattice, coord: &libphext::phext::Coordinate) -> String {
     let stored = lattice.read_scroll_bytes(coord).unwrap_or_default();
-    xxh3_128(&stored).to_be_bytes().iter().map(|b| format!("{b:02x}")).collect()
+    phext_lattice::sync::hash_stored(&stored)
 }
 
 /// The seed-cache hash of one scroll in a named universe, without
 /// switching the active universe.
 fn scroll_hash_in(lattice: &MappedLattice, universe: usize, coord: &libphext::phext::Coordinate) -> String {
     let stored = lattice.read_scroll_bytes_in(universe, coord).unwrap_or_default();
-    xxh3_128(&stored).to_be_bytes().iter().map(|b| format!("{b:02x}")).collect()
+    phext_lattice::sync::hash_stored(&stored)
 }
 
 /// `scroll_view` for a scroll in a non-active universe: same shape,
@@ -2321,6 +2360,116 @@ fn handle_request(
                 }
             } else {
                 json_response(stream, &headers, &ApiOk { ok: false, message: "invalid json".into() });
+            }
+        }
+        // Scroll-by-scroll diff against a peer's envelope (task
+        // 29.6.9/8.6.11/7.6.9): the caller posts the peer's seed
+        // envelope — {"entries":[{"coordinate": "...", "hash": "..."}]}
+        // — and learns exactly which coordinates were added, changed,
+        // or removed between the two phexts. Content-free: nothing but
+        // coordinates and hashes crosses the wire, so two Wikibox nodes
+        // holding the same sealed baseline can find their divergence
+        // before a single scroll moves.
+        ("POST", "/api/diff") => {
+            let body = read_body(&mut reader, &headers);
+            let parsed = serde_json::from_str::<serde_json::Value>(&body).ok()
+                .and_then(|val| {
+                    let entries = val.get("entries")?.as_array()?;
+                    let mut peer = Vec::with_capacity(entries.len());
+                    for entry in entries {
+                        let coord = parse_coordinate(entry.get("coordinate")?.as_str()?)?;
+                        let hash = entry.get("hash")?.as_str()?.to_string();
+                        peer.push(phext_lattice::sync::EnvelopeEntry { coordinate: coord, hash });
+                    }
+                    Some(peer)
+                });
+            match parsed {
+                Some(peer) => {
+                    let diff = phext_lattice::sync::diff_envelopes(
+                        &phext_lattice::sync::envelope(&state.lattice),
+                        &peer,
+                    );
+                    json_response(stream, &headers, &ApiDiff {
+                        changed: diff.changed.iter().map(|c| ApiChangedEntry {
+                            coordinate: format!("{}", c.coordinate),
+                            local_hash: c.local_hash.clone(),
+                            peer_hash: c.peer_hash.clone(),
+                        }).collect(),
+                        only_local: diff.only_local.iter().map(|e| ApiSeedEntry {
+                            coordinate: format!("{}", e.coordinate),
+                            hash: e.hash.clone(),
+                        }).collect(),
+                        only_peer: diff.only_peer.iter().map(|e| ApiSeedEntry {
+                            coordinate: format!("{}", e.coordinate),
+                            hash: e.hash.clone(),
+                        }).collect(),
+                    });
+                }
+                None => {
+                    json_response(stream, &headers, &ApiOk { ok: false, message: "invalid envelope: expected {\"entries\":[{\"coordinate\": \"...\", \"hash\": \"...\"}]}".into() });
+                }
+            }
+        }
+        // Scroll-by-scroll merge (task 29.6.9/8.6.11/7.6.9): the caller
+        // posts change scrolls — {"changes":[{"coordinate": "...",
+        // "base_hash": "..." | null, "content": "..." | null}]} — and
+        // each applies only if the open phext's current hash for that
+        // coordinate still equals the change's base hash. A coordinate
+        // that has moved since the base is reported as a conflict and
+        // left exactly as it was; merge never silently overwrites.
+        // Like /api/update, a merge edits in memory — /api/save is what
+        // persists it.
+        ("POST", "/api/merge") => {
+            let body = read_body(&mut reader, &headers);
+            if state.lattice.is_chain() {
+                json_response(stream, &headers, &ApiOk { ok: false, message: format!(
+                    "chain files are read-only in the editor: this file holds {} universes; multiversal writes follow the WAL append path, not the editor's merge",
+                    state.lattice.universe_count()) });
+                return;
+            }
+            let parsed = serde_json::from_str::<serde_json::Value>(&body).ok()
+                .and_then(|val| {
+                    let items = val.get("changes")?.as_array()?;
+                    let mut changes = Vec::with_capacity(items.len());
+                    for item in items {
+                        let coord = parse_coordinate(item.get("coordinate")?.as_str()?)?;
+                        let base_hash = match item.get("base_hash") {
+                            Some(serde_json::Value::Null) | None => None,
+                            Some(v) => Some(v.as_str()?.to_string()),
+                        };
+                        let content = match item.get("content") {
+                            Some(serde_json::Value::Null) | None => None,
+                            Some(v) => Some(v.as_str()?.to_string()),
+                        };
+                        changes.push(phext_lattice::sync::ChangeScroll {
+                            coordinate: coord,
+                            base_hash,
+                            content,
+                        });
+                    }
+                    Some(changes)
+                });
+            match parsed {
+                Some(changes) => {
+                    let report = phext_lattice::sync::merge(&mut state.lattice, &changes);
+                    if !report.applied.is_empty() {
+                        state.dirty = true;
+                        state.rebuild_overview();
+                    }
+                    json_response(stream, &headers, &ApiMerge {
+                        applied: report.applied.iter().map(|c| format!("{c}")).collect(),
+                        already_applied: report.already_applied.iter().map(|c| format!("{c}")).collect(),
+                        conflicts: report.conflicts.iter().map(|c| ApiConflict {
+                            coordinate: format!("{}", c.coordinate),
+                            base_hash: c.base_hash.clone(),
+                            current_hash: c.current_hash.clone(),
+                            incoming_hash: c.incoming_hash.clone(),
+                        }).collect(),
+                    });
+                }
+                None => {
+                    json_response(stream, &headers, &ApiOk { ok: false, message: "invalid changes: expected {\"changes\":[{\"coordinate\": \"...\", \"base_hash\": \"...\" | null, \"content\": \"...\" | null}]}".into() });
+                }
             }
         }
         ("POST", "/api/save") => {
@@ -7679,6 +7828,99 @@ mod local_mode_tests {
         // The envelope carries hashes and nothing else: no scroll content.
         assert!(!body.contains("local note"), "{body}");
         assert!(!body.contains("second scroll"), "{body}");
+    }
+
+    /// The hash the seed envelope carries for one coordinate.
+    fn seed_hash(seed_body: &str, coordinate: &str) -> String {
+        let val: serde_json::Value = serde_json::from_str(seed_body).unwrap();
+        val["entries"].as_array().unwrap().iter()
+            .find(|e| e["coordinate"] == coordinate)
+            .map(|e| e["hash"].as_str().unwrap().to_string())
+            .unwrap_or_else(|| panic!("no seed entry for {coordinate}: {seed_body}"))
+    }
+
+    #[test]
+    fn diff_route_names_exactly_the_diverged_coordinates() {
+        let (port, dir) = serve(true);
+        open_two_scroll_phext(port, dir.path(), "");
+        let (code, seed) = http(port, "GET", "/api/seed", "");
+        assert_eq!(code, 200, "{seed}");
+        let seed_body = response_body(&seed).to_string();
+        let root_hash = seed_hash(&seed_body, "1.1.1/1.1.1/1.1.1");
+        let second_hash = seed_hash(&seed_body, "1.1.1/1.1.1/1.1.2");
+
+        // Identical envelope: no divergence.
+        let envelope = format!(
+            "{{\"entries\":[{{\"coordinate\":\"1.1.1/1.1.1/1.1.1\",\"hash\":\"{root_hash}\"}},{{\"coordinate\":\"1.1.1/1.1.1/1.1.2\",\"hash\":\"{second_hash}\"}}]}}"
+        );
+        let (code, diff) = http_with_body(port, "POST", "/api/diff", "Content-Type: application/json\r\n", &envelope);
+        assert_eq!(code, 200, "{diff}");
+        let body = response_body(&diff);
+        assert!(body.contains("\"changed\":[]"), "{body}");
+        assert!(body.contains("\"only_local\":[]"), "{body}");
+        assert!(body.contains("\"only_peer\":[]"), "{body}");
+
+        // A peer that changed the root, dropped the second scroll, and
+        // added one of its own: the diff names all three, by kind.
+        let peer = format!(
+            "{{\"entries\":[{{\"coordinate\":\"1.1.1/1.1.1/1.1.1\",\"hash\":\"{}\"}},{{\"coordinate\":\"1.1.1/1.1.1/1.1.3\",\"hash\":\"{}\"}}]}}",
+            phext_lattice::sync::hash_stored(b"someone else's root"),
+            phext_lattice::sync::hash_stored(b"peer only"),
+        );
+        let (code, diff) = http_with_body(port, "POST", "/api/diff", "Content-Type: application/json\r\n", &peer);
+        assert_eq!(code, 200, "{diff}");
+        let body = response_body(&diff);
+        assert!(body.contains("\"changed\":[{\"coordinate\":\"1.1.1/1.1.1/1.1.1\""), "{body}");
+        assert!(body.contains(&format!("\"local_hash\":\"{root_hash}\"")), "{body}");
+        assert!(body.contains("\"only_local\":[{\"coordinate\":\"1.1.1/1.1.1/1.1.2\""), "{body}");
+        assert!(body.contains("\"only_peer\":[{\"coordinate\":\"1.1.1/1.1.1/1.1.3\""), "{body}");
+        // Content-free: no scroll text anywhere in the answer.
+        assert!(!body.contains("local note"), "{body}");
+    }
+
+    #[test]
+    fn merge_route_applies_with_base_hash_and_reports_conflicts() {
+        let (port, dir) = serve(true);
+        open_two_scroll_phext(port, dir.path(), "");
+        let (code, seed) = http(port, "GET", "/api/seed", "");
+        assert_eq!(code, 200, "{seed}");
+        let base_hash = seed_hash(response_body(&seed), "1.1.1/1.1.1/1.1.2");
+
+        // A change against the current base applies.
+        let changes = format!(
+            "{{\"changes\":[{{\"coordinate\":\"1.1.1/1.1.1/1.1.2\",\"base_hash\":\"{base_hash}\",\"content\":\"second scroll, synced\"}}]}}"
+        );
+        let (code, merged) = http_with_body(port, "POST", "/api/merge", "Content-Type: application/json\r\n", &changes);
+        assert_eq!(code, 200, "{merged}");
+        let body = response_body(&merged);
+        assert!(body.contains("\"applied\":[\"1.1.1/1.1.1/1.1.2\"]"), "{body}");
+        assert!(body.contains("\"conflicts\":[]"), "{body}");
+        let (code, scroll) = http(port, "GET", "/api/scroll/1.1.1/1.1.1/1.1.2", "");
+        assert_eq!(code, 200, "{scroll}");
+        assert!(response_body(&scroll).contains("second scroll, synced"), "{scroll}");
+
+        // Re-sending the same change is already-applied, not a conflict.
+        let (code, merged) = http_with_body(port, "POST", "/api/merge", "Content-Type: application/json\r\n", &changes);
+        assert_eq!(code, 200, "{merged}");
+        let body = response_body(&merged);
+        assert!(body.contains("\"already_applied\":[\"1.1.1/1.1.1/1.1.2\"]"), "{body}");
+        assert!(body.contains("\"conflicts\":[]"), "{body}");
+
+        // A stale change — its base no longer matches, and its content
+        // is not what the scroll now holds — is a conflict: reported,
+        // and the scroll keeps its current content.
+        let stale = format!(
+            "{{\"changes\":[{{\"coordinate\":\"1.1.1/1.1.1/1.1.2\",\"base_hash\":\"{base_hash}\",\"content\":\"stale overwrite\"}}]}}"
+        );
+        let (code, merged) = http_with_body(port, "POST", "/api/merge", "Content-Type: application/json\r\n", &stale);
+        assert_eq!(code, 200, "{merged}");
+        let body = response_body(&merged);
+        assert!(body.contains("\"applied\":[]"), "{body}");
+        assert!(body.contains("\"conflicts\":[{\"coordinate\":\"1.1.1/1.1.1/1.1.2\""), "{body}");
+        let (code, scroll) = http(port, "GET", "/api/scroll/1.1.1/1.1.1/1.1.2", "");
+        assert_eq!(code, 200, "{scroll}");
+        assert!(response_body(&scroll).contains("second scroll, synced"), "{scroll}");
+        assert!(!response_body(&scroll).contains("stale overwrite"), "{scroll}");
     }
 
     #[test]
