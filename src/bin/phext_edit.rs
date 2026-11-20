@@ -12412,6 +12412,39 @@ mod http_tests {
     }
 
     #[test]
+    fn scrollspace_cleanup_one_quiet_system() {
+        // Task 21.7.10/8.7.10/7.6.9 (Will, 2026-11-19): "the
+        // scrollspace viewer really needs to be a lot cleaner ...
+        // this looks like a crackpot tech demo, not something you
+        // want to spend hours in" — plus his 22:07 CST plane steer:
+        // "the text should be centered, and presented as crisp,
+        // black text on a white background". The cleanup is one
+        // visual system (the Phext design language) over the same
+        // behaviour: flat panels ruled in Metallic Golden Phext,
+        // no gradients, no shadows, no blur; the help wall lives
+        // behind the ? keys door; the duplicated shift row of slots
+        // is gone; key caps render from BINDS; the theme follows
+        // the OS by default with a persisted explicit choice; the
+        // plane is a paper reading page drawn from one geometry
+        // helper; the footer carries the site's coordinate stamp.
+        assert!(SCROLLSPACE_HTML.contains("id=\"themebtn\""), "theme button");
+        assert!(SCROLLSPACE_HTML.contains("ss-theme"), "theme persistence key");
+        assert!(SCROLLSPACE_HTML.contains("data-theme-pref"), "theme preference marker");
+        assert!(SCROLLSPACE_HTML.contains("prefers-color-scheme: light"), "OS-preference default");
+        assert!(SCROLLSPACE_HTML.contains("id=\"helpbtn\""), "help door");
+        assert!(SCROLLSPACE_HTML.contains("id=\"helpclose\""), "help close");
+        assert!(!SCROLLSPACE_HTML.contains("linear-gradient"), "no gradients anywhere");
+        assert!(!SCROLLSPACE_HTML.contains("box-shadow"), "no soft shadows");
+        assert!(!SCROLLSPACE_HTML.contains("backdrop-filter"), "no glassmorphism");
+        assert!(!SCROLLSPACE_HTML.contains("BAR1KEYS"), "positional cap machinery gone");
+        assert!(SCROLLSPACE_HTML.contains("function capFor(a)"), "caps render from BINDS");
+        assert!(SCROLLSPACE_HTML.contains("function refreshCaps()"), "caps refresh after rebind");
+        assert!(SCROLLSPACE_HTML.contains("function planeGeom()"), "one sheet geometry helper");
+        assert!(SCROLLSPACE_HTML.contains("#fffdf6"), "paper sheet");
+        assert!(SCROLLSPACE_HTML.contains("edit.phext.io \u{b7} 61.5.8/10.5.8/9.8.9"), "domain coordinate stamp");
+    }
+
+    #[test]
     fn editor_shell_links_back_to_scrollspace() {
         // Task 30.6.8/6.5.9/5.5.8 (Will, 2026-11-19): "make sure you
         // can actually reach scrollspace.html from a logged in

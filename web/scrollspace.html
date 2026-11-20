@@ -4,153 +4,187 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Scrollspace — Exocortical Vision</title>
+<script>try{var p=localStorage.getItem("ss-theme")||"auto";var d=p==="dark"||(p==="auto"&&!(window.matchMedia&&matchMedia("(prefers-color-scheme: light)").matches));document.documentElement.setAttribute("data-theme",d?"dark":"light");document.documentElement.setAttribute("data-theme-pref",p);}catch(e){}</script>
 <style>
   @font-face{font-family:'Willbot Mono';src:url("/willbot-mono.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
+  /* Scrollspace chrome — one system (task 21.7.10/8.7.10/7.6.9).
+     Phext design language: flat panels, Metallic Golden Phext as
+     the rule/mark metal (edit.phext.io coordinate 61.5.8/10.5.8/
+     9.8.9 -> hue shift +2deg, header rule 2px, underlined tags,
+     blue/yellow leads), serif display, monospace stamps, sans
+     small-caps labels only. No gradients, no shadows, no blur.
+     The scene (canvas) and the plane room keep their own light;
+     the chrome themes around them. */
+  :root{
+    --gold:hsl(45,95%,55%); --gold-line:hsl(45,55%,30%);
+    --panel:#070708; --input:#050506;
+    --ink:#ece7db; --ink-dim:#a79f8d; --link:#ffd479;
+    --shelf-b:128px;
+    --serif:Georgia,'Iowan Old Style','Times New Roman',serif;
+    --mono:'Willbot Mono',ui-monospace,Menlo,Consolas,monospace;
+    --label:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  }
+  html[data-theme="light"]{
+    --gold:hsl(45,89%,38%); --gold-line:hsl(45,60%,42%);
+    --panel:#fffdf6; --input:#ffffff;
+    --ink:#211e17; --ink-dim:#6f6a5c; --link:#1e40af;
+  }
   *{box-sizing:border-box}
-  html,body{margin:0;padding:0;height:100%;background:#04060e;overflow:hidden;font-family:ui-monospace,Menlo,Consolas,monospace;color:#cfe3ff}
+  html,body{margin:0;padding:0;height:100%;background:#000;overflow:hidden;font-family:var(--mono);color:var(--ink)}
   #view{position:absolute;inset:0;display:block;cursor:crosshair;touch-action:none}
-  #hud{position:absolute;top:10px;left:12px;font-size:13px;line-height:1.5;pointer-events:none;text-shadow:0 1px 3px #000;max-width:60vw}
-  #hud .crumb{color:#8fb7ff}
-  #hud .coord{color:#ffd479;font-size:15px}
-  #hud .hint{color:#7d8aa5;font-size:12px}
-  #target{position:absolute;top:10px;right:12px;max-width:36%;text-align:right;font-size:13px;line-height:1.5;pointer-events:none;text-shadow:0 1px 3px #000}
-  #target .t{color:#ffe9a8}
-  #target .s{color:#7d8aa5;font-size:12px}
-  #target .p{color:#9fb8e8;font-size:12px;font-style:italic}
+  ::selection{background:var(--gold);color:#000}
+  :focus-visible{outline:2px solid var(--gold);outline-offset:1px}
+  /* shared instrument treatment: every button and input on the page */
+  #nav button,#readbtn,#rebindbtn,#trailctl button,#tourctl button,#tourtools button,
+  #tourssaverow button,#tourslist button,#planefoot a,#read .row button,#read .row a,
+  #readclose,.auth-btn{
+    background:var(--panel);border:1px solid var(--gold-line);border-radius:2px;color:var(--ink);
+    font-family:var(--label);text-transform:uppercase;letter-spacing:.08em;font-size:11px;
+    padding:8px 12px;cursor:pointer;text-decoration:none}
+  #nav button:hover,#readbtn:hover,#rebindbtn:hover,#trailctl button:hover,#tourctl button:hover,
+  #tourtools button:hover,#tourssaverow button:hover,#tourslist button:hover,#planefoot a:hover,
+  #read .row button:hover,#read .row a:hover,#readclose:hover,.auth-btn:hover{border-color:var(--gold);color:var(--gold)}
+  #jump,#tourname{background:var(--input);border:1px solid var(--gold-line);border-radius:2px;color:var(--ink);font-family:var(--mono);outline:none}
+  #jump:focus,#tourname:focus{border-color:var(--gold)}
+  /* HUD: one flat panel, top-left — location, coordinate stamp, one hint line */
+  #hud{position:absolute;top:10px;left:12px;font-size:13px;line-height:1.5;pointer-events:none;max-width:calc(50vw - 260px);
+    background:var(--panel);border:1px solid var(--gold-line);border-top:2px solid var(--gold);border-radius:2px;padding:7px 12px 8px}
+  #hud .crumb{color:var(--ink);font-size:12.5px;letter-spacing:.03em}
+  #hud .coord{color:var(--gold);font-size:14px}
+  #hud .hint{color:var(--ink-dim);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* target readout: one flat panel, top-right */
+  #target{position:absolute;top:10px;right:12px;max-width:calc(50vw - 260px);text-align:right;font-size:13px;line-height:1.5;pointer-events:none;
+    background:var(--panel);border:1px solid var(--gold-line);border-top:2px solid var(--gold);border-radius:2px;padding:7px 12px 8px}
+  #target .t{color:var(--gold)}
+  #target .s{color:var(--ink-dim);font-size:12px}
+  #target .p{color:var(--ink);font-family:var(--serif);font-size:12.5px;font-style:italic}
   #nav{position:absolute;top:52px;left:50%;transform:translateX(-50%);display:flex;gap:6px;z-index:5}
-  #nav input{width:min(430px,52vw);background:rgba(8,16,36,.92);border:1px solid #3c5a8f;border-radius:8px;color:#ffe9a8;font-family:inherit;font-size:14px;padding:8px 10px;outline:none}
-  #nav input:focus{border-color:#ffd479}
-  #nav button,#readbtn,#rebindbtn{background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:13px;padding:8px 12px;cursor:pointer}
-  #nav button:hover,#readbtn:hover,#rebindbtn:hover{border-color:#8fb7ff}
-  #readbtn{position:absolute;top:52px;right:12px;z-index:5;display:none}
-  /* Progress (cast) bar (task 32.9.13/7.5.8/6.4.8): larger — 520x22
-     in place of 340x12 — and above the buttons: the wrap's bottom
-     edge (196px) clears the button stack's top edge (178px = 10px
-     base + three 52px rows + two 6px gaps) by 18px. */
+  #nav input{width:min(430px,52vw);font-size:14px;padding:8px 10px}
+  #readbtn{position:absolute;top:112px;right:12px;z-index:5;display:none}
+  /* Progress (cast) bar (task 32.9.13/7.5.8/6.4.8): 520x22, wrap at
+     bottom:196px, above the button stack. Flat gold fill now — the
+     old blue gradient fill is gone with the rest of the gradients. */
   #castwrap{position:absolute;left:50%;bottom:196px;transform:translateX(-50%);width:min(520px,88vw);display:none;z-index:6}
-  #castlabel{text-align:center;font-size:14px;color:#ffe9a8;margin-bottom:6px;text-shadow:0 1px 3px #000}
-  #castbar{height:22px;border:1px solid #5b7bb4;border-radius:10px;background:#0a1224;overflow:hidden}
-  #castfill{height:100%;width:0%;background:linear-gradient(90deg,#3f7cff,#9fd0ff)}
+  #castlabel{text-align:center;font-size:14px;color:var(--gold);margin-bottom:6px;letter-spacing:.04em}
+  #castbar{height:22px;border:1px solid var(--gold-line);border-radius:2px;background:var(--panel);overflow:hidden}
+  #castfill{height:100%;width:0%;background:var(--gold)}
   #fade{position:absolute;inset:0;background:#000;opacity:0;pointer-events:none;transition:opacity .45s}
+  /* the shelf: two action rows, bottom-center. Slots are 52x52 —
+     the desktop geometry the mobile build pinned. Key caps now
+     print the key that actually fires the action (BINDS). */
   #bars{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);display:flex;flex-direction:column;gap:6px;align-items:center;z-index:5}
   .bar{display:flex;gap:5px}
-  .slot{width:52px;height:52px;border:1px solid #3c5a8f;border-radius:8px;background:rgba(10,20,44,.85);color:#cfe3ff;font-family:inherit;cursor:pointer;padding:3px;display:flex;flex-direction:column;justify-content:space-between}
-  .slot:hover{border-color:#8fb7ff}
-  .slot .k{font-size:11px;color:#ffd479;text-align:left}
-  .slot .a{font-size:9.5px;line-height:1.15;color:#b9d2ff;text-align:center}
-  .slot.rebind{border-color:#ffd479;box-shadow:0 0 8px #ffd479}
-  #rebindbtn{position:absolute;left:12px;bottom:196px;z-index:5;font-size:11.5px;padding:6px 9px}
-  /* Traversal breadcrumbs control cluster (task 25.7.9/10.7.11/8.7.9):
-     back-step / clear / count for the crumb trail, bottom-right. */
+  .slot{width:52px;height:52px;border:1px solid var(--gold-line);border-radius:2px;background:var(--panel);color:var(--ink);font-family:inherit;cursor:pointer;padding:4px 5px;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden}
+  .slot:hover{border-color:var(--gold)}
+  .slot .k{font-size:11px;color:var(--gold);text-align:left;font-family:var(--mono)}
+  .slot .a{font-family:var(--label);font-size:8px;font-weight:600;letter-spacing:.01em;text-transform:uppercase;line-height:1.2;color:var(--ink-dim);text-align:center}
+  .slot.rebind{border-color:var(--gold);outline:1px solid var(--gold)}
+  #rebindbtn{position:absolute;left:12px;bottom:10px;z-index:5}
+  #rebindbtn.on{border-color:var(--gold);color:var(--gold)}
+  /* trail cluster, bottom-right */
   #trailctl{position:absolute;right:12px;bottom:10px;z-index:5;display:flex;gap:6px;align-items:center}
-  #trailctl button{background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:12.5px;padding:7px 11px;cursor:pointer}
-  #trailctl button:hover{border-color:#ffd479;color:#ffe9a8}
-  #trailn{font-size:12px;color:#8fb7ff;text-shadow:0 1px 3px #000}
-  /* Traversal mode (task 40.7.8/10.7.12/7.7.11): the tour status +
-     stop cluster, top-left under the HUD. Shown only while a tour
-     runs (stage A); stage B grows it into the tours cluster. */
-  #tourctl{position:absolute;left:12px;top:158px;z-index:5;display:none;gap:6px;align-items:center}
-  #tourctl button{background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:12.5px;padding:7px 11px;cursor:pointer}
-  #tourctl button:hover{border-color:#ffd479;color:#ffe9a8}
-  #tourtools{position:fixed;left:10px;top:124px;z-index:9;display:flex;gap:6px}
-  #tourtools button{background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:12.5px;padding:7px 11px;cursor:pointer}
-  #tourtools button:hover{border-color:#ffd479;color:#ffe9a8}
-  #tourspanel{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(430px,92vw);max-height:86vh;overflow:auto;background:#070d1f;border:1px solid #3c5a8f;border-radius:12px;z-index:21;display:none;flex-direction:column;gap:12px;padding:22px 24px;box-shadow:0 12px 44px rgba(0,0,0,.65)}
-  #tourspanel h2{font-size:16px;color:#ffe9a8;margin:0;line-height:1.4}
-  #tourspanel p{font-size:13px;line-height:1.6;color:#b9d2ff;margin:0}
-  #tourspanel .note{font-size:12px;color:#7d8aa5}
-  #tourspanel .auth-btn{display:block;width:100%;text-align:center;background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:14px;padding:10px 12px;cursor:pointer;text-decoration:none;margin:0}
-  #tourspanel .auth-btn:hover{border-color:#ffd479;color:#ffe9a8}
+  #trailn{font-size:12px;color:var(--gold)}
+  /* tools row: one cluster under the HUD — tours, theme, keys */
+  #tourtools{position:fixed;left:12px;top:104px;z-index:9;display:flex;gap:6px}
+  #tourctl{position:absolute;left:12px;top:142px;z-index:5;display:none;gap:6px;align-items:center}
+  #tourlabel{font-size:12px;color:var(--gold);background:var(--panel);border:1px solid var(--gold-line);border-radius:2px;padding:7px 10px}
+  /* modal panels: tours + sign-in share one treatment */
+  #tourspanel{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(430px,92vw);max-height:86vh;overflow:auto;background:var(--panel);border:1px solid var(--gold-line);border-top:2px solid var(--gold);border-radius:2px;z-index:21;display:none;flex-direction:column;gap:12px;padding:22px 24px}
+  #tourspanel h2{font-family:var(--serif);font-weight:normal;font-size:18px;color:var(--ink);margin:0;line-height:1.4}
+  #tourspanel p{font-size:13px;line-height:1.6;color:var(--ink);margin:0}
+  #tourspanel .note{font-size:12px;color:var(--ink-dim)}
+  #tourspanel .auth-btn{display:block;width:100%;text-align:center;font-size:12px;padding:10px 12px;margin:0}
   #tourssaverow{display:flex;gap:8px}
-  #tourname{flex:1;min-width:0;background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#eaf3ff;font-family:inherit;font-size:13px;padding:8px 10px}
-  #tourssaverow button,#tourslist button{background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:12.5px;padding:7px 11px;cursor:pointer}
-  #tourssaverow button:hover,#tourslist button:hover{border-color:#ffd479;color:#ffe9a8}
-  .tourrow{display:flex;gap:8px;align-items:center;padding:6px 0;border-top:1px solid #22345c}
-  .tournm{flex:1;color:#eaf3ff;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #tourlabel{font-size:12px;color:#ffd479;text-shadow:0 1px 3px #000}
-  #rebindbtn.on{border-color:#ffd479;color:#ffd479}
-  #help{position:absolute;left:12px;bottom:10px;font-size:11.5px;color:#7d8aa5;line-height:1.55;pointer-events:none;text-shadow:0 1px 3px #000;max-width:30vw}
-  #msg{position:absolute;left:50%;top:104px;transform:translateX(-50%);font-size:14px;color:#ffe9a8;text-shadow:0 1px 4px #000;pointer-events:none;opacity:0;transition:opacity .3s;z-index:6;text-align:center;max-width:90vw}
-  #authpanel{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(430px,92vw);background:#070d1f;border:1px solid #3c5a8f;border-radius:12px;z-index:20;display:none;flex-direction:column;gap:12px;padding:22px 24px;box-shadow:0 12px 44px rgba(0,0,0,.65)}
-  #authpanel h2{font-size:16px;color:#ffe9a8;margin:0;line-height:1.4}
-  #authpanel p{font-size:13px;line-height:1.6;color:#b9d2ff;margin:0}
-  #authpanel .auth-btn{display:block;width:100%;text-align:center;background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:14px;padding:10px 12px;cursor:pointer;text-decoration:none;margin:0 0 8px}
-  #authpanel .auth-btn:hover{border-color:#ffd479;color:#ffe9a8}
-  #authpanel .note{font-size:12px;color:#7d8aa5}
+  #tourname{flex:1;min-width:0;font-size:13px;padding:8px 10px}
+  .tourrow{display:flex;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--gold-line)}
+  .tournm{flex:1;color:var(--ink);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #authpanel{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(430px,92vw);background:var(--panel);border:1px solid var(--gold-line);border-top:2px solid var(--gold);border-radius:2px;z-index:20;display:none;flex-direction:column;gap:12px;padding:22px 24px}
+  #authpanel h2{font-family:var(--serif);font-weight:normal;font-size:18px;color:var(--ink);margin:0;line-height:1.4}
+  #authpanel p{font-size:13px;line-height:1.6;color:var(--ink);margin:0}
+  #authpanel .auth-btn{display:block;width:100%;text-align:center;font-size:12px;padding:10px 12px;margin:0 0 8px}
+  #authpanel .note{font-size:12px;color:var(--ink-dim)}
+  /* transient message: a stamp, not a shout */
+  #msg{position:absolute;left:50%;top:104px;transform:translateX(-50%);font-size:13px;color:var(--gold);background:var(--panel);border:1px solid var(--gold-line);border-radius:2px;padding:5px 12px;pointer-events:none;opacity:0;transition:opacity .3s;z-index:6;text-align:center;max-width:90vw}
+  /* help panel: the full key chart, behind the ? keys button */
+  #help{position:absolute;left:12px;bottom:var(--shelf-b);width:min(560px,92vw);max-height:62vh;overflow:auto;background:var(--panel);border:1px solid var(--gold-line);border-top:2px solid var(--gold);border-radius:2px;z-index:15;display:none;padding:16px 18px}
+  #help.open{display:block}
+  #help h2{font-family:var(--serif);font-weight:normal;font-size:17px;color:var(--ink);margin:0 0 8px}
+  #help h3{font-family:var(--label);font-size:10.5px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--gold);margin:12px 0 4px}
+  #help p{font-size:12.5px;line-height:1.6;color:var(--ink);margin:0 0 6px}
+  #help .stamp{font-size:11px;color:var(--ink-dim);margin-top:12px}
+  #helpclose{position:absolute;top:10px;right:10px}
+  /* touch pad (shown <=760px) */
   #pad{position:absolute;right:10px;bottom:196px;display:none;z-index:5;grid-template-columns:repeat(3,52px);grid-template-rows:repeat(3,52px);gap:5px}
-  #pad button{background:rgba(10,20,44,.85);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:17px;cursor:pointer}
-  #pad button:active{border-color:#ffd479;color:#ffd479}
-  #read{position:absolute;top:0;right:0;height:100%;width:min(560px,94vw);background:#070d1f;border-left:1px solid #3c5a8f;z-index:9;display:none;flex-direction:column;padding:18px 20px;overflow:auto}
-  #read h2{font-size:16px;color:#ffe9a8;margin:0 0 4px;line-height:1.4;user-select:text}
-  #read .meta{font-size:12px;color:#8fb7ff;margin-bottom:12px;user-select:text}
-  #read .body{font-family:'Willbot Mono',ui-monospace,Menlo,Consolas,monospace;font-size:14px;line-height:1.65;color:#dbe9ff;white-space:pre-wrap;user-select:text;word-break:break-word}
+  #pad button{background:var(--panel);border:1px solid var(--gold-line);border-radius:2px;color:var(--ink);font-family:inherit;font-size:17px;cursor:pointer}
+  #pad button:active{border-color:var(--gold);color:var(--gold)}
+  /* Read panel: a paper sheet in both themes (Will, 2026-11-19:
+     scroll text is read as crisp black on white, like the plane) */
+  #read{position:absolute;top:0;right:0;height:100%;width:min(560px,94vw);background:#fffdf6;border-left:2px solid var(--gold);z-index:9;display:none;flex-direction:column;padding:18px 20px;overflow:auto}
+  #read h2{font-family:var(--serif);font-weight:normal;font-size:18px;color:#17150f;margin:0 0 4px;line-height:1.4;user-select:text}
+  #read .meta{font-size:12px;color:#6f6a5c;margin-bottom:12px;user-select:text}
+  #read .body{font-family:'Willbot Mono',ui-monospace,Menlo,Consolas,monospace;font-size:14px;line-height:1.65;color:#14120e;white-space:pre-wrap;user-select:text;word-break:break-word}
   #read .row{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap}
-  #read .row button,#read .row a{background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:13px;padding:8px 12px;cursor:pointer;text-decoration:none}
-  #read .row button:hover,#read .row a:hover{border-color:#ffd479}
+  #read .row button,#read .row a,#readclose{background:transparent;border-color:hsl(45,60%,42%);color:#211e17}
+  #read .row button:hover,#read .row a:hover,#readclose:hover{border-color:hsl(45,89%,38%);color:hsl(45,89%,30%)}
   #readclose{align-self:flex-end}
-  /* Plane footer (task 26.9.10/11.7.14/7.7.8): the plane tagline is UI
-     chrome, not scroll text — it lives in this bar, never in S.plane.
-     Shown only on a plane (level 4); while it is up, body.onplane lifts
-     the bottom chrome by the footer's measured height (--planefoot-h)
-     so nothing overlaps it. Levels 0-3 are pixel-identical to before. */
-  #planefoot{position:absolute;left:0;right:0;bottom:0;display:none;align-items:center;justify-content:space-between;gap:14px;padding:8px 14px;background:#070d1f;border-top:1px solid #3c5a8f;z-index:5;font-size:13.5px;line-height:1.45;color:#b9d2ff}
-  #planefoot .pftag{min-width:0}
-  #planefoot a{flex:none;background:rgba(10,20,44,.92);border:1px solid #3c5a8f;border-radius:8px;color:#cfe3ff;font-family:inherit;font-size:13px;padding:7px 12px;cursor:pointer;text-decoration:none}
-  #planefoot a:hover{border-color:#ffd479;color:#ffe9a8}
+  /* Plane footer (task 26.9.10/11.7.14/7.7.8): the tagline is chrome,
+     never scroll text. Shown only on a plane; body.onplane lifts the
+     bottom chrome by the footer's measured height (--planefoot-h).
+     Now carries the site stamp: edit.phext.io + its coordinate. */
+  #planefoot{position:absolute;left:0;right:0;bottom:0;display:none;align-items:center;justify-content:space-between;gap:14px;padding:8px 14px;background:var(--panel);border-top:2px solid var(--gold);z-index:5;font-size:13.5px;line-height:1.45;color:var(--ink)}
+  #planefoot .pftag{min-width:0;font-family:var(--serif);font-size:14px}
+  #planefoot .pfstamp{flex:none;font-size:11.5px;color:var(--ink-dim)}
   body.onplane #bars{bottom:calc(10px + var(--planefoot-h,52px))}
-  body.onplane #help{bottom:calc(10px + var(--planefoot-h,52px))}
+  body.onplane #help{bottom:calc(var(--shelf-b) + var(--planefoot-h,52px))}
   body.onplane #castwrap{bottom:calc(196px + var(--planefoot-h,52px))}
-  body.onplane #rebindbtn{bottom:calc(196px + var(--planefoot-h,52px))}
+  body.onplane #rebindbtn{bottom:calc(10px + var(--planefoot-h,52px))}
   body.onplane #pad{bottom:calc(196px + var(--planefoot-h,52px))}
   body.onplane #trailctl{bottom:calc(10px + var(--planefoot-h,52px))}
   @media (max-width:760px){
-    .slot{width:44px;height:44px}
-    .slot .a{font-size:8.5px}
-    #help{display:none}
+    .slot{width:44px;height:44px;padding:3px 2px}
+    .slot .a{font-size:8px}
     #target{max-width:44%}
-    #hud{font-size:12px}
+    #hud{font-size:12px;max-width:46vw}
     #rebindbtn{bottom:auto;top:104px}
     body.onplane #rebindbtn{bottom:auto}
+    #tourtools{top:140px}
+    #tourctl{top:178px}
     #pad{display:grid}
     #castwrap{bottom:170px}
+    #help{left:50%;top:50%;bottom:auto;transform:translate(-50%,-50%);width:min(560px,92vw);max-height:80vh}
+    body.onplane #help{bottom:auto}
   }
-  /* Phone layout (task 21.10.14/8.8.16/16.5.7): Will's phone shot
-     (2026-11-19) showed the desktop HUD jumbled at ~412px — the
-     hint column and target text ran down over the plane panel and
-     the scroll's own words, the jump row sat on the header lines,
-     the 12-slot bar overflowed the viewport mid-button ("pect"
-     for Inspect), the trail cluster hid under the bars, the
-     REBIND chip lay across the panel, and the plane footer's
-     flex row squeezed the tagline into a ~90px tower. Below
-     480px: the hint (mouse guidance; #help is already hidden
-     <=760px) is hidden, the jump row drops below the header band
-     into its own row, the bars wrap inside the viewport, the
-     trail/D-pad/REBIND controls take a shelf above the bars, the
-     cast bar rides above the pad, and the plane footer stacks so
-     its tagline gets the full width. The plane panel itself
-     drops via planeOY(). Layout only — no behaviour changes. */
+  /* Phone layout (task 21.10.14/8.8.16/16.5.7): below 480px the hint
+     is hidden, the jump row drops into its own band, the bars wrap
+     inside the viewport, the trail/D-pad/REBIND controls shelf
+     above the bars, the cast bar rides above the pad, and the
+     plane footer stacks. Geometry per walk17; treatment per the
+     system above. */
   @media (max-width:480px){
-    #hud{max-width:50vw}
-    #hud .coord{font-size:14px}
+    #hud{max-width:50vw;padding:5px 9px 6px}
+    #hud .crumb{font-size:11.5px}
+    #hud .coord{font-size:13px}
     #hud .hint{display:none}
     #target{max-width:42vw;font-size:12px;line-height:1.45;max-height:88px;overflow:hidden}
     #target .s{font-size:11px;max-height:32px;overflow:hidden}
     #target .p{font-size:11px;max-height:32px;overflow:hidden}
-    #nav{top:100px;left:12px;right:84px;transform:none}
+    #nav{top:106px;left:12px;right:84px;transform:none}
     #nav input{flex:1;width:auto;min-width:0;padding:6px 9px;font-size:13px}
     #nav button{padding:6px 12px}
-    #readbtn{top:100px;padding:6px 12px}
+    #readbtn{top:106px;padding:6px 12px}
     #msg{top:140px}
     #bars{left:0;right:0;width:100vw;transform:none;padding:0 4px}
     .bar{flex-wrap:wrap;justify-content:center;row-gap:5px;max-width:100vw}
     #trailctl{right:auto;left:12px;bottom:211px}
     #tourtools{top:148px}
+    #tourtools button{padding:6px 8px;font-size:10.5px}
     #tourctl{top:184px}
     #rebindbtn{top:auto;bottom:251px}
     #pad{grid-template-columns:repeat(3,44px);grid-template-rows:repeat(3,44px);bottom:251px}
     #castwrap{bottom:401px}
     #planefoot{flex-direction:column;align-items:stretch;gap:8px}
     #planefoot a{text-align:center}
+    #planefoot .pfstamp{text-align:center}
     body.onplane #trailctl{bottom:calc(211px + var(--planefoot-h,52px))}
     body.onplane #rebindbtn{bottom:calc(251px + var(--planefoot-h,52px))}
     body.onplane #pad{bottom:calc(251px + var(--planefoot-h,52px))}
@@ -164,7 +198,7 @@
 <div id="hud">
   <div class="crumb" id="crumb">SCROLLSPACE</div>
   <div class="coord" id="coord">—</div>
-  <div class="hint" id="hint">click the view to lock the mouse — Descent layout: F forward · A back · W/E strafe · S/D turn · Q down · R up · mouse1 fires the zoom · wheel sets throttle (forward/backward velocity) · shift boosts · z/x roll · gold crumbs mark your trail — aim + enter returns to one, c steps back along it · a ?q= tour link flies a shared traversal — any input takes the controls back</div>
+  <div class="hint" id="hint">click the view to lock the mouse — F forward · wheel throttle · Enter zooms · c steps back along your trail · ? keys opens the full chart</div>
 </div>
 <div id="target"><div class="t" id="tname">no target</div><div class="s" id="tsub">tab or fly close to acquire</div><div class="p" id="tprev" style="display:none"></div></div>
 <div id="nav">
@@ -174,7 +208,7 @@
 <button id="readbtn">Read</button>
 <div id="trailctl"><button id="trailback" title="step back along your crumb trail">⟲ back</button><button id="trailclear" title="clear the crumb trail">clear</button><span id="trailn">trail · 0 crumbs</span></div>
 <div id="tourctl"><span id="tourlabel"></span><button id="tourstop" title="stop the tour and take the controls">■ stop tour</button></div>
-<div id="tourtools"><button id="tourlink" type="button" title="copy a shareable ?q= link to the trail you flew">⧉ copy link</button><button id="toursbtn" type="button" title="save the trail you flew to your account; replay saved tours">▤ tours</button></div>
+<div id="tourtools"><button id="tourlink" type="button" title="copy a shareable ?q= link to the trail you flew">⧉ copy link</button><button id="toursbtn" type="button" title="save the trail you flew to your account; replay saved tours">▤ tours</button><button id="themebtn" type="button" title="theme: auto follows your system; dark and light are explicit — the choice is kept">theme: auto</button><button id="helpbtn" type="button" title="the full key chart and help">? keys</button></div>
 <div id="tourspanel" role="dialog" aria-modal="true" aria-labelledby="tourstitle">
   <h2 id="tourstitle">Your tours</h2>
   <p id="toursq" class="note"></p>
@@ -198,16 +232,25 @@
   <button data-k="s">↩</button><button data-k="a">▼</button><button data-k="d">↪</button>
 </div>
 <div id="help">
-  click a bar slot to cast · REBIND on, then click a slot and press a key, to rebind<br>
-  on a plane: F/A/W/E (or arrows) walk the glyphs · Read opens clean text<br>
-  crumbs: c or ⟲ back steps back along your trail · click a gold crumb on a plane to return to it<br>
-  tour links: ?q=waypoint;waypoint flies the list on load — a waypoint is phext@1.1.1/1.1.1/1.1.1 (fewer parts stop shallower; a bare phext enters its galaxy; a bare full coordinate finds its phext)<br>
+  <button id="helpclose" type="button">close</button>
+  <h2>Keys &amp; help</h2>
+  <h3>Casting</h3>
+  <p>click a bar slot to cast · REBIND on, then click a slot and press a key, to rebind</p>
+  <h3>Flight</h3>
+  <p>Descent layout: F forward · A back · W/E strafe · S/D turn · Q down · R up · mouse1 fires the zoom · wheel sets throttle (forward/backward velocity) · shift boosts · z/x roll</p>
+  <h3>On a plane</h3>
+  <p>on a plane: F/A/W/E (or arrows) walk the glyphs · Read opens clean text<br>
+  crumbs: c or ⟲ back steps back along your trail · click a gold crumb on a plane to return to it</p>
+  <h3>Tour links</h3>
+  <p>tour links: ?q=waypoint;waypoint flies the list on load — a waypoint is phext@1.1.1/1.1.1/1.1.1 (fewer parts stop shallower; a bare phext enters its galaxy; a bare full coordinate finds its phext)<br>
   after a waypoint, + zooms one level deeper toward its address and − pulls one level back out · any key, press or wheel stops the tour and hands you the controls<br>
-  record: your breadcrumb trail IS the recording — ⧉ copy link (top left) turns it into a shareable ?q= link, no account needed · ▤ tours saves it to your account when you are signed in, and replays or deletes your saved tours
+  record: your breadcrumb trail IS the recording — ⧉ copy link (top left) turns it into a shareable ?q= link, no account needed · ▤ tours saves it to your account when you are signed in, and replays or deletes your saved tours</p>
+  <p class="stamp">scrollspace · edit.phext.io · 61.5.8/10.5.8/9.8.9</p>
 </div>
 <div id="bars"></div>
 <footer id="planefoot">
   <span class="pftag">you are standing on a plane of existence: a scroll, walked like a zelda room. every glyph a floor tile.</span>
+  <span class="pfstamp">edit.phext.io · 61.5.8/10.5.8/9.8.9</span>
   <a id="planeedit" href="/" target="_blank" rel="noopener">✎ edit this scroll in edit.phext.io</a>
 </footer>
 <aside id="read">
@@ -710,7 +753,7 @@ async function backgroundIndex(){
 }
 
 /* ---------- state ---------- */
-const S={level:0, gal:null, macro:null, meso:null, planet:null, cam:[0,0,2700], yaw:0, pitch:0, roll:0,
+const S={pageTop:0, level:0, gal:null, macro:null, meso:null, planet:null, cam:[0,0,2700], yaw:0, pitch:0, roll:0,
          target:null, hot:null, tabTarget:null, tabIdx:-1, casting:null, trans:null, frameOnLoad:null, plane:null, px:2, py:2, msgT:0};
 S.vel=[0,0,0]; S.throttle=0; S.wheelAcc=0;
 S.trail=[]; S.trailStep=120; S.trailMute=false; S.trailPending=false;
@@ -972,7 +1015,7 @@ function releaseCapture(){ if(document.pointerLockElement&&document.exitPointerL
 async function enterPlane(){
   releaseCapture();
   const ref=S.planet, g=S.gal;
-  S.plane=["fetching the scroll from "+g.name+" …"]; S.px=2; S.py=2;
+  S.plane=["fetching the scroll from "+g.name+" …"]; S.px=2; S.py=2; S.pageTop=0;
   if(!S.trailMute) dropCrumb(true); /* the plane's entry crumb, at the entry cell */
   document.getElementById("readbtn").style.display="block";
   try{
@@ -1063,7 +1106,7 @@ async function openRead(ref){
     const b=document.createElement("button"); b.textContent=GAL[fi].name+" · "+coord;
     b.onclick=()=>{ travelTo(fi,coord); openRead(S.planet); }; box.appendChild(b); };
   const local=(suffix3Scrolls.get(ref.suffix)||[]);
-  if(local.length){ const h=document.createElement("span"); h.style.cssText="width:100%;font-size:12px;color:#8fb7ff"; h.textContent="⇄ same micro address (CH.SN.SC "+ref.suffix+") elsewhere:"; box.appendChild(h); }
+  if(local.length){ const h=document.createElement("span"); h.style.cssText="width:100%;font-size:12px;color:#7a6414"; h.textContent="⇄ same micro address (CH.SN.SC "+ref.suffix+") elsewhere:"; box.appendChild(h); }
   local.slice(0,16).forEach(o=>addLink(o.fi,o.coord));
   fetchMatches(ref.suffix,3).then(j=>{ for(const m of j.matches){ const fi=GAL.findIndex(x=>x.name===m.phext); if(fi>=0) addLink(fi,m.coord); } }).catch(()=>{});
   document.getElementById("readwalk").onclick=()=>{ closeRead(); if(S.level!==4||!S.planet||S.planet.coord!==ref.coord){ S.planet=ref; S.level=4; enterPlane(); } };
@@ -1104,25 +1147,37 @@ async function jump(q){
 document.getElementById("jumpgo").onclick=e=>{ jump(document.getElementById("jump").value); e.currentTarget.blur(); };
 document.getElementById("jump").addEventListener("keydown",e=>{ if(e.key==="Enter") jump(e.target.value); e.stopPropagation(); });
 
-/* ---------- action bars (bar1 = 1-6 + shift layer, bar2 = zxcvqsdrgbth) ---------- */
+/* ---------- action bars (bar2 = zxcvqsdrgbth cluster, bar1 = 1-6) ----------
+   Cleanup (task 21.7.10/8.7.10/7.6.9): the duplicated shift row is
+   gone — its six slots cast the very same actions as the plain row
+   (shift+key is a keyboard path, not a separate slot). 18 slots,
+   two rows. And the key caps now print the key that actually fires
+   the action: they render from BINDS (capFor) and refresh after a
+   rebind, so cap, key, and cast can never disagree again — the old
+   positional caps had drifted (the slot capped "c" cast Tag WAU
+   while the c key ran Trail Back). */
 const BAR1=["tab","inspect","zoomIn","zoomOut","tag","handoff"];
 const BAR2=["zoomIn","inspect","tag","view","mvDown","mvTurnL","mvTurnR","mvUp","grade","sync","handoff","tab"];
-const BAR1KEYS=["1","2","3","4","5","6"], BAR2KEYS=["z","x","c","v","q","s","d","r","g","b","t","h"];
 const barsEl=document.getElementById("bars");
-function slotEl(action,keyLabel,shift){
-  const b=document.createElement("button"); b.className="slot";
-  b.innerHTML='<span class="k">'+(shift?"⇧":"")+keyLabel+'</span><span class="a">'+ACTIONS[action].name+'</span>';
+function capFor(a){
+  if(a==="mvDown") return "↓"; if(a==="mvTurnL") return "←";
+  if(a==="mvTurnR") return "→"; if(a==="mvUp") return "↑";
+  const b=BINDS[a]; if(!b) return "";
+  return b==="Backspace"?"⌫":b;
+}
+function slotEl(action){
+  const b=document.createElement("button"); b.className="slot"; b.dataset.action=action;
+  b.innerHTML='<span class="k"></span><span class="a">'+ACTIONS[action].name+'</span>';
   b.onclick=()=>{ if(rebindMode){ document.querySelectorAll(".slot").forEach(e=>e.classList.remove("rebind")); b.classList.add("rebind"); rebindSlot={action,el:b}; showMsg("press a key to bind "+ACTIONS[action].name+" (esc cancels)"); } else doAction(action); };
   return b;
 }
+function refreshCaps(){ document.querySelectorAll(".slot").forEach(s=>{ const k=s.querySelector(".k"); if(k) k.textContent=capFor(s.dataset.action); }); }
 (function buildBars(){
   const r2=document.createElement("div"); r2.className="bar";
-  BAR2.forEach((a,i)=>r2.appendChild(slotEl(a,BAR2KEYS[i],false)));
+  BAR2.forEach(a=>r2.appendChild(slotEl(a)));
   const r1=document.createElement("div"); r1.className="bar";
-  BAR1.forEach((a,i)=>r1.appendChild(slotEl(a,BAR1KEYS[i],false)));
-  const r1s=document.createElement("div"); r1s.className="bar";
-  BAR1.forEach((a,i)=>r1s.appendChild(slotEl(a,BAR1KEYS[i],true)));
-  barsEl.appendChild(r2); barsEl.appendChild(r1); barsEl.appendChild(r1s);
+  BAR1.forEach(a=>r1.appendChild(slotEl(a)));
+  barsEl.appendChild(r2); barsEl.appendChild(r1); refreshCaps();
 })();
 const rbBtn=document.getElementById("rebindbtn");
 rbBtn.onclick=()=>{ rebindMode=!rebindMode; rbBtn.textContent="REBIND: "+(rebindMode?"on":"off"); rbBtn.classList.toggle("on",rebindMode); if(!rebindMode){rebindSlot=null;document.querySelectorAll(".slot").forEach(e=>e.classList.remove("rebind"));} rbBtn.blur(); };
@@ -1131,7 +1186,7 @@ const keys={};
 addEventListener("keydown",e=>{
   if(e.target&&e.target.id==="jump") return;
   if(rebindSlot){ e.preventDefault();
-    if(e.key!=="Escape"){ BINDS[rebindSlot.action]=e.key; showMsg(ACTIONS[rebindSlot.action].name+" bound to "+e.key); }
+    if(e.key!=="Escape"){ BINDS[rebindSlot.action]=e.key; showMsg(ACTIONS[rebindSlot.action].name+" bound to "+e.key); refreshCaps(); }
     rebindSlot.el.classList.remove("rebind"); rebindSlot=null; return; }
   const k=e.key.length===1?e.key.toLowerCase():e.key;
   keys[k]=true;
@@ -1173,12 +1228,20 @@ cv.addEventListener("touchstart",e=>{const t=e.touches[0];ptrDown(t.clientX,t.cl
 cv.addEventListener("touchmove",e=>{const t=e.touches[0];ptrMove(t.clientX,t.clientY);e.preventDefault();},{passive:false});
 cv.addEventListener("touchend",()=>{ const wasDrag=moved>8; dragging=false;
   if(!wasDrag&&S.level<4){ const nd=nodeAt(lx,ly); if(nd){ if(nd.kind==="crumb") returnToCrumb(nd.crumbIdx); else { S.tabTarget=nd; doZoomIn(); } } } });
-/* on a plane, clicking a crumb's cell returns to it (the plane has no
-   crosshair targeting; cells are addressed with drawPlane's geometry) */
+/* on a plane, clicking a crumb's position on the page returns to
+   it (the plane has no crosshair targeting; positions are addressed
+   with planeGeom's sheet geometry — the same helper drawPlane
+   renders from, so the click map and the page can never disagree) */
 cv.addEventListener("mousedown",e=>{ if(S.level!==4||document.pointerLockElement===cv) return;
-  const ox=Math.max(16,Math.min(70,cv.width*0.06)), oy=planeOY(), cw=13, chh=22;
-  const col=Math.floor((e.clientX-ox)/cw), row=Math.floor((e.clientY-(oy-13))/chh);
-  if(col<0||row<0) return;
+  const G=planeGeom();
+  if(e.clientX<G.x||e.clientX>G.x+G.w||e.clientY<G.y||e.clientY>G.y+G.h) return;
+  const v=Math.floor((e.clientY-(G.y+G.padTop-17))/G.lineH);
+  if(v<0||v>=G.rows) return;
+  const row=(S.pageTop||0)+v, line=S.plane[row]||"";
+  ctx.font=planeFontFor(row);
+  const lx=G.x+(G.w-ctx.measureText(line).width)/2;
+  let col=line.length, acc=0;
+  for(let ci=0;ci<line.length;ci++){ const cw2=ctx.measureText(line[ci]).width; if(e.clientX<lx+acc+cw2){ col=ci; break; } acc+=cw2; }
   const key=trailCtxKey();
   for(let i=S.trail.length-1;i>=0;i--){ const c=S.trail[i]; if(c.key===key&&c.px===col&&c.py===row){ returnToCrumb(i); return; } }
 });
@@ -1374,50 +1437,91 @@ const GLYPH_FONTS="ui-monospace,'Cascadia Mono','DejaVu Sans Mono',Menlo,Consola
    scroll's words. drawPlane and the plane crumb-click geometry
    share this one helper so they can never disagree. */
 function planeOY(){ return innerWidth<=480?168:120; }
+/* The reading page (Will, 2026-11-19 22:07 CST): "the text should
+   be centered, and presented as crisp, black text on a white
+   background" — the plane is a paper sheet, not a glyph floor.
+   planeGeom() is the ONE geometry source for the sheet: drawPlane,
+   the plane crumb-click handler, and the walks all take the sheet
+   from here so they can never disagree (the planeOY pattern,
+   extended). The sheet is centered; its top clears the top chrome
+   bands (more room while the tour cluster is up); its height
+   follows the content up to a band limit clear of the bottom
+   shelf, and longer scrolls page: S.pageTop follows the caret, so
+   walking the plane becomes paging the page. */
+function planeFontFor(i){
+  return i===0 ? "20px Georgia,'Times New Roman',serif"
+       : i===2 ? "11.5px "+GLYPH_FONTS
+       : "15px "+GLYPH_FONTS;
+}
+function planeGeom(){
+  const W=cv.width, H=cv.height, phone=W<=480;
+  const tourOn=!!(S.tour&&S.tour.active);
+  const top=planeOY()+(phone?(tourOn?54:12):24);
+  const foot=document.body.classList.contains("onplane")?(planeFootH||0):0;
+  const bandBot=H-foot-(phone?150:136);
+  const lineH=24, padTop=26, padBot=18;
+  const cap=Math.max(1,Math.floor((bandBot-top-padTop-padBot)/lineH));
+  const total=(S.plane||[]).length;
+  const rows=Math.min(cap,total);
+  const w=Math.min(760,W-16), x=Math.round((W-w)/2);
+  return {x:x, y:top, w:w, h:padTop+rows*lineH+padBot,
+          lineH:lineH, padTop:padTop, rows:rows, cap:cap};
+}
 function drawPlane(){
-  ctx.fillStyle="#070b18"; ctx.fillRect(0,0,cv.width,cv.height);
-  const lines=S.plane, cw=13, ch=22, ox=Math.max(16,Math.min(70,cv.width*0.06)), oy=planeOY();
-  ctx.font="15px "+GLYPH_FONTS;
-  const maxr=Math.min(lines.length, Math.floor((cv.height-oy-170)/ch));
-  /* ONE uniform background for the whole text field (task 23.6.7/7.6.10):
-     the old rendering filled a mid-blue tile (rgba(30,48,92,.85)) behind
-     EVERY glyph — a ransom-note checkerboard that fought the reading.
-     Text now sits on a single panel in near-white (#eaf3ff on #0d1526,
-     ~16:1); only the cursor cell keeps a highlight fill. */
-  let maxc=0;
-  for(let r=0;r<maxr;r++){ const L=lines[r]||""; let n=0; while(n<L.length&&ox+n*cw<=cv.width-20) n++; if(n>maxc) maxc=n; }
-  if(maxr>0&&maxc>0){
-    ctx.fillStyle="#0d1526"; ctx.fillRect(ox-12,oy-30,maxc*cw+16,maxr*ch+22);
-    ctx.strokeStyle="rgba(120,160,255,.22)"; ctx.lineWidth=1; ctx.strokeRect(ox-12,oy-30,maxc*cw+16,maxr*ch+22);
-  }
-  for(let r=0;r<maxr;r++){
-    const line=lines[r]||"";
-    let c=0;
-    for(const glyph of line){ /* code points, not code units: an astral glyph
-       drawn as two lone surrogates renders as �� whatever font is present.
-       (Loop var must NOT be named ch — ch is the row height; shadowing it
-       made y=oy+r*ch coerce the glyph to a number: digits drew staircased,
-       everything else NaN. Caught by the walk4 screenshot, 2026-11-19.) */
-      const x=ox+c*cw, y=oy+r*ch; if(x>cv.width-20) break;
-      const cur=(c===S.px&&r===S.py);
-      if(cur){ ctx.fillStyle="#ffd479"; ctx.fillRect(x-1,y-13,cw-2,ch-3); }
-      ctx.fillStyle=cur?"#0a0f22":"#eaf3ff";
-      ctx.fillText(glyph,x,y);
-      c+=glyph.length;
+  const light=document.documentElement.getAttribute("data-theme")==="light";
+  ctx.fillStyle=light?"#ded7c6":"#05070d"; ctx.fillRect(0,0,cv.width,cv.height);
+  /* the flight renderer leaves textAlign="center" on the shared
+     context for its node labels; the page draws left-aligned text
+     at measured positions, so pin both alignment axes here */
+  ctx.textAlign="left"; ctx.textBaseline="alphabetic";
+  const lines=S.plane||[], G=planeGeom();
+  /* keep the caret's line on the page */
+  if(S.pageTop===undefined) S.pageTop=0;
+  if(S.py<S.pageTop) S.pageTop=S.py;
+  if(S.py>=S.pageTop+G.rows) S.pageTop=S.py-G.rows+1;
+  const maxTop=Math.max(0,lines.length-G.rows);
+  if(S.pageTop>maxTop) S.pageTop=maxTop;
+  if(S.pageTop<0) S.pageTop=0;
+  /* the sheet: white paper, a gold rule across the top, a hairline
+     gold-dim edge. One uniform field behind every word — the PR #76
+     uniform-panel fix carried to its conclusion: paper. */
+  ctx.fillStyle="#fffdf6"; ctx.fillRect(G.x,G.y,G.w,G.h);
+  ctx.fillStyle="#b8860b"; ctx.fillRect(G.x,G.y,G.w,2);
+  ctx.strokeStyle="rgba(138,109,31,.55)"; ctx.lineWidth=1;
+  ctx.strokeRect(G.x+.5,G.y+.5,G.w-1,G.h-1);
+  const startX=(i,line)=>{ ctx.font=planeFontFor(i);
+    return G.x+(G.w-ctx.measureText(line).width)/2; };
+  for(let v=0;v<G.rows;v++){
+    const i=S.pageTop+v, line=lines[i]||"";
+    if(!line) continue;
+    const base=G.y+G.padTop+v*G.lineH, lx=startX(i,line);
+    if(i===S.py){
+      const pre=ctx.measureText(line.slice(0,S.px)).width;
+      const gw=Math.max(4,ctx.measureText(line[S.px]||" ").width);
+      ctx.fillStyle="rgba(250,195,31,.45)"; ctx.fillRect(lx+pre-1,base-17,gw+2,21);
+      ctx.fillStyle="#8a6d1f"; ctx.fillRect(lx+pre-1,base+4,gw+2,2);
     }
+    ctx.fillStyle=i===2?"#6f6a5c":"#14120e";
+    ctx.fillText(line,lx,base);
   }
-  /* this plane's crumbs (task 25.7.9): gold dots in the cells you have
-     stood on, oldest faintest; the cursor cell keeps its own highlight */
+  /* this plane's crumbs (task 25.7.9): small dark-gold dots under
+     the positions you have stood on, oldest faintest; the caret's
+     own cell keeps its wash */
   { const pkey=trailCtxKey();
-    S.trail.forEach((c,i)=>{ if(c.key!==pkey||c.py>=maxr||ox+c.px*cw>cv.width-20) return;
+    S.trail.forEach((c,i)=>{ if(c.key!==pkey) return;
+      const v=c.py-S.pageTop; if(v<0||v>=G.rows) return;
       if(c.px===S.px&&c.py===S.py) return;
+      const line=lines[c.py]||"";
+      const cx=startX(c.py,line)+ctx.measureText(line.slice(0,Math.min(c.px,line.length))).width+2;
       const a=S.trail.length<=1?0.9:0.3+0.6*(i/(S.trail.length-1));
-      ctx.fillStyle="rgba(255,212,121,"+a.toFixed(3)+")";
-      ctx.beginPath(); ctx.arc(ox+c.px*cw+2.5, oy+c.py*ch-10.5, 2.2, 0, 7); ctx.fill(); }); }
-  ctx.fillStyle="#8fb7ff"; ctx.font="13px "+GLYPH_FONTS;
-  ctx.fillText("the line under your feet:  "+(lines[S.py]||""), ox, cv.height-140);
-  const ax=ox+S.px*cw-1, ay=oy+S.py*ch-13;
-  ctx.strokeStyle="#ffd479"; ctx.lineWidth=2; ctx.strokeRect(ax-3,ay-3,cw+3,ch+2);
+      ctx.fillStyle="rgba(138,109,31,"+a.toFixed(3)+")";
+      ctx.beginPath(); ctx.arc(cx, G.y+G.padTop+v*G.lineH+8, 2.2, 0, 7); ctx.fill(); }); }
+  /* paged: a quiet stamp inside the sheet's bottom edge */
+  if(lines.length>G.cap){
+    ctx.font="11px "+GLYPH_FONTS; ctx.fillStyle="#6f6a5c";
+    const s="lines "+(S.pageTop+1)+"–"+Math.min(lines.length,S.pageTop+G.rows)+" of "+lines.length;
+    ctx.fillText(s, G.x+G.w-ctx.measureText(s).width-14, G.y+G.h-6);
+  }
 }
 /* Plane footer sync (task 26.9.10/11.7.14/7.7.8): the footer exists
    only on a plane. Its Edit button deep-links the editor shell at the
@@ -1780,6 +1884,35 @@ function trailToQ(){
   }
   return out.join(";");
 }
+/* theme (task 21.7.10/8.7.10/7.6.9): auto follows the OS, dark and
+   light are explicit choices; the choice persists in localStorage
+   (ss-theme). The head boot script applied the same rule before
+   first paint, so the chrome never flashes the wrong mode. */
+const themeBtn=document.getElementById("themebtn");
+function themePref(){ try{ return localStorage.getItem("ss-theme")||"auto"; }catch(e){ return "auto"; } }
+function applyTheme(){
+  const p=themePref();
+  const dark=p==="dark"||(p==="auto"&&!(window.matchMedia&&matchMedia("(prefers-color-scheme: light)").matches));
+  document.documentElement.setAttribute("data-theme",dark?"dark":"light");
+  document.documentElement.setAttribute("data-theme-pref",p);
+  if(themeBtn) themeBtn.textContent="theme: "+p;
+}
+if(themeBtn) themeBtn.addEventListener("click",e=>{
+  const order=["auto","dark","light"], nxt=order[(order.indexOf(themePref())+1)%3];
+  try{ localStorage.setItem("ss-theme",nxt); }catch(err){}
+  applyTheme(); e.currentTarget.blur();
+});
+if(window.matchMedia&&matchMedia("(prefers-color-scheme: light)").addEventListener)
+  matchMedia("(prefers-color-scheme: light)").addEventListener("change",()=>{ if(themePref()==="auto") applyTheme(); });
+applyTheme();
+/* help panel: the full key chart lives behind the ? keys door */
+const helpEl=document.getElementById("help");
+function toggleHelp(force){
+  const open=force!==undefined?force:!helpEl.classList.contains("open");
+  helpEl.classList.toggle("open",open);
+}
+document.getElementById("helpbtn").addEventListener("click",e=>{ toggleHelp(); e.currentTarget.blur(); });
+document.getElementById("helpclose").addEventListener("click",()=>toggleHelp(false));
 document.getElementById("tourlink").addEventListener("click",async()=>{
   const q=trailToQ();
   if(!q){ setTarget("no trail yet — fly somewhere and your path becomes the tour"); return; }
