@@ -46,6 +46,7 @@ pub mod stats;
 pub mod term_index;
 pub mod tts;
 pub mod uml6d;
+pub mod uml6d_diagram;
 pub mod undo;
 
 // Re-exports for convenience
