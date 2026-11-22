@@ -11,9 +11,11 @@
 //! ```text
 //! diagram "Payments flow"
 //! phase Design
-//! node 1.2.3/4.5 "Checkout component"
-//! node 1.2.3/4.6 "Ledger component" @ Source
-//! edge 1.2.3/4.5 -> 1.2.3/4.6 : depends "posts entries"
+//! word checkout 1.2.3/4.5
+//! word ledger 1.2.3/4.6
+//! node checkout "Checkout component"
+//! node ledger "Ledger component" @ Source
+//! edge checkout -> ledger : depends "posts entries"
 //! ```
 //!
 //! - `diagram "<name>"` — optional; defaults to "diagram".
@@ -21,13 +23,29 @@
 //!   node's artifact address is phase-invariant; the phase only chooses the
 //!   collection the diagram is read in and the lane a node is drawn in when
 //!   it carries no explicit `@ <PhaseName>` lane of its own.
-//! - `node <addr> "<label>" [@ <PhaseName>]` — addr is the 5D artifact
-//!   address in ArtifactAddr display form: volume.book.chapter/section.scroll
-//! - `edge <addr> -> <addr> : <relation> ["<label>"]` — relation is a bare
-//!   token (depends, traces, refines, tests, documents, proves, ...).
+//! - `word <name> <addr>` — bind a design word to an artifact address (the
+//!   diagram's lexicon). `node`/`edge` may then reference the artifact by
+//!   word instead of by raw address. Bindings are collected in a first pass
+//!   over the whole text, so a word may be bound after the statements that
+//!   use it — a diagram is a declaration set, and its canonical form is
+//!   order-free. Binding one word to two different addresses is an error
+//!   naming the word and both addresses; rebinding it to the same address
+//!   is harmless. Several words may name one address; the lexicographically
+//!   first is canonical (it is the one canonical emission uses) and the
+//!   rest are aliases — resolvable, never emitted. A reference to an
+//!   unbound word is a parse error naming the word and its line. A word
+//!   never names another word: bindings are one step, word to address.
+//! - `node <addr-or-word> "<label>" [@ <PhaseName>]` — the artifact's 5D
+//!   address in ArtifactAddr display form (volume.book.chapter/section.scroll),
+//!   or a word bound to that address.
+//! - `edge <addr-or-word> -> <addr-or-word> : <relation> ["<label>"]` —
+//!   relation is a bare token (depends, traces, refines, tests, documents,
+//!   proves, ...).
 //!
-//! Canonical form: `to_notation` sorts nodes and edges, so
-//! parse(to_notation(d)) == d and to_notation is a fixed point.
+//! Canonical form: `to_notation` sorts word bindings, nodes, and edges, and
+//! writes each reference by its canonical word where one is bound (raw
+//! address otherwise), so parse(to_notation(d)) == d and to_notation is a
+//! fixed point.
 
 use crate::uml6d::{ArtifactAddr, Phase};
 
@@ -57,6 +75,10 @@ pub struct Diagram {
     pub phase: Phase,
     pub nodes: Vec<DNode>,
     pub edges: Vec<DEdge>,
+    /// The diagram's lexicon: design words bound to artifact addresses,
+    /// sorted by word. The word is the human surface; the address is the
+    /// machine truth underneath.
+    pub words: Vec<(String, ArtifactAddr)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +100,34 @@ fn addr_key(a: &ArtifactAddr) -> (usize, usize, usize, usize, usize) {
 
 fn phase_by_name(name: &str) -> Option<Phase> {
     Phase::all().iter().find(|p| p.name() == name).copied()
+}
+
+/// Resolve a reference token — a raw address, or a design word bound in
+/// `words` — to an artifact address. A token containing '.' or '/' is
+/// always read as an address (and errors as one, so a malformed address is
+/// never silently re-read as a word); anything else is a word, and an
+/// unbound word is an error naming the word.
+fn resolve_ref(tok: &str, words: &[(String, ArtifactAddr)]) -> Result<ArtifactAddr, String> {
+    if tok.contains('.') || tok.contains('/') {
+        return parse_addr(tok);
+    }
+    match words.iter().find(|(w, _)| w == tok) {
+        Some((_, a)) => Ok(*a),
+        None => Err(format!(
+            "unknown word '{}': no `word {} <address>` binding in this diagram",
+            tok, tok
+        )),
+    }
+}
+
+/// The canonical word for an address in this lexicon: the lexicographically
+/// first word bound to it, if any. Aliases resolve but are never emitted.
+fn canonical_word(words: &[(String, ArtifactAddr)], addr: &ArtifactAddr) -> Option<String> {
+    words
+        .iter()
+        .filter(|(_, a)| a == addr)
+        .map(|(w, _)| w.clone())
+        .min()
 }
 
 /// Parse a 5D artifact address in display form: volume.book.chapter/section.scroll
@@ -133,19 +183,20 @@ fn split_quoted(s: &str) -> Result<(Vec<String>, Option<String>), String> {
     }
 }
 
-/// Parse the tail of a `node` statement: `<addr> "<label>" [@ <PhaseName>]`.
+/// Parse the tail of a `node` statement: `<addr-or-word> "<label>" [@ <PhaseName>]`.
 /// The lane annotation follows the quoted label, so this statement form
 /// cannot share the "quoted string comes last" split used by the other
 /// statements. `default_lane` is the diagram's current projection phase.
 fn parse_node_tail(
     s: &str,
     default_lane: Phase,
+    words: &[(String, ArtifactAddr)],
 ) -> Result<(ArtifactAddr, String, Phase), String> {
-    const FORM: &str = "node form: node <addr> \"<label>\" [@ <PhaseName>]";
+    const FORM: &str = "node form: node <addr-or-word> \"<label>\" [@ <PhaseName>]";
     let (addr_tok, rest) = s
         .split_once(char::is_whitespace)
         .ok_or_else(|| FORM.to_string())?;
-    let addr = parse_addr(addr_tok)?;
+    let addr = resolve_ref(addr_tok, words)?;
     let rest = rest.trim_start();
     if !rest.starts_with('"') {
         return Err("node requires a quoted label".into());
@@ -171,6 +222,56 @@ fn parse_node_tail(
 
 /// Parse the diagram notation.
 pub fn parse_diagram(text: &str) -> Result<Diagram, ParseError> {
+    // First pass: collect `word` bindings from the whole text, so a word
+    // may be bound after the statements that use it. Binding one word to
+    // two different addresses is an error naming the word and both
+    // addresses; rebinding it to the same address is harmless.
+    let mut words: Vec<(String, ArtifactAddr)> = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let line_no = i + 1;
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("word ") {
+            let err = |m: String| ParseError {
+                line: line_no,
+                message: m,
+            };
+            let toks: Vec<&str> = rest.split_whitespace().collect();
+            if toks.len() != 2 {
+                return Err(err("word form: word <name> <address>".into()));
+            }
+            let (w, atok) = (toks[0], toks[1]);
+            if w.contains('.') || w.contains('/') {
+                return Err(err(format!(
+                    "'{}' cannot be a design word: words contain no '.' or '/' (those make an address)",
+                    w
+                )));
+            }
+            if !(atok.contains('.') && atok.contains('/')) {
+                return Err(err(format!(
+                    "word '{}' must be bound to a raw artifact address, not '{}'",
+                    w, atok
+                )));
+            }
+            let addr = parse_addr(atok).map_err(err)?;
+            match words.iter().find(|(existing, _)| existing == w) {
+                Some((_, existing_addr)) if *existing_addr != addr => {
+                    return Err(err(format!(
+                        "word '{}' is already bound to {}; cannot rebind to {}",
+                        w,
+                        existing_addr.display(),
+                        addr.display()
+                    )));
+                }
+                Some(_) => {}
+                None => words.push((w.to_string(), addr)),
+            }
+        }
+    }
+    words.sort_by(|a, b| a.0.cmp(&b.0));
+
     let mut name = "diagram".to_string();
     let mut phase = Phase::Design;
     let mut nodes: Vec<DNode> = Vec::new();
@@ -197,21 +298,24 @@ pub fn parse_diagram(text: &str) -> Result<Diagram, ParseError> {
             let p = rest.trim();
             phase = phase_by_name(p)
                 .ok_or_else(|| err(format!("unknown phase '{}'", p)))?;
+        } else if line.starts_with("word ") {
+            // Bindings were collected in the first pass; nothing to do.
+            continue;
         } else if let Some(rest) = line.strip_prefix("node ") {
-            // node <addr> "<label>" [@ <PhaseName>]
+            // node <addr-or-word> "<label>" [@ <PhaseName>]
             let (addr, label, lane) =
-                parse_node_tail(rest.trim(), phase).map_err(err)?;
+                parse_node_tail(rest.trim(), phase, &words).map_err(err)?;
             nodes.push(DNode { addr, label, lane });
         } else if let Some(rest) = line.strip_prefix("edge ") {
-            // edge <addr> -> <addr> : <relation> ["<label>"]
+            // edge <addr-or-word> -> <addr-or-word> : <relation> ["<label>"]
             let (tokens, quoted) = split_quoted(rest).map_err(err)?;
             if tokens.len() != 5 || tokens[1] != "->" || tokens[3] != ":" {
                 return Err(err(
-                    "edge form: edge <addr> -> <addr> : <relation> [\"<label>\"]".into(),
+                    "edge form: edge <addr-or-word> -> <addr-or-word> : <relation> [\"<label>\"]".into(),
                 ));
             }
-            let from = parse_addr(&tokens[0]).map_err(err)?;
-            let to = parse_addr(&tokens[2]).map_err(err)?;
+            let from = resolve_ref(&tokens[0], &words).map_err(err)?;
+            let to = resolve_ref(&tokens[2], &words).map_err(err)?;
             edges.push(DEdge {
                 from,
                 to,
@@ -228,6 +332,7 @@ pub fn parse_diagram(text: &str) -> Result<Diagram, ParseError> {
         phase,
         nodes,
         edges,
+        words,
     })
 }
 
@@ -257,18 +362,39 @@ impl Diagram {
         v
     }
 
+    /// Word bindings in canonical order (by word).
+    fn sorted_words(&self) -> Vec<&(String, ArtifactAddr)> {
+        let mut v: Vec<&(String, ArtifactAddr)> = self.words.iter().collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
+    /// How an address is written in canonical notation: by its canonical
+    /// word where one is bound in this diagram's lexicon, else by raw
+    /// address. Words are the human surface; the address remains the truth
+    /// underneath, one lookup away.
+    fn reference(&self, addr: &ArtifactAddr) -> String {
+        match canonical_word(&self.words, addr) {
+            Some(w) => w,
+            None => addr.display(),
+        }
+    }
+
     /// Emit the canonical notation for this diagram.
     pub fn to_notation(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("diagram \"{}\"\n", self.name));
         out.push_str(&format!("phase {}\n", self.phase.name()));
+        for (w, a) in self.sorted_words() {
+            out.push_str(&format!("word {} {}\n", w, a.display()));
+        }
         for n in self.sorted_nodes() {
             if n.lane == self.phase {
-                out.push_str(&format!("node {} \"{}\"\n", n.addr.display(), n.label));
+                out.push_str(&format!("node {} \"{}\"\n", self.reference(&n.addr), n.label));
             } else {
                 out.push_str(&format!(
                     "node {} \"{}\" @ {}\n",
-                    n.addr.display(),
+                    self.reference(&n.addr),
                     n.label,
                     n.lane.name()
                 ));
@@ -278,15 +404,15 @@ impl Diagram {
             if e.label.is_empty() {
                 out.push_str(&format!(
                     "edge {} -> {} : {}\n",
-                    e.from.display(),
-                    e.to.display(),
+                    self.reference(&e.from),
+                    self.reference(&e.to),
                     e.relation
                 ));
             } else {
                 out.push_str(&format!(
                     "edge {} -> {} : {} \"{}\"\n",
-                    e.from.display(),
-                    e.to.display(),
+                    self.reference(&e.from),
+                    self.reference(&e.to),
                     e.relation,
                     e.label
                 ));
@@ -312,6 +438,7 @@ impl Diagram {
                 })
                 .collect(),
             edges: self.edges.clone(),
+            words: self.words.clone(),
         }
     }
 
@@ -496,6 +623,16 @@ node 1.2.3/4.6 \"Ledger component\" @ Source
 edge 1.2.3/4.5 -> 1.2.3/4.6 : depends \"posts entries\"
 ";
 
+    const SAMPLE_WORDS: &str = "\
+diagram \"Payments flow\"
+phase Design
+word checkout 1.2.3/4.5
+word ledger 1.2.3/4.6
+node checkout \"Checkout component\"
+node ledger \"Ledger component\" @ Source
+edge checkout -> ledger : depends \"posts entries\"
+";
+
     #[test]
     fn parse_sample() {
         let d = parse_diagram(SAMPLE).unwrap();
@@ -593,5 +730,85 @@ edge 1.2.3/4.5 -> 1.2.3/4.6 : depends \"posts entries\"
         assert_eq!(parse_addr(&a.display()).unwrap(), a);
         assert!(parse_addr("1.2/3.4").is_err());
         assert!(parse_addr("1.2.3.4/5.6").is_err());
+    }
+
+    #[test]
+    fn word_bindings_resolve() {
+        let d = parse_diagram(SAMPLE_WORDS).unwrap();
+        let plain = parse_diagram(SAMPLE).unwrap();
+        assert_eq!(d.words.len(), 2);
+        assert_eq!(d.words[0].0, "checkout");
+        // Word references land on exactly the addresses they name.
+        assert_eq!(d.nodes, plain.nodes);
+        assert_eq!(d.edges, plain.edges);
+        // Bindings are collected in a first pass: a word may be bound
+        // after the statements that use it.
+        let late = "node checkout \"Checkout component\"\nword checkout 1.2.3/4.5\n";
+        let d2 = parse_diagram(late).unwrap();
+        assert_eq!(d2.nodes[0].addr, plain.nodes[0].addr);
+    }
+
+    #[test]
+    fn word_and_address_forms_render_identically() {
+        let by_word = parse_diagram(SAMPLE_WORDS).unwrap();
+        let by_addr = parse_diagram(SAMPLE).unwrap();
+        assert_eq!(by_word.nodes, by_addr.nodes);
+        assert_eq!(by_word.edges, by_addr.edges);
+        assert_eq!(by_word.to_svg(), by_addr.to_svg());
+        assert_eq!(by_word.to_text(), by_addr.to_text());
+    }
+
+    #[test]
+    fn unknown_word_is_named_with_its_line() {
+        let bad = "diagram \"X\"\nnode ghost \"G\"\n";
+        let e = parse_diagram(bad).unwrap_err();
+        assert_eq!(e.line, 2);
+        assert!(
+            e.message.contains("ghost"),
+            "error must name the word: {}",
+            e.message
+        );
+        let bad_edge = "word a 1.1.1/1.1\nedge a -> missing : depends\n";
+        let e2 = parse_diagram(bad_edge).unwrap_err();
+        assert_eq!(e2.line, 2);
+        assert!(e2.message.contains("missing"));
+    }
+
+    #[test]
+    fn conflicting_binding_is_an_error_same_address_is_harmless() {
+        let conflict = "word a 1.1.1/1.1\nword a 1.2.1/1.1\n";
+        let e = parse_diagram(conflict).unwrap_err();
+        assert_eq!(e.line, 2);
+        assert!(e.message.contains("'a'"), "error must name the word: {}", e.message);
+        assert!(e.message.contains("1.1.1/1.1"));
+        assert!(e.message.contains("1.2.1/1.1"));
+        let harmless = "word a 1.1.1/1.1\nword a 1.1.1/1.1\nnode a \"A\"\n";
+        assert!(parse_diagram(harmless).is_ok());
+    }
+
+    #[test]
+    fn word_round_trip_is_a_fixed_point() {
+        let d = parse_diagram(SAMPLE_WORDS).unwrap();
+        let text = d.to_notation();
+        // Canonical emission keeps the lexicon and speaks words.
+        assert!(text.contains("word checkout 1.2.3/4.5\n"));
+        assert!(text.contains("node checkout \"Checkout component\"\n"));
+        assert!(text.contains("edge checkout -> ledger : depends \"posts entries\"\n"));
+        let d2 = parse_diagram(&text).unwrap();
+        assert_eq!(d, d2);
+        assert_eq!(d2.to_notation(), text);
+    }
+
+    #[test]
+    fn phase_invariance_holds_with_words() {
+        let d = parse_diagram(SAMPLE_WORDS).unwrap();
+        let p = d.project(Phase::Proofs);
+        // Projection carries the lexicon and touches no address.
+        assert_eq!(p.words, d.words);
+        for (a, b) in d.nodes.iter().zip(p.nodes.iter()) {
+            assert_eq!(a.addr, b.addr);
+            assert_eq!(b.lane, Phase::Proofs);
+        }
+        assert_eq!(d.edges, p.edges);
     }
 }
