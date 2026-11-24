@@ -78,3 +78,7 @@ required-features = ["web"]
 [[bench]]
 name = "lattice_bench"
 harness = false
+
+[[bin]]
+name = "phext-sparql"
+path = "src/bin/phext_sparql.rs"
