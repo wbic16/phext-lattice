@@ -41,6 +41,8 @@ ureq = { version = "2", default-features = false, features = ["tls"], optional =
 # already in the dependency graph (rustls builds on it); this only makes
 # the existing version a direct dependency of the web feature.
 ring = { version = "0.17", optional = true }
+# phext-serve: HoloPhext is async; tokio is already in the graph via holo-phext.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
 
 # TUI deps
 ratatui = { version = "0.29", optional = true }
@@ -82,3 +84,8 @@ harness = false
 [[bin]]
 name = "phext-sparql"
 path = "src/bin/phext_sparql.rs"
+
+[[bin]]
+name = "phext-serve"
+path = "src/bin/phext_serve.rs"
+required-features = ["web"]
