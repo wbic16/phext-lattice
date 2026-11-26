@@ -48,7 +48,6 @@ pub mod tts;
 pub mod uml6d;
 pub mod uml6d_diagram;
 pub mod undo;
-pub mod sparql;
 
 // Re-exports for convenience
 pub use coordinate_ext::{Dimension, CoordinateNav};
