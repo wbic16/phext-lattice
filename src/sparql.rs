@@ -264,11 +264,39 @@ impl VecSource {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let q = parse_nquad_line(line).map_err(|e| format!("line {}: {e}", i + 1))?;
+            let q = parse_nt_line(line).map_err(|e| format!("line {}: {e}", i + 1))?;
             src.quads.push(q);
         }
         Ok(src)
     }
+    /// Parse and append ONE N-Triples / N-Quads line (the per-line seam
+    /// of [`VecSource::from_nquads`]). Blank lines and comments are an
+    /// error here — a caller feeding lines one at a time means each one
+    /// to count. The internal representation is a plain `Vec<Quad>`
+    /// with no precomputed indexes, so appending is always sound.
+    pub fn push_nt_line(&mut self, line: &str) -> Result<(), String> {
+        let q = parse_nt_line(line.trim())?;
+        self.quads.push(q);
+        Ok(())
+    }
+    /// Remove every quad equal to the one a single N-Triples / N-Quads
+    /// line parses to; returns whether anything was removed. Sound for
+    /// the same reason as [`VecSource::push_nt_line`]: no indexes to
+    /// keep in step, `quads()` filters the Vec on every call.
+    pub fn remove_nt_line(&mut self, line: &str) -> Result<bool, String> {
+        let q = parse_nt_line(line.trim())?;
+        let before = self.quads.len();
+        self.quads.retain(|x| x != &q);
+        Ok(self.quads.len() != before)
+    }
+}
+
+/// The per-line parser both bulk and line-at-a-time ingestion share.
+fn parse_nt_line(line: &str) -> Result<Quad, String> {
+    if line.is_empty() || line.starts_with('#') {
+        return Err("not a quad line".into());
+    }
+    parse_nquad_line(line)
 }
 
 impl QuadSource for VecSource {
@@ -2077,10 +2105,32 @@ impl<'a, S: QuadSource> Ev<'a, S> {
             return;
         }
         let (pat, rest) = (&pats[0], &pats[1..]);
+        // Fan-out deduplication (defect #104, V2-REPORT §5.3): calamus
+        // fans one pattern out as { SELECT DISTINCT <pattern vars>
+        // WHERE { VALUES … } }, so solutions from ONE triple pattern
+        // that are identical as binding maps collapse to one BEFORE
+        // joining. The prep maps above fan a pattern out at match time
+        // instead (one asked class matching two stored spellings of a
+        // subject typed both ways yields the same extension twice), so
+        // the same discipline is applied here: collect this pattern's
+        // extensions of the incoming solution, drop exact duplicates
+        // keeping first-occurrence order, and only then join with the
+        // remaining patterns. This is semantics-safe because two
+        // identical binding maps are interchangeable in every later
+        // join, filter and projection — deduplicating them changes
+        // only multiplicity, never the set of distinct results, which
+        // is exactly the DISTINCT the fan-out prescribes. Nothing is
+        // deduplicated across patterns or joins.
+        let mut first: Vec<Binding> = Vec::new();
         for t in triples {
             if let Some(extended) = self.match_pattern(pat, t, sol) {
-                self.match_bgp(rest, triples, &extended, out);
+                if !first.contains(&extended) {
+                    first.push(extended);
+                }
             }
+        }
+        for extended in first {
+            self.match_bgp(rest, triples, &extended, out);
         }
     }
 
@@ -3086,6 +3136,65 @@ mod tests {
         let rs = rows(&s, &q);
         assert_eq!(rs.len(), 3);
         assert!(rs.iter().all(|r| r.get("g").is_some()), "a row lost its graph");
+    }
+
+    /// The §5.3 crafted probe's data: ONE subject typed both stored
+    /// spellings (ravel:Turn and ravel:Memory) of the abstract class
+    /// subtexture:Thing, in ONE graph.
+    fn fanout_data() -> VecSource {
+        let mut s = VecSource::new();
+        let g = Some("https://repolex.ai/ravel/NamedGraph/craft");
+        let z9 = iri("https://repolex.ai/ravel/Turn/z9");
+        s.push(g, z9.clone(), iri(RDF_TYPE), iri(&format!("{R}Turn")));
+        s.push(g, z9, iri(RDF_TYPE), iri(&format!("{R}Memory")));
+        s
+    }
+
+    #[test]
+    fn fanout_duplicates_collapse_within_one_pattern() {
+        // Defect #104: without per-pattern dedup this returns 2 rows —
+        // one per fanned stored spelling — where calamus returns 1.
+        let s = fanout_data();
+        let q = format!("{P} SELECT ?s WHERE {{ ?s a subtexture:Thing }}");
+        assert_eq!(rows(&s, &q).len(), 1);
+    }
+
+    #[test]
+    fn fanout_duplicates_collapse_inside_graph() {
+        let s = fanout_data();
+        let q = format!("{P} SELECT ?g ?s WHERE {{ GRAPH ?g {{ ?s a subtexture:Thing }} }}");
+        assert_eq!(rows(&s, &q).len(), 1);
+    }
+
+    #[test]
+    fn fanout_with_distinct_subjects_per_spelling_keeps_all() {
+        // Non-regression: dedup collapses identical maps only — a
+        // second subject reachable through just one spelling survives.
+        let mut s = fanout_data();
+        let g = Some("https://repolex.ai/ravel/NamedGraph/craft");
+        let z10 = iri("https://repolex.ai/ravel/Memory/z10");
+        s.push(g, z10, iri(RDF_TYPE), iri(&format!("{R}Memory")));
+        let q = format!("{P} SELECT ?s WHERE {{ ?s a subtexture:Thing }}");
+        assert_eq!(rows(&s, &q).len(), 2);
+        let q = format!("{P} SELECT ?g ?s WHERE {{ GRAPH ?g {{ ?s a subtexture:Thing }} }}");
+        assert_eq!(rows(&s, &q).len(), 2);
+    }
+
+    #[test]
+    fn nt_line_push_and_remove_round_trip() {
+        let mut s = VecSource::new();
+        let line = "<http://ex.org/a> <http://ex.org/name> \"Alice\" <http://ex.org/g> .";
+        s.push_nt_line(line).unwrap();
+        assert_eq!(s.quads.len(), 1);
+        assert_eq!(s.graph_names(), vec!["http://ex.org/g".to_string()]);
+        // A triple line (no graph) parses to the default graph.
+        s.push_nt_line("<http://ex.org/a> <http://ex.org/name> \"Alice\" .").unwrap();
+        assert_eq!(s.quads.len(), 2);
+        assert!(s.remove_nt_line(line).unwrap());
+        assert_eq!(s.quads.len(), 1);
+        assert!(!s.remove_nt_line(line).unwrap());
+        assert!(s.push_nt_line("not a quad").is_err());
+        assert!(s.push_nt_line("").is_err());
     }
 
     #[test]

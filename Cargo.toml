@@ -42,7 +42,7 @@ ureq = { version = "2", default-features = false, features = ["tls"], optional =
 # the existing version a direct dependency of the web feature.
 ring = { version = "0.17", optional = true }
 # phext-serve: HoloPhext is async; tokio is already in the graph via holo-phext.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
 
 # TUI deps
 ratatui = { version = "0.29", optional = true }
