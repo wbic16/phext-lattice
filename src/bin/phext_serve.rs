@@ -5,7 +5,8 @@
 //!     through the SQ-compatible /api/v2 scroll surface, plus the
 //!     batching primitive SQ lacks (`/txn`: many scroll writes as ONE
 //!     atomic holo commit) and a commit feed (`/seq`, `/updates`);
-//!   * a maintained quad set, evaluated in-process by the phext-lattice
+//!   * a maintained quad set — a persistent per-soul `VecSource`,
+//!     updated line by line — evaluated in-process by the phext-lattice
 //!     SPARQL subset evaluator (`/quads`, `/query`). `/query` answers in
 //!     the phext-sparql bin's line protocol verbatim, with the bin's
 //!     exit semantics mirrored in the `X-Exit` response header, so the
@@ -40,6 +41,12 @@ struct Soul {
     holo: HoloPhext,
     quads: Vec<String>,
     quad_set: HashSet<String>,
+    /// The maintained quad set as an evaluator source, kept in step
+    /// with `quads`/`quad_set` line by line (see the /quads handler).
+    /// VecSource is a plain Vec<Quad> with no precomputed indexes, so
+    /// push/remove per line are sound and /query borrows this directly
+    /// instead of re-parsing the joined lines per query.
+    source: VecSource,
     ring: VecDeque<RingEntry>,
 }
 
@@ -73,6 +80,7 @@ impl State {
             holo,
             quads: Vec::new(),
             quad_set: HashSet::new(),
+            source: VecSource::new(),
             ring: VecDeque::new(),
         }));
         // Feed the updates ring from subscribe() for the soul's life.
@@ -182,9 +190,9 @@ fn parse_coord(s: &str) -> Result<Coordinate, String> {
 
 // ── SPARQL line protocol (verbatim from the phext-sparql bin) ───────
 
-fn run_query(quads_text: &str, rq: &str, base: &str, prep_text: Option<&str>) -> (u8, String) {
+fn run_query(src: &VecSource, rq: &str, base: &str, prep_text: Option<&str>) -> (u8, String) {
     let run = || -> Result<String, (u8, String)> {
-        let src = VecSource::from_nquads(quads_text).map_err(|e| (2u8, e))?;
+        let src: &VecSource = src;
         let mut prep = Prep::default();
         if let Some(text) = prep_text {
             for line in text.lines() {
@@ -209,7 +217,7 @@ fn run_query(quads_text: &str, rq: &str, base: &str, prep_text: Option<&str>) ->
             Some(c) => (3u8, format!("REFUSED\t{c}\t{}", e.message)),
             None => (2u8, format!("ERROR\t{}", e.message)),
         })?;
-        let outcome = evaluate(&query, &src, &prep).map_err(|e| (2u8, format!("ERROR\t{e}")))?;
+        let outcome = evaluate(&query, src, &prep).map_err(|e| (2u8, format!("ERROR\t{e}")))?;
         let mut out = String::new();
         for name in &outcome.left_as_written {
             out.push_str(&format!("NOTE\t{name}\n"));
@@ -417,19 +425,46 @@ async fn route(
                 .collect();
             Response::json(200, serde_json::Value::Array(items))
         }
+        ("POST", "/api/v2/checkpoint") => {
+            let s = soul.lock().await;
+            if let Err(e) = s.holo.checkpoint().await {
+                return Response::err(format!("checkpoint: {e}"));
+            }
+            let main_path = state.data_dir.join(format!("{stem}.phext"));
+            let wal_path = state.data_dir.join(format!("{stem}.wal.phext"));
+            let main_bytes = std::fs::metadata(&main_path).map(|m| m.len()).unwrap_or(0);
+            let wal_bytes = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+            Response::json(
+                200,
+                serde_json::json!({"seq": s.holo.seq(), "main_bytes": main_bytes, "wal_bytes": wal_bytes}),
+            )
+        }
         ("POST", "/api/v2/quads") => {
             let v: serde_json::Value = match serde_json::from_str(&body_str) {
                 Ok(v) => v,
                 Err(e) => return Response::err(format!("json: {e}")),
             };
             let mut s = soul.lock().await;
+            // The line set stays the dedup authority (exact-line
+            // identity, as before); the VecSource is maintained in
+            // step with it. All mutations are built on clones first, so
+            // a line that fails to parse leaves the soul untouched —
+            // previously such a line was stored and every /query then
+            // failed at re-parse; now the /quads call itself errors.
+            let mut quads = s.quads.clone();
+            let mut quad_set = s.quad_set.clone();
+            let mut source = s.source.clone();
             if let Some(replace) = v.get("replace").and_then(|r| r.as_array()) {
-                s.quads.clear();
-                s.quad_set.clear();
+                quads.clear();
+                quad_set.clear();
+                source = VecSource::new();
                 for q in replace {
                     if let Some(line) = q.as_str() {
-                        if s.quad_set.insert(line.to_string()) {
-                            s.quads.push(line.to_string());
+                        if quad_set.insert(line.to_string()) {
+                            if let Err(e) = source.push_nt_line(line) {
+                                return Response::err(format!("quads: {e}"));
+                            }
+                            quads.push(line.to_string());
                         }
                     }
                 }
@@ -437,8 +472,11 @@ async fn route(
                 if let Some(add) = v.get("add").and_then(|r| r.as_array()) {
                     for q in add {
                         if let Some(line) = q.as_str() {
-                            if s.quad_set.insert(line.to_string()) {
-                                s.quads.push(line.to_string());
+                            if quad_set.insert(line.to_string()) {
+                                if let Err(e) = source.push_nt_line(line) {
+                                    return Response::err(format!("quads: {e}"));
+                                }
+                                quads.push(line.to_string());
                             }
                         }
                     }
@@ -446,13 +484,19 @@ async fn route(
                 if let Some(remove) = v.get("remove").and_then(|r| r.as_array()) {
                     for q in remove {
                         if let Some(line) = q.as_str() {
-                            if s.quad_set.remove(line) {
-                                s.quads.retain(|x| x != line);
+                            if quad_set.remove(line) {
+                                if let Err(e) = source.remove_nt_line(line) {
+                                    return Response::err(format!("quads: {e}"));
+                                }
+                                quads.retain(|x| x != line);
                             }
                         }
                     }
                 }
             }
+            s.quads = quads;
+            s.quad_set = quad_set;
+            s.source = source;
             Response::json(200, serde_json::json!({"quads": s.quads.len()}))
         }
         ("POST", "/api/v2/query") => {
@@ -464,18 +508,13 @@ async fn route(
                 },
                 None => None,
             };
-            // VecSource's only bulk constructor is from_nquads over
-            // text, so the maintained set (NT lines, deduped) is joined
-            // and re-parsed per query — N-Quads is a superset of NT.
-            let quads_text = {
+            // Evaluate against the soul's maintained VecSource,
+            // borrowed in place under the soul lock — no join, no
+            // re-parse, no clone of the quad set per query.
+            let (exit, out) = {
                 let s = soul.lock().await;
-                let mut t = s.quads.join("\n");
-                if !t.is_empty() {
-                    t.push('\n');
-                }
-                t
+                run_query(&s.source, &body_str, &base, prep_text.as_deref())
             };
-            let (exit, out) = run_query(&quads_text, &body_str, &base, prep_text.as_deref());
             let mut r = Response::text(200, out);
             r.extra.push(("X-Exit".into(), exit.to_string()));
             r
@@ -571,13 +610,48 @@ async fn main() {
         data_dir,
         souls: Mutex::new(HashMap::new()),
     });
-    loop {
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                let st = state.clone();
-                tokio::spawn(async move { handle(st, stream).await });
+    // Graceful stop: on SIGTERM/SIGINT, checkpoint every open soul so
+    // no soul's data is left living only in its WAL, then exit 0.
+    let shutdown = async {
+        #[cfg(unix)]
+        {
+            let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("SIGTERM handler");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
             }
-            Err(e) => eprintln!("accept: {e}"),
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    };
+    tokio::pin!(shutdown);
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                match accepted {
+                    Ok((stream, _)) => {
+                        let st = state.clone();
+                        tokio::spawn(async move { handle(st, stream).await });
+                    }
+                    Err(e) => eprintln!("accept: {e}"),
+                }
+            }
+            _ = &mut shutdown => break,
+        }
+    }
+    eprintln!("phext-serve stopping: checkpointing all open souls");
+    let souls: Vec<Arc<Mutex<Soul>>> = {
+        let map = state.souls.lock().await;
+        map.values().cloned().collect()
+    };
+    for soul in souls {
+        let s = soul.lock().await;
+        match s.holo.checkpoint().await {
+            Ok(()) => eprintln!("checkpoint ok (seq {})", s.holo.seq()),
+            Err(e) => eprintln!("checkpoint failed: {e}"),
         }
     }
 }
