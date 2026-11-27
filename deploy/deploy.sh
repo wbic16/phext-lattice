@@ -689,6 +689,16 @@ X_CLIENT_SECRET=
 #PHEXT_SSO_MUTABLE_URL=https://mutable.phext.io
 #PHEXT_SSO_EXOCORTEXIA_URL=
 #PHEXT_SSO_WISHNODE_URL=
+#PHEXT_SSO_NOVAFOXWIKI_URL=https://fox.phext.io
+# Consumer mode: an instance that signs in THROUGH phext.tech SSO
+# instead of holding provider keys of its own (the Nova Fox wiki
+# is the first). Name the audience this instance is registered
+# as; the provider defaults to https://phext.tech, and
+# PHEXT_SSO_SECRET above is the key its assertions are opened
+# with. Until the audience is set, the consumer endpoints
+# answer 404.
+#PHEXT_SSO_AUDIENCE=
+#PHEXT_SSO_PROVIDER_URL=
 # Arming flag only — the desktop audience has no origin to configure;
 # the return is the app's per-attempt loopback listener.
 #PHEXT_SSO_DESKTOP=1

@@ -174,7 +174,7 @@ pub struct Oauth {
     base: String,
     session_secret: String,
     /// Signs SSO assertions for every allowlisted audience (Mutable,
-    /// Exocortexia, Wishnode, Ravel, Qexo), and nothing else. Deliberately not the session
+    /// Exocortexia, Wishnode, Ravel, Qexo, Novafoxwiki), and nothing else. Deliberately not the session
     /// secret: each audience holds this key to verify assertions, and
     /// a leak over there must not mint edit sessions.
     sso_secret: String,
@@ -204,6 +204,13 @@ pub struct Oauth {
     /// no established production origin to fall back to — an SSO
     /// redirect target is never guessed.
     sso_qexo_target: String,
+    /// Where the Nova Fox wiki lives; assertions for that audience
+    /// are redirected to its callback. Empty until
+    /// `PHEXT_SSO_NOVAFOXWIKI_URL` is set: like Exocortexia it has
+    /// no default, because there is no established production
+    /// origin to fall back to — an SSO redirect target is never
+    /// guessed.
+    sso_novafoxwiki_target: String,
     /// Whether the desktop audience (Phext Notepad) is armed:
     /// `PHEXT_SSO_DESKTOP=1`. A desktop app has no fixed origin to
     /// configure — its callback is a loopback listener it opens per
@@ -221,6 +228,19 @@ pub struct Oauth {
     /// secret is unset is unregistered, and the route answers as
     /// if it did not exist.
     sso_agent_emise_secret: String,
+    /// The provider an instance that is itself an SSO *consumer*
+    /// sends its sign-ins to (`PHEXT_SSO_PROVIDER_URL`). Unset
+    /// means the production phext.tech — its origin is
+    /// established, like Mutable's target — and a set-but-invalid
+    /// value disables the consumer mode (empty) rather than
+    /// guessing a provider.
+    sso_consumer_provider: String,
+    /// The audience this instance is registered as at the
+    /// provider (`PHEXT_SSO_AUDIENCE`): the `aud` its sign-in
+    /// start names and the only `aud` its callback accepts.
+    /// Empty until set — an instance with no audience is not a
+    /// consumer, and its consumer endpoints do not exist.
+    sso_consumer_aud: String,
     cookie_secure: bool,
     github: Option<ProviderKeys>,
     google: Option<ProviderKeys>,
@@ -334,8 +354,11 @@ impl Oauth {
             &std::env::var("PHEXT_SSO_WISHNODE_URL").unwrap_or_default(),
             &std::env::var("PHEXT_SSO_RAVEL_URL").unwrap_or_default(),
             &std::env::var("PHEXT_SSO_QEXO_URL").unwrap_or_default(),
+            &std::env::var("PHEXT_SSO_NOVAFOXWIKI_URL").unwrap_or_default(),
             std::env::var("PHEXT_SSO_DESKTOP").unwrap_or_default().trim() == "1",
             &std::env::var("PHEXT_SSO_AGENT_EMISE_SECRET").unwrap_or_default(),
+            &std::env::var("PHEXT_SSO_PROVIDER_URL").unwrap_or_default(),
+            &std::env::var("PHEXT_SSO_AUDIENCE").unwrap_or_default(),
             Arc::new(HttpSource),
         )
     }
@@ -357,14 +380,17 @@ impl Oauth {
             "https://wishnode.example",
             "https://ravel.example",
             "https://qexo.example",
+            "https://wiki.example",
             true,
             "test-agent-emise-secret-for-tests-only",
+            "",
+            "",
             Arc::new(ScriptedSource),
         )
     }
 
     pub fn closed() -> Self {
-        Self::from_parts("", "", false, "", "", "", "", "", "", "", "", "", "", "", "", false, "", Arc::new(ScriptedSource))
+        Self::from_parts("", "", false, "", "", "", "", "", "", "", "", "", "", "", "", "", false, "", "", "", Arc::new(ScriptedSource))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -384,8 +410,11 @@ impl Oauth {
         sso_wishnode_target: &str,
         sso_ravel_target: &str,
         sso_qexo_target: &str,
+        sso_novafoxwiki_target: &str,
         sso_desktop: bool,
         sso_agent_emise_secret: &str,
+        sso_consumer_provider: &str,
+        sso_consumer_aud: &str,
         source: Arc<dyn IdentitySource>,
     ) -> Self {
         let base = base.trim().trim_end_matches('/').to_string();
@@ -434,6 +463,36 @@ impl Oauth {
         } else {
             String::new()
         };
+        // Unset or invalid leaves the Nova Fox wiki unconfigured
+        // the same way (empty target, its endpoint 404s), for the
+        // same reason.
+        let sso_novafoxwiki_target = sso_novafoxwiki_target.trim().trim_end_matches('/').to_string();
+        let sso_novafoxwiki_target = if valid_base(&sso_novafoxwiki_target) {
+            sso_novafoxwiki_target
+        } else {
+            String::new()
+        };
+        // The consumer half, for an instance that signs in through
+        // phext.tech instead of holding provider keys of its own:
+        // an unset provider means the production phext.tech (its
+        // origin is established, like Mutable's target); a
+        // set-but-invalid value disables the mode rather than
+        // guessing. An audience that is not a plain audience token
+        // is no audience at all — the mode stays off.
+        let sso_consumer_provider = sso_consumer_provider.trim().trim_end_matches('/').to_string();
+        let sso_consumer_provider = if sso_consumer_provider.is_empty() {
+            "https://phext.tech".to_string()
+        } else if valid_base(&sso_consumer_provider) {
+            sso_consumer_provider
+        } else {
+            String::new()
+        };
+        let sso_consumer_aud = sso_consumer_aud.trim().to_string();
+        let sso_consumer_aud = if valid_audience(&sso_consumer_aud) {
+            sso_consumer_aud
+        } else {
+            String::new()
+        };
         Self {
             base,
             session_secret: session_secret.trim().to_string(),
@@ -443,8 +502,11 @@ impl Oauth {
             sso_wishnode_target,
             sso_ravel_target,
             sso_qexo_target,
+            sso_novafoxwiki_target,
             sso_desktop,
             sso_agent_emise_secret: sso_agent_emise_secret.trim().to_string(),
+            sso_consumer_provider,
+            sso_consumer_aud,
             cookie_secure,
             github: provider(github_id, github_secret),
             google: provider(google_id, google_secret),
@@ -456,7 +518,10 @@ impl Oauth {
     pub fn ready(&self) -> bool {
         real_session_secret(&self.session_secret)
             && !self.base.is_empty()
-            && (self.github.is_some() || self.google.is_some() || self.x.is_some())
+            && (self.github.is_some()
+                || self.google.is_some()
+                || self.x.is_some()
+                || self.sso_consumer_ready())
     }
 
     /// True when the Mutable SSO handoff is configured: a real SSO
@@ -484,6 +549,43 @@ impl Oauth {
         real_session_secret(&self.sso_secret) && self.sso_desktop
     }
 
+    /// True when this instance is an SSO consumer: it holds an
+    /// audience it is registered as, a provider to send the
+    /// browser to, and the shared SSO secret to open the
+    /// provider's assertions with. The session secret is a
+    /// separate concern — `ready()` asks for it before the gate
+    /// calls sign-in configured at all.
+    pub fn sso_consumer_ready(&self) -> bool {
+        real_session_secret(&self.sso_secret)
+            && !self.sso_consumer_aud.is_empty()
+            && !self.sso_consumer_provider.is_empty()
+    }
+
+    /// The audience this instance consumes under (empty when it
+    /// is not a consumer).
+    pub fn sso_consumer_aud(&self) -> &str {
+        &self.sso_consumer_aud
+    }
+
+    /// The consumer's sign-in endpoint: the provider's handoff
+    /// for this instance's audience. The session view advertises
+    /// it and the sign-in surface links straight there with the
+    /// return path as the `return` query — the provider clamps
+    /// that path by `safe_next` at the moment of sealing, the
+    /// same discipline as every mint, so no unsigned return
+    /// input ever crosses. None when this instance is not a
+    /// consumer.
+    pub fn sso_consumer_endpoint(&self) -> Option<String> {
+        if self.sso_consumer_ready() {
+            Some(format!(
+                "{}/api/auth/sso/{}",
+                self.sso_consumer_provider, self.sso_consumer_aud
+            ))
+        } else {
+            None
+        }
+    }
+
     pub fn base(&self) -> &str {
         &self.base
     }
@@ -497,8 +599,9 @@ impl Oauth {
     /// always has a target (its production origin is the default);
     /// Exocortexia has one only once `PHEXT_SSO_EXOCORTEXIA_URL` is
     /// set, Wishnode only once `PHEXT_SSO_WISHNODE_URL` is, Ravel
-    /// only once `PHEXT_SSO_RAVEL_URL` is, and Qexo only once
-    /// `PHEXT_SSO_QEXO_URL` is. This
+    /// only once `PHEXT_SSO_RAVEL_URL` is, Qexo only once
+    /// `PHEXT_SSO_QEXO_URL` is, and the Nova Fox wiki only once
+    /// `PHEXT_SSO_NOVAFOXWIKI_URL` is. This
     /// match is the audience allowlist — an audience that is
     /// not named here can never be minted for. The desktop audience
     /// is deliberately absent: it has no fixed origin (its callback
@@ -519,6 +622,9 @@ impl Oauth {
             }
             "qexo" if !self.sso_qexo_target.is_empty() => {
                 Some(&self.sso_qexo_target)
+            }
+            "novafoxwiki" if !self.sso_novafoxwiki_target.is_empty() => {
+                Some(&self.sso_novafoxwiki_target)
             }
             _ => None,
         }
@@ -1328,10 +1434,13 @@ pub struct Gate {
     /// Claim mode (`/api/claim` writes). Off unless the operator turns
     /// it on: `PHEXT_CLAIM_ENABLED=1` via `from_env`, or `enable_claims`.
     claims: AtomicBool,
-    /// Desktop SSO assertions already spent at the exchange endpoint:
-    /// `jti` → its `exp`. Web audiences burn their own; the desktop
-    /// audience cannot hold the secret, so its single-use is enforced
-    /// here. Entries are pruned by expiry on every burn, so the set
+    /// SSO assertions already spent at this server: `jti` → its
+    /// `exp`. The desktop audience's are spent at the exchange
+    /// endpoint, and — when this instance is itself an SSO
+    /// consumer — its own audience's at the consumer callback.
+    /// Web audiences burn their own; the desktop audience cannot
+    /// hold the secret, so its single-use is enforced here.
+    /// Entries are pruned by expiry on every burn, so the set
     /// holds at most one assertion lifetime's worth of exchanges.
     burned: std::sync::Mutex<std::collections::HashMap<String, i64>>,
 }
@@ -1348,7 +1457,7 @@ impl Gate {
         }
     }
 
-    /// Spend a desktop assertion's `jti`. Returns false when it was
+    /// Spend an assertion's `jti`. Returns false when it was
     /// already spent — a replay. Expired entries are dropped first,
     /// so the set cannot grow past the assertions one lifetime can
     /// hold.
@@ -1468,7 +1577,13 @@ impl Gate {
             } else {
                 format!("{} listed editors", self.editors.len())
             };
-            lines.push(format!("auth: sign-in via {} ({})", self.oauth.providers().join(", "), who));
+            let via = self.oauth.providers().join(", ");
+            let via = if via.is_empty() && self.oauth.sso_consumer_ready() {
+                "phext.tech SSO".to_string()
+            } else {
+                via
+            };
+            lines.push(format!("auth: sign-in via {} ({})", via, who));
         }
         if !self.locked() {
             lines.push("auth: open (sign-in not configured)".to_string());
@@ -1492,6 +1607,13 @@ impl Gate {
             // generic provider arm, which would read `desktop` as a
             // provider name.
             ("POST", "/api/auth/desktop/exchange") => self.desktop_exchange(headers),
+            // The SSO consumer callback: phext.tech's handoff
+            // lands here with the sealed assertion in the query.
+            // Before the generic provider arm, which would read
+            // `callback` as a provider name; the providers' own
+            // callbacks keep their `/api/auth/<provider>/callback`
+            // shape there.
+            ("GET", "/api/auth/callback") => self.sso_callback(headers, &query_map(query)),
             // Before the generic provider arm: without this arm, `sso`
             // would be parsed as a provider name below. The segment
             // after `sso/` is the audience; `Gate::sso` answers 404 for
@@ -1588,6 +1710,7 @@ impl Gate {
             "locked": self.locked(),
             "ready": self.oauth.ready(),
             "providers": self.oauth.providers(),
+            "sso": self.oauth.sso_consumer_endpoint(),
             "signed_in": session.is_some(),
             "editor": editor,
             "who": field(|s| &s.who),
@@ -1823,6 +1946,51 @@ impl Gate {
         }
     }
 
+    /// `GET /api/auth/callback?assertion=…` — the provider's
+    /// handoff comes home. The assertion is opened under the
+    /// shared SSO secret (its expiry is checked at the open), its
+    /// audience must be this instance's own, its issue time must
+    /// not be in the future, and its `jti` is burned on first
+    /// use — the order the reference consumers verify in. A
+    /// verified assertion seals this instance's own session
+    /// under its own session secret and lands the browser on the
+    /// return path the assertion carries. Editor rights are not
+    /// the callback's to grant or refuse: the session is an
+    /// identity, and the gate's editor list decides writes
+    /// exactly as it does for a provider sign-in. Every
+    /// validation failure is the same refusal page — the
+    /// callback does not say which check a bad assertion failed.
+    fn sso_callback(&self, headers: &HashMap<String, String>, query: &HashMap<String, String>) -> Reply {
+        if self.limits.hit(&client_key(headers)).is_err() {
+            return Reply::error(429, "Too many requests.");
+        }
+        if !self.oauth.sso_consumer_ready() {
+            return Reply::error(404, "not found");
+        }
+        let secure = self.oauth.cookie_secure();
+        let assertion = query.get("assertion").map(String::as_str).unwrap_or("");
+        if assertion.is_empty() {
+            return auth_failed(secure);
+        }
+        let Ok(body) = self.oauth.open_sso_assertion(assertion) else {
+            return auth_failed(secure);
+        };
+        if body.aud != self.oauth.sso_consumer_aud()
+            || body.iat > now() + 30
+            || !valid_who(&body.who)
+        {
+            return auth_failed(secure);
+        }
+        if !self.burn_jti(&body.jti, body.exp) {
+            return auth_failed(secure);
+        }
+        match self.oauth.issue_session(&body.who, &body.handle, &body.name, &body.email) {
+            Ok((session, _csrf)) => Reply::redirect(safe_next(&body.ret))
+                .cookie(cookie_header(SESSION_COOKIE, &session, SESSION_TTL, secure)),
+            Err(_) => auth_failed(secure),
+        }
+    }
+
     /// `POST /api/auth/sso/agent/assertion` — the agent mint.
     ///
     /// EXTENSION (2026-11-26): the provider's design had no agent
@@ -2023,6 +2191,16 @@ fn real_session_secret(value: &str) -> bool {
         && !value.eq_ignore_ascii_case("replace-me")
         && !value.eq_ignore_ascii_case("changeme")
         && value.chars().all(|ch| ch.is_ascii_graphic())
+}
+
+/// An SSO audience name: the allowlist's keys are short
+/// lowercase slugs (`mutable`, `ravel`, `novafoxwiki`). Anything
+/// else — a path, a URL, mixed case — is not an audience name,
+/// and a consumer configured with one is not a consumer at all.
+fn valid_audience(aud: &str) -> bool {
+    !aud.is_empty()
+        && aud.len() <= 32
+        && aud.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// `http(s)://host[:port][/path]`, no query, fragment, credentials, or backslash.
@@ -3116,7 +3294,10 @@ mod tests {
             "",
             "",
             "",
+            "",
             false,
+            "",
+            "",
             "",
             Arc::new(ScriptedSource),
         );
@@ -3197,7 +3378,10 @@ mod tests {
             "",
             "",
             "",
+            "",
             false,
+            "",
+            "",
             "",
             Arc::new(ScriptedSource),
         );
@@ -3280,7 +3464,10 @@ mod tests {
             "https://wishnode.example",
             "",
             "",
+            "",
             false,
+            "",
+            "",
             "",
             Arc::new(ScriptedSource),
         );
@@ -3359,7 +3546,10 @@ mod tests {
             "",
             "",
             "",
+            "",
             false,
+            "",
+            "",
             "",
             Arc::new(ScriptedSource),
         );
@@ -3695,7 +3885,10 @@ mod tests {
             "https://wishnode.example",
             "",
             "",
+            "",
             false,
+            "",
+            "",
             "",
             Arc::new(ScriptedSource),
         );
@@ -3734,6 +3927,202 @@ mod tests {
         // And the gate admits it like any cookie the browser flow set.
         let cookie = format!("phext_session={value}");
         assert!(gate.admit("GET", "/api/status", &headers(&[("cookie", &cookie)])).is_ok());
+    }
+
+    // ── The Nova Fox wiki audience, and the consumer mode ──────
+
+    #[test]
+    fn sso_novafoxwiki_mints_like_every_other_audience() {
+        let gate = gate("");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/novafoxwiki");
+        let reply = gate
+            .route(
+                "GET",
+                "/api/auth/sso/novafoxwiki?return=/feedback/",
+                &headers(&[("cookie", &session)]),
+            )
+            .unwrap();
+        assert_eq!(reply.status, 302);
+        let location = header(&reply, "Location")[0];
+        let assertion = location
+            .strip_prefix("https://wiki.example/api/auth/callback?assertion=")
+            .unwrap();
+        let body = open_assertion("test-sso-secret-must-be-32-chars-minimum", assertion);
+        assert_eq!(body["aud"], "novafoxwiki");
+        assert_eq!(body["who"], "google:sub-1");
+        assert_eq!(body["ret"], "/feedback/");
+    }
+
+    #[test]
+    fn sso_novafoxwiki_is_404_until_configured() {
+        // Secret set, the wiki's target unset: the audience does
+        // not exist — the qexo arm's shape, one audience later.
+        let oauth = Oauth::from_parts(
+            "http://127.0.0.1:8080",
+            "test-session-secret-must-be-32chars",
+            true,
+            "github-client-id",
+            "github-client-secret",
+            "google-client-id",
+            "google-client-secret",
+            "x-client-id",
+            "x-client-secret",
+            "test-sso-secret-must-be-32-chars-minimum",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            false,
+            "",
+            "",
+            "",
+            Arc::new(ScriptedSource),
+        );
+        assert!(!oauth.sso_ready_for("novafoxwiki"));
+        let gate = Gate::new(oauth, Editors::parse(""));
+        let reply = gate.route("GET", "/api/auth/sso/novafoxwiki", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 404);
+    }
+
+    /// A consumer instance of this same binary: no provider keys
+    /// of its own, an audience at a provider, the shared SSO
+    /// secret, and a session secret of its own.
+    fn consumer_gate(editors: &str) -> Gate {
+        let oauth = Oauth::from_parts(
+            "https://wiki.example",
+            "consumer-session-secret-must-be-32ch",
+            true,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "test-sso-secret-must-be-32-chars-minimum",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            false,
+            "",
+            "https://phext.tech",
+            "novafoxwiki",
+            Arc::new(ScriptedSource),
+        );
+        Gate::new(oauth, Editors::parse(editors))
+    }
+
+    /// Mint a novafoxwiki assertion at the provider gate, the way
+    /// the browser flow would deliver it to the consumer.
+    fn wiki_assertion(provider: &Gate, ret: &str) -> String {
+        let session = scripted_session(provider, "google", "/api/auth/sso/novafoxwiki");
+        let path = format!("/api/auth/sso/novafoxwiki?return={ret}");
+        let reply = provider.route("GET", &path, &headers(&[("cookie", &session)])).unwrap();
+        assert_eq!(reply.status, 302);
+        header(&reply, "Location")[0]
+            .strip_prefix("https://wiki.example/api/auth/callback?assertion=")
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn sso_consumer_session_view_names_the_way_in() {
+        // No provider keys, no local start endpoint: the session
+        // view advertises the provider's handoff for this
+        // instance's audience, and the gate is locked by it.
+        let consumer = consumer_gate("");
+        let view = consumer.route("GET", "/api/session", &headers(&[])).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&view.body).unwrap();
+        assert_eq!(body["providers"], serde_json::json!([]));
+        assert_eq!(body["sso"], "https://phext.tech/api/auth/sso/novafoxwiki");
+        assert_eq!(body["locked"], true);
+        assert_eq!(body["ready"], true);
+    }
+
+    #[test]
+    fn sso_consumer_callback_seals_a_session_the_gate_admits() {
+        let provider = gate("");
+        let assertion = wiki_assertion(&provider, "/feedback/");
+        let consumer = consumer_gate("");
+        assert!(consumer.locked());
+        let reply = consumer
+            .route("GET", &format!("/api/auth/callback?assertion={assertion}"), &headers(&[]))
+            .unwrap();
+        assert_eq!(reply.status, 302);
+        assert_eq!(header(&reply, "Location")[0], "/feedback/");
+        let cookies = header(&reply, "Set-Cookie");
+        let cookie = cookies
+            .iter()
+            .find(|c| c.starts_with("phext_session="))
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        let opened = consumer.oauth.read_session(&cookie).expect("a real session");
+        assert_eq!(opened.who, "google:sub-1");
+        assert_eq!(opened.handle, "ada");
+        // The gate admits the sealed session like any other.
+        let view = consumer
+            .route("GET", "/api/session", &headers(&[("cookie", &cookie)]))
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&view.body).unwrap();
+        assert_eq!(body["signed_in"], true);
+        assert_eq!(body["editor"], true);
+    }
+
+    #[test]
+    fn sso_consumer_callback_burns_the_assertion() {
+        let provider = gate("");
+        let assertion = wiki_assertion(&provider, "/");
+        let consumer = consumer_gate("");
+        let path = format!("/api/auth/callback?assertion={assertion}");
+        assert_eq!(consumer.route("GET", &path, &headers(&[])).unwrap().status, 302);
+        let replay = consumer.route("GET", &path, &headers(&[])).unwrap();
+        assert_eq!(replay.status, 400);
+        assert!(written(&replay).contains("Sign-in did not complete."));
+    }
+
+    #[test]
+    fn sso_consumer_callback_rejects_a_foreign_audience() {
+        // An assertion honestly minted — for Ravel — is not this
+        // instance's to open, seal or no seal.
+        let provider = gate("");
+        let session = scripted_session(&provider, "google", "/api/auth/sso/ravel");
+        let reply = provider
+            .route("GET", "/api/auth/sso/ravel?return=/", &headers(&[("cookie", &session)]))
+            .unwrap();
+        assert_eq!(reply.status, 302);
+        let location = header(&reply, "Location")[0].to_string();
+        let assertion = location
+            .strip_prefix("https://ravel.example/api/auth/callback?assertion=")
+            .unwrap()
+            .to_string();
+        let consumer = consumer_gate("");
+        let reply = consumer
+            .route("GET", &format!("/api/auth/callback?assertion={assertion}"), &headers(&[]))
+            .unwrap();
+        assert_eq!(reply.status, 400);
+        assert!(written(&reply).contains("Sign-in did not complete."));
+    }
+
+    #[test]
+    fn sso_consumer_is_404_until_configured() {
+        // test_ready holds no audience: the consumer endpoints do
+        // not exist, while the provider side works exactly as
+        // before.
+        let gate = gate("");
+        assert!(!gate.oauth.sso_consumer_ready());
+        let reply = gate
+            .route("GET", "/api/auth/callback?assertion=whatever", &headers(&[]))
+            .unwrap();
+        assert_eq!(reply.status, 404);
+        let reply = gate.route("GET", "/api/auth/sso/ravel", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 302);
     }
 
     #[test]
@@ -3969,7 +4358,10 @@ mod tests {
             "https://wishnode.example",
             "",
             "https://qexo.example",
+            "",
             true,
+            "",
+            "",
             "",
             Arc::new(ScriptedSource),
         );

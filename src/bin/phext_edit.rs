@@ -10809,6 +10809,7 @@ async function showAuthScreen(message, sessionFresh) {
     const label = { github: 'Sign in with GitHub', google: 'Sign in with Google', x: 'Sign in with X' };
     for (const p of (s.providers || []))
       html += `<a class="auth-btn" href="/api/auth/${p}?next=${next}">${label[p] || p}</a>`;
+    if (s.sso) html += `<a class="auth-btn" href="${s.sso}?return=${next}">Sign in with phext.tech</a>`;
   }
   $('auth-providers').innerHTML = html;
   $('auth-prompt').textContent =
