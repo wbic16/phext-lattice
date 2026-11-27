@@ -174,7 +174,7 @@ pub struct Oauth {
     base: String,
     session_secret: String,
     /// Signs SSO assertions for every allowlisted audience (Mutable,
-    /// Exocortexia), and nothing else. Deliberately not the session
+    /// Exocortexia, Wishnode, Ravel, Qexo), and nothing else. Deliberately not the session
     /// secret: each audience holds this key to verify assertions, and
     /// a leak over there must not mint edit sessions.
     sso_secret: String,
@@ -198,6 +198,12 @@ pub struct Oauth {
     /// because there is no established production origin to fall
     /// back to — an SSO redirect target is never guessed.
     sso_ravel_target: String,
+    /// Where Qexo lives; assertions for that audience are
+    /// redirected to its callback. Empty until `PHEXT_SSO_QEXO_URL`
+    /// is set: like Exocortexia it has no default, because there is
+    /// no established production origin to fall back to — an SSO
+    /// redirect target is never guessed.
+    sso_qexo_target: String,
     /// Whether the desktop audience (Phext Notepad) is armed:
     /// `PHEXT_SSO_DESKTOP=1`. A desktop app has no fixed origin to
     /// configure — its callback is a loopback listener it opens per
@@ -207,6 +213,14 @@ pub struct Oauth {
     /// app: a shipped binary cannot hold the SSO secret, so the
     /// secret never leaves this server.
     sso_desktop: bool,
+    /// The agent mint's credential for Emise
+    /// (`PHEXT_SSO_AGENT_EMISE_SECRET`). The agent mint
+    /// (`Gate::sso_agent_assertion`) is the one route that seals an
+    /// assertion without a browser session, and it is armed only
+    /// while a registered agent's secret is set; an agent whose
+    /// secret is unset is unregistered, and the route answers as
+    /// if it did not exist.
+    sso_agent_emise_secret: String,
     cookie_secure: bool,
     github: Option<ProviderKeys>,
     google: Option<ProviderKeys>,
@@ -255,7 +269,8 @@ struct PendingBody {
 /// verified there under the SSO secret. It is not a session — the
 /// audience mints its own from it, and this server never accepts one
 /// back. `aud` names the one audience it was minted for (`mutable`,
-/// `exocortexia`, `wishnode`); a consumer must reject any other value,
+/// `exocortexia`, `wishnode`, `ravel`, `qexo`); a consumer must reject
+/// any other value,
 /// including
 /// an assertion minted for a different audience. `ret` is a path on
 /// the audience's site, clamped by `safe_next` before sealing; `jti`
@@ -271,6 +286,13 @@ struct PendingBody {
 /// nonce, sealed at mint and demanded back at the exchange. Web
 /// audiences never carry `st` — the field is simply absent from
 /// their assertions.
+///
+/// Agent assertions (`Gate::sso_agent_assertion`) are the one mint
+/// that rides no edit session: the identity they state is the
+/// agent's own (`agent:emise`), sealed by the same machinery for a
+/// caller that presented the agent's registered secret. They are
+/// verified by their audience like any other assertion, and never
+/// accepted back here.
 #[derive(Serialize, Deserialize)]
 pub struct SsoAssertionBody {
     aud: String,
@@ -311,7 +333,9 @@ impl Oauth {
             &std::env::var("PHEXT_SSO_EXOCORTEXIA_URL").unwrap_or_default(),
             &std::env::var("PHEXT_SSO_WISHNODE_URL").unwrap_or_default(),
             &std::env::var("PHEXT_SSO_RAVEL_URL").unwrap_or_default(),
+            &std::env::var("PHEXT_SSO_QEXO_URL").unwrap_or_default(),
             std::env::var("PHEXT_SSO_DESKTOP").unwrap_or_default().trim() == "1",
+            &std::env::var("PHEXT_SSO_AGENT_EMISE_SECRET").unwrap_or_default(),
             Arc::new(HttpSource),
         )
     }
@@ -332,13 +356,15 @@ impl Oauth {
             "https://exocortexia.example",
             "https://wishnode.example",
             "https://ravel.example",
+            "https://qexo.example",
             true,
+            "test-agent-emise-secret-for-tests-only",
             Arc::new(ScriptedSource),
         )
     }
 
     pub fn closed() -> Self {
-        Self::from_parts("", "", false, "", "", "", "", "", "", "", "", "", "", "", false, Arc::new(ScriptedSource))
+        Self::from_parts("", "", false, "", "", "", "", "", "", "", "", "", "", "", "", false, "", Arc::new(ScriptedSource))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -357,7 +383,9 @@ impl Oauth {
         sso_exocortexia_target: &str,
         sso_wishnode_target: &str,
         sso_ravel_target: &str,
+        sso_qexo_target: &str,
         sso_desktop: bool,
+        sso_agent_emise_secret: &str,
         source: Arc<dyn IdentitySource>,
     ) -> Self {
         let base = base.trim().trim_end_matches('/').to_string();
@@ -398,6 +426,14 @@ impl Oauth {
         } else {
             String::new()
         };
+        // Unset or invalid leaves Qexo unconfigured the same way
+        // (empty target, its endpoint 404s), for the same reason.
+        let sso_qexo_target = sso_qexo_target.trim().trim_end_matches('/').to_string();
+        let sso_qexo_target = if valid_base(&sso_qexo_target) {
+            sso_qexo_target
+        } else {
+            String::new()
+        };
         Self {
             base,
             session_secret: session_secret.trim().to_string(),
@@ -406,7 +442,9 @@ impl Oauth {
             sso_exocortexia_target,
             sso_wishnode_target,
             sso_ravel_target,
+            sso_qexo_target,
             sso_desktop,
+            sso_agent_emise_secret: sso_agent_emise_secret.trim().to_string(),
             cookie_secure,
             github: provider(github_id, github_secret),
             google: provider(google_id, google_secret),
@@ -458,8 +496,9 @@ impl Oauth {
     /// is not allowlisted or is allowlisted but unconfigured. Mutable
     /// always has a target (its production origin is the default);
     /// Exocortexia has one only once `PHEXT_SSO_EXOCORTEXIA_URL` is
-    /// set, Wishnode only once `PHEXT_SSO_WISHNODE_URL` is, and
-    /// Ravel only once `PHEXT_SSO_RAVEL_URL` is. This
+    /// set, Wishnode only once `PHEXT_SSO_WISHNODE_URL` is, Ravel
+    /// only once `PHEXT_SSO_RAVEL_URL` is, and Qexo only once
+    /// `PHEXT_SSO_QEXO_URL` is. This
     /// match is the audience allowlist — an audience that is
     /// not named here can never be minted for. The desktop audience
     /// is deliberately absent: it has no fixed origin (its callback
@@ -477,6 +516,9 @@ impl Oauth {
             }
             "ravel" if !self.sso_ravel_target.is_empty() => {
                 Some(&self.sso_ravel_target)
+            }
+            "qexo" if !self.sso_qexo_target.is_empty() => {
+                Some(&self.sso_qexo_target)
             }
             _ => None,
         }
@@ -788,6 +830,73 @@ impl Oauth {
                 jti: random_token(16)?,
             },
         )
+    }
+
+    /// The agent mint's registry: the secret a registered agent
+    /// presents to mint assertions without a browser session, or
+    /// None when the agent is not registered — an agent whose
+    /// secret is unset is unregistered, so arming and registering
+    /// are the same act. This match is the registry: an agent not
+    /// named here can never mint. It holds one agent today, Emise.
+    pub fn sso_agent_secret(&self, agent: &str) -> Option<&str> {
+        match agent {
+            "emise" if !self.sso_agent_emise_secret.is_empty() => {
+                Some(&self.sso_agent_emise_secret)
+            }
+            _ => None,
+        }
+    }
+
+    /// True when at least one agent is registered for the mint —
+    /// the route exists at all. An unarmed mint answers 404, like
+    /// every unconfigured audience.
+    pub fn sso_agent_armed(&self) -> bool {
+        !self.sso_agent_emise_secret.is_empty()
+    }
+
+    /// Mint an assertion for a registered agent — the one mint
+    /// that rides no browser session (see
+    /// `Gate::sso_agent_assertion`). The identity sealed is the
+    /// agent's own: `who` is `agent:<name>`, and the audience's
+    /// allowlist, not this assertion, decides what that identity
+    /// may do there. There is no return path — an agent presents
+    /// its assertion to the audience directly, never through a
+    /// redirect — so `ret` seals as the root path `safe_next`
+    /// clamps an empty path to, and `editor` is false. Everything
+    /// else is the shared machinery: the same sealed format, the
+    /// same `SSO_TTL`, a fresh `jti` the audience burns on first
+    /// sight. Returns the assertion and its expiry.
+    pub fn sso_assertion_agent(
+        &self,
+        aud: &str,
+        agent: &str,
+    ) -> Result<(String, i64), String> {
+        let (who, handle, name) = match agent {
+            "emise" => ("agent:emise", "emise", "Emise"),
+            _ => return Err("Sign-in is not set up yet.".into()),
+        };
+        if self.sso_agent_secret(agent).is_none() || !self.sso_ready_for(aud) {
+            return Err("Sign-in is not set up yet.".into());
+        }
+        let iat = now();
+        let exp = iat + SSO_TTL;
+        let assertion = self.seal_with(
+            &self.sso_secret,
+            &SsoAssertionBody {
+                aud: aud.into(),
+                who: who.into(),
+                handle: handle.into(),
+                name: name.into(),
+                email: String::new(),
+                editor: false,
+                ret: safe_next(""),
+                st: None,
+                iat,
+                exp,
+                jti: random_token(16)?,
+            },
+        )?;
+        Ok((assertion, exp))
     }
 
     /// Open an SSO assertion under the SSO secret — the exchange
@@ -1711,6 +1820,83 @@ impl Gate {
         match self.oauth.issue_session(&body.who, &body.handle, &body.name, &body.email) {
             Ok((session, csrf)) => Reply::json(200, json!({ "session": session, "csrf": csrf })),
             Err(_) => Reply::error(500, "Sign-in did not complete."),
+        }
+    }
+
+    /// `POST /api/auth/sso/agent/assertion` — the agent mint.
+    ///
+    /// EXTENSION (2026-11-26): the provider's design had no agent
+    /// identity path — assertions minted only from a browser-held
+    /// session — so this route is new, and it is the smallest
+    /// extension consistent with that design, modeled on the
+    /// desktop audience (a non-browser client this server stays
+    /// minter for). A registered agent presents its name and
+    /// secret in headers (`x-phext-agent`,
+    /// `x-phext-agent-secret`) and names its audience in the JSON
+    /// body's `aud`; the answer is the sealed assertion and its
+    /// expiry as JSON. The consumer side is unchanged: the
+    /// audience verifies the assertion with the ordinary consumer
+    /// code path and burns its `jti` there — single-use is the
+    /// audience's to enforce, exactly as for the web audiences.
+    ///
+    /// The checks, in order: the shared auth rate limiter; the
+    /// registry — an unarmed mint does not exist (404, like every
+    /// unconfigured audience); the secret, compared in constant
+    /// time — a bad name or a bad secret is one uniform 401, never
+    /// saying which; and the audience, which must have a
+    /// configured target (else 400: the caller authenticated, its
+    /// request is what is wrong).
+    ///
+    /// This is the route layer's one body-carrying auth entry:
+    /// `Gate::route` receives no body, so phext_edit answers the
+    /// path itself (beside the MCP OAuth endpoints, for the same
+    /// reason) and calls here. The reply is transport-sealed here,
+    /// as `route` seals the replies it dispatches.
+    pub fn sso_agent_assertion(
+        &self,
+        headers: &HashMap<String, String>,
+        body: &str,
+    ) -> Reply {
+        self.agent_assertion_reply(headers, body).for_transport(headers)
+    }
+
+    fn agent_assertion_reply(
+        &self,
+        headers: &HashMap<String, String>,
+        body: &str,
+    ) -> Reply {
+        if self.limits.hit(&client_key(headers)).is_err() {
+            return Reply::error(429, "Too many requests.");
+        }
+        if !self.oauth.sso_agent_armed() {
+            return Reply::error(404, "not found");
+        }
+        let refuse = || Reply::error(401, "Sign-in did not complete.");
+        let agent = headers.get("x-phext-agent").map(|v| v.trim()).unwrap_or("");
+        let secret = headers.get("x-phext-agent-secret").map(|v| v.trim()).unwrap_or("");
+        let Some(expected) = self.oauth.sso_agent_secret(agent) else {
+            return refuse();
+        };
+        if !token_eq(expected, secret) {
+            return refuse();
+        }
+        let aud = serde_json::from_str::<serde_json::Value>(body).ok().and_then(|value| {
+            value.get("aud").and_then(|aud| aud.as_str()).map(str::to_string)
+        });
+        let Some(aud) = aud else {
+            return Reply::error(400, "That request does not name its audience.");
+        };
+        if self.oauth.sso_target_for(&aud).is_none() {
+            return Reply::error(400, "That audience is not configured.");
+        }
+        if !self.oauth.sso_ready_for(&aud) {
+            return Reply::error(404, "not found");
+        }
+        match self.oauth.sso_assertion_agent(&aud, agent) {
+            Ok((assertion, exp)) => {
+                Reply::json(200, json!({ "assertion": assertion, "exp": exp }))
+            }
+            Err(message) => Reply::error(403, &message),
         }
     }
 }
@@ -2929,7 +3115,9 @@ mod tests {
             "",
             "",
             "",
+            "",
             false,
+            "",
             Arc::new(ScriptedSource),
         );
         assert!(oauth.sso_ready());
@@ -3008,7 +3196,9 @@ mod tests {
             "https://exocortexia.example",
             "",
             "",
+            "",
             false,
+            "",
             Arc::new(ScriptedSource),
         );
         assert!(oauth.sso_ready());
@@ -3089,7 +3279,9 @@ mod tests {
             "https://exocortexia.example",
             "https://wishnode.example",
             "",
+            "",
             false,
+            "",
             Arc::new(ScriptedSource),
         );
         assert!(oauth.sso_ready());
@@ -3100,6 +3292,82 @@ mod tests {
         assert_eq!(reply.status, 404);
         let reply = gate.route("GET", "/api/auth/sso/wishnode", &headers(&[])).unwrap();
         assert_eq!(reply.status, 302);
+        let reply = gate.route("GET", "/api/auth/sso/mutable", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 302);
+    }
+
+    #[test]
+    fn sso_qexo_mints_an_assertion_with_its_own_audience() {
+        // The fifth allowlisted audience mints through the same
+        // route shape, under the same SSO secret, in the same
+        // format — the only differences are the `aud` claim and the
+        // callback origin.
+        let gate = gate("");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/qexo");
+        let jump = gate
+            .route(
+                "GET",
+                "/api/auth/sso/qexo?return=/dispatch",
+                &headers(&[("cookie", &session)]),
+            )
+            .unwrap();
+        assert_eq!(jump.status, 302);
+        let location = header(&jump, "Location")[0];
+        let assertion = location
+            .strip_prefix("https://qexo.example/api/auth/callback?assertion=")
+            .unwrap();
+        let body = open_assertion("test-sso-secret-must-be-32-chars-minimum", assertion);
+        assert_eq!(body["aud"], "qexo");
+        assert_eq!(body["who"], "google:sub-1");
+        assert_eq!(body["handle"], "ada");
+        assert_eq!(body["ret"], "/dispatch");
+        assert_eq!(body["exp"].as_i64().unwrap() - body["iat"].as_i64().unwrap(), 120);
+        assert!(!body["jti"].as_str().unwrap().is_empty());
+    }
+
+    #[test]
+    fn sso_qexo_sends_the_signed_out_to_sign_in_with_itself_as_next() {
+        let gate = gate("");
+        let reply = gate.route("GET", "/api/auth/sso/qexo", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 302);
+        let location = header(&reply, "Location")[0];
+        let next = location.strip_prefix("http://127.0.0.1:8080/?next=").unwrap();
+        assert_eq!(
+            percent_decode(&percent_decode(next)),
+            "/api/auth/sso/qexo?return=/"
+        );
+    }
+
+    #[test]
+    fn sso_qexo_is_404_until_its_url_is_configured() {
+        // The shared secret is set and Mutable is configured (its
+        // default target), but no Qexo URL: that endpoint does not
+        // exist, while Mutable's works exactly as before.
+        let oauth = Oauth::from_parts(
+            "http://127.0.0.1:8080",
+            "test-session-secret-must-be-32chars",
+            true,
+            "github-client-id",
+            "github-client-secret",
+            "google-client-id",
+            "google-client-secret",
+            "x-client-id",
+            "x-client-secret",
+            "test-sso-secret-must-be-32-chars-minimum",
+            "",
+            "",
+            "",
+            "",
+            "",
+            false,
+            "",
+            Arc::new(ScriptedSource),
+        );
+        assert!(oauth.sso_ready());
+        assert!(!oauth.sso_ready_for("qexo"));
+        let gate = Gate::new(oauth, Editors::parse(""));
+        let reply = gate.route("GET", "/api/auth/sso/qexo", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 404);
         let reply = gate.route("GET", "/api/auth/sso/mutable", &headers(&[])).unwrap();
         assert_eq!(reply.status, 302);
     }
@@ -3426,7 +3694,9 @@ mod tests {
             "https://exocortexia.example",
             "https://wishnode.example",
             "",
+            "",
             false,
+            "",
             Arc::new(ScriptedSource),
         );
         assert!(!oauth.sso_desktop_ready());
@@ -3554,5 +3824,165 @@ mod tests {
         assert!(text.contains("This account is not on the editor list."));
         assert!(!text.contains("\"session\""));
         assert_eq!(exchange(&gate, &assertion, DESKTOP_STATE).status, 401);
+    }
+
+    /// Calls the agent mint the way the gateway's client helper
+    /// does: the agent's name and secret in headers, the audience
+    /// in the JSON body.
+    fn agent_mint(gate: &Gate, agent: &str, secret: &str, body: &str) -> Reply {
+        gate.sso_agent_assertion(
+            &headers(&[("x-phext-agent", agent), ("x-phext-agent-secret", secret)]),
+            body,
+        )
+    }
+
+    #[test]
+    fn sso_agent_mint_seals_an_assertion_for_the_agent() {
+        // No browser, no session: the registered agent's secret
+        // alone mints, and what comes back opens under the SSO
+        // secret with the agent's own identity — the identity the
+        // gateway's allowlist keys on.
+        let gate = gate("");
+        let reply = agent_mint(
+            &gate,
+            "emise",
+            "test-agent-emise-secret-for-tests-only",
+            "{\"aud\":\"qexo\"}",
+        );
+        assert_eq!(reply.status, 200);
+        let answer: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
+        let assertion = answer["assertion"].as_str().unwrap();
+        let body = open_assertion("test-sso-secret-must-be-32-chars-minimum", assertion);
+        assert_eq!(body["aud"], "qexo");
+        assert_eq!(body["who"], "agent:emise");
+        assert_eq!(body["handle"], "emise");
+        assert_eq!(body["name"], "Emise");
+        assert_eq!(body["email"], "");
+        assert_eq!(body["editor"], false);
+        assert_eq!(body["exp"].as_i64().unwrap() - body["iat"].as_i64().unwrap(), 120);
+        assert_eq!(answer["exp"].as_i64().unwrap(), body["exp"].as_i64().unwrap());
+        assert!(!body["jti"].as_str().unwrap().is_empty());
+
+        // And it opens through the provider's own opener, the way
+        // the §8 verification plan asks.
+        let opened = gate.oauth.open_sso_assertion(assertion).unwrap();
+        assert_eq!(opened.aud, "qexo");
+        assert_eq!(opened.who, "agent:emise");
+    }
+
+    #[test]
+    fn sso_agent_mint_refuses_a_bad_secret_and_an_unknown_agent_alike() {
+        // One uniform 401: the endpoint never says which check a
+        // bad mint failed — the desktop exchange's posture.
+        let gate = gate("");
+        let reply = agent_mint(&gate, "emise", "the-wrong-secret", "{\"aud\":\"qexo\"}");
+        assert_eq!(reply.status, 401);
+        let reply = agent_mint(
+            &gate,
+            "nobody",
+            "test-agent-emise-secret-for-tests-only",
+            "{\"aud\":\"qexo\"}",
+        );
+        assert_eq!(reply.status, 401);
+        let reply = agent_mint(&gate, "", "", "{\"aud\":\"qexo\"}");
+        assert_eq!(reply.status, 401);
+    }
+
+    #[test]
+    fn sso_agent_mint_refuses_an_audience_without_a_target() {
+        // The caller authenticated; its request is what is wrong.
+        let gate = gate("");
+        let reply = agent_mint(
+            &gate,
+            "emise",
+            "test-agent-emise-secret-for-tests-only",
+            "{\"aud\":\"bogus\"}",
+        );
+        assert_eq!(reply.status, 400);
+        // The desktop audience has no target to mint for either —
+        // it is armed and minted on its own path.
+        let reply = agent_mint(
+            &gate,
+            "emise",
+            "test-agent-emise-secret-for-tests-only",
+            "{\"aud\":\"desktop\"}",
+        );
+        assert_eq!(reply.status, 400);
+        // A body that names no audience is the same refusal.
+        let reply = agent_mint(
+            &gate,
+            "emise",
+            "test-agent-emise-secret-for-tests-only",
+            "{}",
+        );
+        assert_eq!(reply.status, 400);
+    }
+
+    #[test]
+    fn sso_agent_mints_never_share_a_jti() {
+        // Single-use is the audience's to enforce by burning; the
+        // provider's half is that no two assertions ever carry the
+        // same jti, so a burned one can never be re-presented as a
+        // fresh mint.
+        let gate = gate("");
+        let one = agent_mint(
+            &gate,
+            "emise",
+            "test-agent-emise-secret-for-tests-only",
+            "{\"aud\":\"qexo\"}",
+        );
+        let two = agent_mint(
+            &gate,
+            "emise",
+            "test-agent-emise-secret-for-tests-only",
+            "{\"aud\":\"qexo\"}",
+        );
+        assert_eq!(one.status, 200);
+        assert_eq!(two.status, 200);
+        let open = |reply: &Reply| {
+            let answer: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
+            open_assertion(
+                "test-sso-secret-must-be-32-chars-minimum",
+                answer["assertion"].as_str().unwrap(),
+            )
+        };
+        assert_ne!(open(&one)["jti"], open(&two)["jti"]);
+    }
+
+    #[test]
+    fn sso_agent_mint_is_404_until_armed() {
+        // Audiences configured, no agent secret: the mint does not
+        // exist, while the web audiences work exactly as before.
+        let oauth = Oauth::from_parts(
+            "http://127.0.0.1:8080",
+            "test-session-secret-must-be-32chars",
+            true,
+            "github-client-id",
+            "github-client-secret",
+            "google-client-id",
+            "google-client-secret",
+            "x-client-id",
+            "x-client-secret",
+            "test-sso-secret-must-be-32-chars-minimum",
+            "",
+            "https://exocortexia.example",
+            "https://wishnode.example",
+            "",
+            "https://qexo.example",
+            true,
+            "",
+            Arc::new(ScriptedSource),
+        );
+        assert!(!oauth.sso_agent_armed());
+        let gate = Gate::new(oauth, Editors::parse(""));
+        let reply = agent_mint(
+            &gate,
+            "emise",
+            "test-agent-emise-secret-for-tests-only",
+            "{\"aud\":\"qexo\"}",
+        );
+        assert_eq!(reply.status, 404);
+        let reply = gate.route("GET", "/api/auth/sso/qexo", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 302);
     }
 }

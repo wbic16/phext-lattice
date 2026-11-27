@@ -111,7 +111,7 @@ shared `PHEXT_SSO_SECRET`, the same 120-second single-use lifetime, and
 the same any-signed-in-account rule — only the sealed `aud` claim
 (`wishnode`) and the callback origin differ, and Wishnode's consumer
 rejects assertions minted for another audience. The allowlist in code
-is (`mutable`, `exocortexia`, `wishnode`, `ravel`); anything else under
+is (`mutable`, `exocortexia`, `wishnode`, `ravel`, `qexo`); anything else under
 `/api/auth/sso/` answers 404, signed in or out. (A fourth audience,
 `desktop`, is armed separately and works differently — see below.)
 
@@ -142,7 +142,7 @@ above holds unchanged: the same assertion format, the same shared
 same any-signed-in-account rule — only the sealed `aud` claim
 (`ravel`) and the callback origin differ, and Ravel's consumer gate
 rejects assertions minted for another audience. The allowlist in code
-is (`mutable`, `exocortexia`, `wishnode`, `ravel`); anything else
+is (`mutable`, `exocortexia`, `wishnode`, `ravel`, `qexo`); anything else
 under `/api/auth/sso/` answers 404, signed in or out. (The `desktop`
 audience is armed separately and works differently — see below.)
 
@@ -163,6 +163,50 @@ then enable Ravel's consumer side. Verify with a GET —
 answers 302 toward `/?next=…` when logged out, or toward Ravel's
 callback with a session cookie. (Use GET, not HEAD: HEAD is not
 routed to the gate and falls through to a 401.)
+
+## Qexo single sign-on
+
+Qexo (the qexo-gateway on aletheia-core) crosses the same way, via
+`GET /api/auth/sso/qexo`. Everything said about Wishnode above
+holds unchanged: the same assertion format, the same shared
+`PHEXT_SSO_SECRET`, the same 120-second single-use lifetime, and
+the same any-signed-in-account rule — only the sealed `aud` claim
+(`qexo`) and the callback origin differ, and the gateway rejects
+assertions minted for another audience. The allowlist in code is
+(`mutable`, `exocortexia`, `wishnode`, `ravel`, `qexo`); anything
+else under `/api/auth/sso/` answers 404, signed in or out.
+
+One extra line in `/etc/phext-edit/oauth.env` turns it on:
+
+```bash
+# No default — until this is set to the gateway's real origin, the
+# qexo endpoint answers 404. A set-but-invalid value also disables it.
+PHEXT_SSO_QEXO_URL=https://aletheia-core.pizzly-halfmoon.ts.net:8486
+```
+
+Qexo also carries the one extension to this design: the agent
+mint. An agent has no browser session to ride, so a registered
+agent mints assertions directly — `POST
+/api/auth/sso/agent/assertion`, presenting its name and per-agent
+secret in headers and the audience in the request body; the
+assertion states the agent's own identity (`agent:emise`) and is
+verified and burned by the audience like any other. One more line
+arms it:
+
+```bash
+# Arms the agent mint for Emise. The qexo-gateway side holds the
+# same value. Until this is set, the route answers 404.
+PHEXT_SSO_AGENT_EMISE_SECRET=
+```
+
+Deploy order matches Wishnode's: this side first (ship the build,
+set both lines, restart phext-edit), then hand the shared SSO
+secret and the agent secret to the gateway and restart it. Verify
+with a GET —
+`curl -s -o /dev/null -w '%{http_code}' https://phext.tech/api/auth/sso/qexo`
+answers 302 toward `/?next=…` when logged out, or toward the
+gateway's callback with a session cookie. (Use GET, not HEAD: HEAD
+is not routed to the gate and falls through to a 401.)
 
 ## Desktop (Phext Notepad) single sign-on
 

@@ -1915,6 +1915,14 @@ fn handle_request(
     if handle_mcp_oauth(stream, &mut reader, &method, &path, &headers, state, gate) {
         return;
     }
+    // The SSO agent mint answers here for the same reason: its
+    // audience rides in a JSON body, which Gate::route does not
+    // receive. The gate owns every check — the rate limit, the
+    // agent registry, the audience allowlist; this only carries
+    // the body to it.
+    if handle_sso_agent(stream, &mut reader, &method, &path, &headers, gate) {
+        return;
+    }
     // The MCP endpoint answers here, before the phext-link route can read
     // "/mcp" as a phext named "mcp": handle_mcp runs the same gate as the
     // editor API, so an MCP client is admitted exactly as a browser is.
@@ -4951,6 +4959,30 @@ fn oauth_handle_token(
             fail(stream, McpOAuthError::bad_request("invalid_request", "grant_type is required"));
         }
     }
+}
+
+/// The SSO agent mint (`POST /api/auth/sso/agent/assertion`):
+/// the one auth route whose input is a request body. Returns true
+/// when the path was this route (answered, rightly or wrongly);
+/// the gate's reply is written verbatim.
+fn handle_sso_agent(
+    stream: &mut std::net::TcpStream,
+    reader: &mut BufReader<std::net::TcpStream>,
+    method: &str,
+    path: &str,
+    headers: &HashMap<String, String>,
+    gate: &Gate,
+) -> bool {
+    if path_route(path) != "/api/auth/sso/agent/assertion" {
+        return false;
+    }
+    if method != "POST" {
+        send_response(stream, 405, "text/plain", b"method not allowed", CacheClass::NoStore, headers, false);
+        return true;
+    }
+    let body = read_body(reader, headers);
+    gate.sso_agent_assertion(headers, &body).write_to(stream);
+    true
 }
 
 fn handle_mcp_oauth(
