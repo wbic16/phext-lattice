@@ -111,7 +111,7 @@ shared `PHEXT_SSO_SECRET`, the same 120-second single-use lifetime, and
 the same any-signed-in-account rule — only the sealed `aud` claim
 (`wishnode`) and the callback origin differ, and Wishnode's consumer
 rejects assertions minted for another audience. The allowlist in code
-is (`mutable`, `exocortexia`, `wishnode`); anything else under
+is (`mutable`, `exocortexia`, `wishnode`, `ravel`); anything else under
 `/api/auth/sso/` answers 404, signed in or out. (A fourth audience,
 `desktop`, is armed separately and works differently — see below.)
 
@@ -132,6 +132,37 @@ then enable Wishnode's consumer side. Verify with a GET —
 answers 302 toward `/?next=…` when logged out, or toward Wishnode's
 callback with a session cookie. (Use GET, not HEAD: HEAD is not routed
 to the gate and falls through to a 401.)
+
+## Ravel single sign-on
+
+Ravel (ravel.phext.io — the phext-serve store host) crosses the same
+way, via `GET /api/auth/sso/ravel`. Everything said about Wishnode
+above holds unchanged: the same assertion format, the same shared
+`PHEXT_SSO_SECRET`, the same 120-second single-use lifetime, and the
+same any-signed-in-account rule — only the sealed `aud` claim
+(`ravel`) and the callback origin differ, and Ravel's consumer gate
+rejects assertions minted for another audience. The allowlist in code
+is (`mutable`, `exocortexia`, `wishnode`, `ravel`); anything else
+under `/api/auth/sso/` answers 404, signed in or out. (The `desktop`
+audience is armed separately and works differently — see below.)
+
+One extra line in `/etc/phext-edit/oauth.env` turns it on:
+
+```bash
+# No default — until this is set to Ravel's real origin, the
+# ravel endpoint answers 404. A set-but-invalid value also disables it.
+PHEXT_SSO_RAVEL_URL=https://ravel.phext.io
+```
+
+No new secret is needed: the existing `PHEXT_SSO_SECRET` serves all
+four audiences, and Ravel's side is configured with that same value
+under its own SSO-secret name. Deploy order matches Wishnode's: this
+side first (ship the build, set the URL line, restart phext-edit),
+then enable Ravel's consumer side. Verify with a GET —
+`curl -s -o /dev/null -w '%{http_code}' https://phext.tech/api/auth/sso/ravel`
+answers 302 toward `/?next=…` when logged out, or toward Ravel's
+callback with a session cookie. (Use GET, not HEAD: HEAD is not
+routed to the gate and falls through to a 401.)
 
 ## Desktop (Phext Notepad) single sign-on
 

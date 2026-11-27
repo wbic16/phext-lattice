@@ -192,6 +192,12 @@ pub struct Oauth {
     /// established production origin to fall back to — an SSO redirect
     /// target is never guessed.
     sso_wishnode_target: String,
+    /// Where Ravel lives; assertions for that audience are
+    /// redirected to its callback. Empty until `PHEXT_SSO_RAVEL_URL`
+    /// is set: like Exocortexia and Wishnode it has no default,
+    /// because there is no established production origin to fall
+    /// back to — an SSO redirect target is never guessed.
+    sso_ravel_target: String,
     /// Whether the desktop audience (Phext Notepad) is armed:
     /// `PHEXT_SSO_DESKTOP=1`. A desktop app has no fixed origin to
     /// configure — its callback is a loopback listener it opens per
@@ -304,6 +310,7 @@ impl Oauth {
             &std::env::var("PHEXT_SSO_MUTABLE_URL").unwrap_or_default(),
             &std::env::var("PHEXT_SSO_EXOCORTEXIA_URL").unwrap_or_default(),
             &std::env::var("PHEXT_SSO_WISHNODE_URL").unwrap_or_default(),
+            &std::env::var("PHEXT_SSO_RAVEL_URL").unwrap_or_default(),
             std::env::var("PHEXT_SSO_DESKTOP").unwrap_or_default().trim() == "1",
             Arc::new(HttpSource),
         )
@@ -324,13 +331,14 @@ impl Oauth {
             "",
             "https://exocortexia.example",
             "https://wishnode.example",
+            "https://ravel.example",
             true,
             Arc::new(ScriptedSource),
         )
     }
 
     pub fn closed() -> Self {
-        Self::from_parts("", "", false, "", "", "", "", "", "", "", "", "", "", false, Arc::new(ScriptedSource))
+        Self::from_parts("", "", false, "", "", "", "", "", "", "", "", "", "", "", false, Arc::new(ScriptedSource))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -348,6 +356,7 @@ impl Oauth {
         sso_target: &str,
         sso_exocortexia_target: &str,
         sso_wishnode_target: &str,
+        sso_ravel_target: &str,
         sso_desktop: bool,
         source: Arc<dyn IdentitySource>,
     ) -> Self {
@@ -381,6 +390,14 @@ impl Oauth {
         } else {
             String::new()
         };
+        // Unset or invalid leaves Ravel unconfigured the same way
+        // (empty target, its endpoint 404s), for the same reason.
+        let sso_ravel_target = sso_ravel_target.trim().trim_end_matches('/').to_string();
+        let sso_ravel_target = if valid_base(&sso_ravel_target) {
+            sso_ravel_target
+        } else {
+            String::new()
+        };
         Self {
             base,
             session_secret: session_secret.trim().to_string(),
@@ -388,6 +405,7 @@ impl Oauth {
             sso_target,
             sso_exocortexia_target,
             sso_wishnode_target,
+            sso_ravel_target,
             sso_desktop,
             cookie_secure,
             github: provider(github_id, github_secret),
@@ -440,7 +458,8 @@ impl Oauth {
     /// is not allowlisted or is allowlisted but unconfigured. Mutable
     /// always has a target (its production origin is the default);
     /// Exocortexia has one only once `PHEXT_SSO_EXOCORTEXIA_URL` is
-    /// set, and Wishnode only once `PHEXT_SSO_WISHNODE_URL` is. This
+    /// set, Wishnode only once `PHEXT_SSO_WISHNODE_URL` is, and
+    /// Ravel only once `PHEXT_SSO_RAVEL_URL` is. This
     /// match is the audience allowlist — an audience that is
     /// not named here can never be minted for. The desktop audience
     /// is deliberately absent: it has no fixed origin (its callback
@@ -455,6 +474,9 @@ impl Oauth {
             }
             "wishnode" if !self.sso_wishnode_target.is_empty() => {
                 Some(&self.sso_wishnode_target)
+            }
+            "ravel" if !self.sso_ravel_target.is_empty() => {
+                Some(&self.sso_ravel_target)
             }
             _ => None,
         }
@@ -2906,6 +2928,7 @@ mod tests {
             "",
             "",
             "",
+            "",
             false,
             Arc::new(ScriptedSource),
         );
@@ -2984,6 +3007,7 @@ mod tests {
             "",
             "https://exocortexia.example",
             "",
+            "",
             false,
             Arc::new(ScriptedSource),
         );
@@ -2994,6 +3018,87 @@ mod tests {
         let reply = gate.route("GET", "/api/auth/sso/wishnode", &headers(&[])).unwrap();
         assert_eq!(reply.status, 404);
         let reply = gate.route("GET", "/api/auth/sso/exocortexia", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 302);
+        let reply = gate.route("GET", "/api/auth/sso/mutable", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 302);
+    }
+
+    #[test]
+    fn sso_ravel_mints_an_assertion_with_its_own_audience() {
+        // The fourth allowlisted audience mints through the same route
+        // shape, under the same SSO secret, in the same format — the
+        // only differences are the `aud` claim and the callback origin.
+        let gate = gate("");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/ravel");
+        let jump = gate
+            .route(
+                "GET",
+                "/api/auth/sso/ravel?return=/store",
+                &headers(&[("cookie", &session)]),
+            )
+            .unwrap();
+        assert_eq!(jump.status, 302);
+        let location = header(&jump, "Location")[0];
+        let assertion = location
+            .strip_prefix("https://ravel.example/api/auth/callback?assertion=")
+            .unwrap();
+        let body = open_assertion("test-sso-secret-must-be-32-chars-minimum", assertion);
+        assert_eq!(body["aud"], "ravel");
+        assert_eq!(body["who"], "google:sub-1");
+        assert_eq!(body["handle"], "ada");
+        assert_eq!(body["editor"], true);
+        assert_eq!(body["ret"], "/store");
+        assert_eq!(body["exp"].as_i64().unwrap() - body["iat"].as_i64().unwrap(), 120);
+        assert!(!body["jti"].as_str().unwrap().is_empty());
+
+        // The session secret does not open it: the keys never substitute.
+        let (payload, sig) = assertion.split_once('.').unwrap();
+        assert!(!verify("test-session-secret-must-be-32chars", payload, sig));
+    }
+
+    #[test]
+    fn sso_ravel_sends_the_signed_out_to_sign_in_with_itself_as_next() {
+        let gate = gate("");
+        let reply = gate.route("GET", "/api/auth/sso/ravel", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 302);
+        let location = header(&reply, "Location")[0];
+        let next = location.strip_prefix("http://127.0.0.1:8080/?next=").unwrap();
+        assert_eq!(
+            percent_decode(&percent_decode(next)),
+            "/api/auth/sso/ravel?return=/"
+        );
+    }
+
+    #[test]
+    fn sso_ravel_is_404_until_its_url_is_configured() {
+        // The shared secret is set and all three earlier audiences are
+        // configured, but no Ravel URL: that endpoint does not exist,
+        // while the others work as before.
+        let oauth = Oauth::from_parts(
+            "http://127.0.0.1:8080",
+            "test-session-secret-must-be-32chars",
+            true,
+            "github-client-id",
+            "github-client-secret",
+            "google-client-id",
+            "google-client-secret",
+            "x-client-id",
+            "x-client-secret",
+            "test-sso-secret-must-be-32-chars-minimum",
+            "",
+            "https://exocortexia.example",
+            "https://wishnode.example",
+            "",
+            false,
+            Arc::new(ScriptedSource),
+        );
+        assert!(oauth.sso_ready());
+        assert!(oauth.sso_ready_for("wishnode"));
+        assert!(!oauth.sso_ready_for("ravel"));
+        let gate = Gate::new(oauth, Editors::parse(""));
+        let reply = gate.route("GET", "/api/auth/sso/ravel", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 404);
+        let reply = gate.route("GET", "/api/auth/sso/wishnode", &headers(&[])).unwrap();
         assert_eq!(reply.status, 302);
         let reply = gate.route("GET", "/api/auth/sso/mutable", &headers(&[])).unwrap();
         assert_eq!(reply.status, 302);
@@ -3320,6 +3425,7 @@ mod tests {
             "",
             "https://exocortexia.example",
             "https://wishnode.example",
+            "",
             false,
             Arc::new(ScriptedSource),
         );
