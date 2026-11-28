@@ -380,7 +380,15 @@ impl Diagram {
         }
     }
 
-    /// Emit the canonical notation for this diagram.
+    /// Emit the notation for this diagram.
+    ///
+    /// Word bindings are emitted in canonical (sorted) order — the
+    /// order `parse_diagram` itself produces for them. Nodes and
+    /// edges are emitted in the diagram's stored order, which
+    /// `parse_diagram` preserves, so `parse_diagram(d.to_notation())`
+    /// is the identity for any diagram. (The renderers — `to_text`
+    /// and `to_svg` — still present nodes and edges in canonical
+    /// sorted order via `sorted_nodes`/`sorted_edges`.)
     pub fn to_notation(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("diagram \"{}\"\n", self.name));
@@ -388,7 +396,7 @@ impl Diagram {
         for (w, a) in self.sorted_words() {
             out.push_str(&format!("word {} {}\n", w, a.display()));
         }
-        for n in self.sorted_nodes() {
+        for n in &self.nodes {
             if n.lane == self.phase {
                 out.push_str(&format!("node {} \"{}\"\n", self.reference(&n.addr), n.label));
             } else {
@@ -400,7 +408,7 @@ impl Diagram {
                 ));
             }
         }
-        for e in self.sorted_edges() {
+        for e in &self.edges {
             if e.label.is_empty() {
                 out.push_str(&format!(
                     "edge {} -> {} : {}\n",
@@ -654,6 +662,30 @@ edge checkout -> ledger : depends \"posts entries\"
         assert_eq!(d, d2);
         // Canonical emission is a fixed point.
         assert_eq!(d2.to_notation(), text);
+    }
+
+    #[test]
+    fn notation_round_trip_unsorted_nodes_and_edges() {
+        // STITCH++ main:c22 — nodes and edges NOT in address order.
+        // parse preserves file order, so notation must emit in stored
+        // order for parse ∘ notation to be the identity. (The SAMPLE
+        // above is already address-ordered and cannot see this.)
+        let text = "\
+diagram \"Order test\"
+phase Design
+word checkout 3.2.3/4.5
+word ledger 1.2.4/4.6
+node checkout \"Checkout\"
+node ledger \"Ledger\"
+edge checkout -> ledger : depends
+edge ledger -> checkout : feeds
+";
+        let d = parse_diagram(text).unwrap();
+        let notation = d.to_notation();
+        let d2 = parse_diagram(&notation).unwrap();
+        assert_eq!(d, d2);
+        // Emission is a fixed point.
+        assert_eq!(d2.to_notation(), notation);
     }
 
     #[test]
