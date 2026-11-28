@@ -174,7 +174,7 @@ pub struct Oauth {
     base: String,
     session_secret: String,
     /// Signs SSO assertions for every allowlisted audience (Mutable,
-    /// Exocortexia, Wishnode, Ravel, Qexo, Novafoxwiki), and nothing else. Deliberately not the session
+    /// Exocortexia, Wishnode, Ravel, Qexo, Novafoxwiki, Enki), and nothing else. Deliberately not the session
     /// secret: each audience holds this key to verify assertions, and
     /// a leak over there must not mint edit sessions.
     sso_secret: String,
@@ -211,6 +211,13 @@ pub struct Oauth {
     /// origin to fall back to — an SSO redirect target is never
     /// guessed.
     sso_novafoxwiki_target: String,
+    /// Where Enki lives; assertions for that audience are
+    /// redirected to its callback. Empty until
+    /// `PHEXT_SSO_ENKI_URL` is set: like Exocortexia it has
+    /// no default, because there is no established production
+    /// origin to fall back to — an SSO redirect target is never
+    /// guessed.
+    sso_enki_target: String,
     /// Whether the desktop audience (Phext Notepad) is armed:
     /// `PHEXT_SSO_DESKTOP=1`. A desktop app has no fixed origin to
     /// configure — its callback is a loopback listener it opens per
@@ -355,6 +362,7 @@ impl Oauth {
             &std::env::var("PHEXT_SSO_RAVEL_URL").unwrap_or_default(),
             &std::env::var("PHEXT_SSO_QEXO_URL").unwrap_or_default(),
             &std::env::var("PHEXT_SSO_NOVAFOXWIKI_URL").unwrap_or_default(),
+            &std::env::var("PHEXT_SSO_ENKI_URL").unwrap_or_default(),
             std::env::var("PHEXT_SSO_DESKTOP").unwrap_or_default().trim() == "1",
             &std::env::var("PHEXT_SSO_AGENT_EMISE_SECRET").unwrap_or_default(),
             &std::env::var("PHEXT_SSO_PROVIDER_URL").unwrap_or_default(),
@@ -381,6 +389,7 @@ impl Oauth {
             "https://ravel.example",
             "https://qexo.example",
             "https://wiki.example",
+            "https://enki.example",
             true,
             "test-agent-emise-secret-for-tests-only",
             "",
@@ -390,7 +399,7 @@ impl Oauth {
     }
 
     pub fn closed() -> Self {
-        Self::from_parts("", "", false, "", "", "", "", "", "", "", "", "", "", "", "", "", false, "", "", "", Arc::new(ScriptedSource))
+        Self::from_parts("", "", false, "", "", "", "", "", "", "", "", "", "", "", "", "", "", false, "", "", "", Arc::new(ScriptedSource))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -411,6 +420,7 @@ impl Oauth {
         sso_ravel_target: &str,
         sso_qexo_target: &str,
         sso_novafoxwiki_target: &str,
+        sso_enki_target: &str,
         sso_desktop: bool,
         sso_agent_emise_secret: &str,
         sso_consumer_provider: &str,
@@ -472,6 +482,15 @@ impl Oauth {
         } else {
             String::new()
         };
+        // Unset or invalid leaves Enki unconfigured
+        // the same way (empty target, its endpoint 404s), for the
+        // same reason.
+        let sso_enki_target = sso_enki_target.trim().trim_end_matches('/').to_string();
+        let sso_enki_target = if valid_base(&sso_enki_target) {
+            sso_enki_target
+        } else {
+            String::new()
+        };
         // The consumer half, for an instance that signs in through
         // phext.tech instead of holding provider keys of its own:
         // an unset provider means the production phext.tech (its
@@ -503,6 +522,7 @@ impl Oauth {
             sso_ravel_target,
             sso_qexo_target,
             sso_novafoxwiki_target,
+            sso_enki_target,
             sso_desktop,
             sso_agent_emise_secret: sso_agent_emise_secret.trim().to_string(),
             sso_consumer_provider,
@@ -600,8 +620,9 @@ impl Oauth {
     /// Exocortexia has one only once `PHEXT_SSO_EXOCORTEXIA_URL` is
     /// set, Wishnode only once `PHEXT_SSO_WISHNODE_URL` is, Ravel
     /// only once `PHEXT_SSO_RAVEL_URL` is, Qexo only once
-    /// `PHEXT_SSO_QEXO_URL` is, and the Nova Fox wiki only once
-    /// `PHEXT_SSO_NOVAFOXWIKI_URL` is. This
+    /// `PHEXT_SSO_QEXO_URL` is, the Nova Fox wiki only once
+    /// `PHEXT_SSO_NOVAFOXWIKI_URL` is, and Enki only once
+    /// `PHEXT_SSO_ENKI_URL` is. This
     /// match is the audience allowlist — an audience that is
     /// not named here can never be minted for. The desktop audience
     /// is deliberately absent: it has no fixed origin (its callback
@@ -625,6 +646,9 @@ impl Oauth {
             }
             "novafoxwiki" if !self.sso_novafoxwiki_target.is_empty() => {
                 Some(&self.sso_novafoxwiki_target)
+            }
+            "enki" if !self.sso_enki_target.is_empty() => {
+                Some(&self.sso_enki_target)
             }
             _ => None,
         }
@@ -833,6 +857,7 @@ impl Oauth {
             "",
             "",
             "test-sso-secret-must-be-32-chars-minimum",
+            "",
             "",
             "",
             "",
@@ -3324,6 +3349,7 @@ mod tests {
             "",
             "",
             "",
+            "",
             false,
             "",
             "",
@@ -3404,6 +3430,7 @@ mod tests {
             "test-sso-secret-must-be-32-chars-minimum",
             "",
             "https://exocortexia.example",
+            "",
             "",
             "",
             "",
@@ -3494,6 +3521,7 @@ mod tests {
             "",
             "",
             "",
+            "",
             false,
             "",
             "",
@@ -3570,6 +3598,7 @@ mod tests {
             "x-client-id",
             "x-client-secret",
             "test-sso-secret-must-be-32-chars-minimum",
+            "",
             "",
             "",
             "",
@@ -3915,6 +3944,7 @@ mod tests {
             "",
             "",
             "",
+            "",
             false,
             "",
             "",
@@ -4003,6 +4033,7 @@ mod tests {
             "",
             "",
             "",
+            "",
             false,
             "",
             "",
@@ -4012,6 +4043,62 @@ mod tests {
         assert!(!oauth.sso_ready_for("novafoxwiki"));
         let gate = Gate::new(oauth, Editors::parse(""));
         let reply = gate.route("GET", "/api/auth/sso/novafoxwiki", &headers(&[])).unwrap();
+        assert_eq!(reply.status, 404);
+    }
+
+    #[test]
+    fn sso_enki_mints_like_every_other_audience() {
+        let gate = gate("");
+        let session = scripted_session(&gate, "google", "/api/auth/sso/enki");
+        let reply = gate
+            .route(
+                "GET",
+                "/api/auth/sso/enki?return=/",
+                &headers(&[("cookie", &session)]),
+            )
+            .unwrap();
+        assert_eq!(reply.status, 302);
+        let location = header(&reply, "Location")[0];
+        let assertion = location
+            .strip_prefix("https://enki.example/api/auth/callback?assertion=")
+            .unwrap();
+        let body = open_assertion("test-sso-secret-must-be-32-chars-minimum", assertion);
+        assert_eq!(body["aud"], "enki");
+        assert_eq!(body["who"], "google:sub-1");
+        assert_eq!(body["ret"], "/");
+    }
+
+    #[test]
+    fn sso_enki_is_404_until_configured() {
+        // Secret set, Enki's target unset: the audience does
+        // not exist — the novafoxwiki arm's shape, one audience later.
+        let oauth = Oauth::from_parts(
+            "http://127.0.0.1:8080",
+            "test-session-secret-must-be-32chars",
+            true,
+            "github-client-id",
+            "github-client-secret",
+            "google-client-id",
+            "google-client-secret",
+            "x-client-id",
+            "x-client-secret",
+            "test-sso-secret-must-be-32-chars-minimum",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            false,
+            "",
+            "",
+            "",
+            Arc::new(ScriptedSource),
+        );
+        assert!(!oauth.sso_ready_for("enki"));
+        let gate = Gate::new(oauth, Editors::parse(""));
+        let reply = gate.route("GET", "/api/auth/sso/enki", &headers(&[])).unwrap();
         assert_eq!(reply.status, 404);
     }
 
@@ -4030,6 +4117,7 @@ mod tests {
             "",
             "",
             "test-sso-secret-must-be-32-chars-minimum",
+            "",
             "",
             "",
             "",
@@ -4387,6 +4475,7 @@ mod tests {
             "https://wishnode.example",
             "",
             "https://qexo.example",
+            "",
             "",
             true,
             "",
