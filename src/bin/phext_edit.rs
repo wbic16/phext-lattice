@@ -1399,6 +1399,337 @@ fn serve_wiki(
     serve_catalog(stream, method, path, headers, wiki, "/api/wiki", "the example wiki is read-only");
 }
 
+/// ------------------------------------------------------------------
+/// The example wiki's reader view.
+///
+/// A signed-out visitor to `/wiki/` meets the book as a plain
+/// rendered wiki: the current page's content rendered — headings,
+/// links, the picture inline — navigation by page title from the
+/// front page's own menu, and a sign-in link. No coordinates, no
+/// sentron, no editor chrome. The bytes rendered are the catalog's,
+/// exactly as hosted; nothing here writes or copies the book. Any
+/// session keeps the editor shell, and `?edit` is the reader's own
+/// door to it.
+/// ------------------------------------------------------------------
+
+/// One text page of the example wiki: its coordinate and the title
+/// its own first heading gives it.
+struct ReaderPage {
+    coord: libphext::phext::Coordinate,
+    title: String,
+}
+
+/// The wiki's text pages, in address order. A page is a scroll
+/// whose first line is a `#` heading; media scrolls and their
+/// metadata are not pages and never appear.
+fn reader_pages(catalog: &DemoCatalog) -> Vec<ReaderPage> {
+    let mut coords = catalog.lattice.populated_coordinates();
+    coords.sort();
+    let mut pages = Vec::new();
+    for coord in coords {
+        let text = catalog.lattice.read_scroll(&coord).unwrap_or_default();
+        if phext_lattice::media::is_well_formed_binary_scroll(&text) {
+            continue;
+        }
+        if let Some(title) = text.lines().next().and_then(|line| line.strip_prefix("# ")) {
+            let title = title.trim();
+            if !title.is_empty() {
+                pages.push(ReaderPage { coord, title: title.to_string() });
+            }
+        }
+    }
+    pages
+}
+
+/// The `#coordinate` link targets in a page's text, in order —
+/// the front page's menu, in the book's own words.
+fn reader_hash_links(text: &str) -> Vec<libphext::phext::Coordinate> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("](#") {
+        let after = &rest[start + 3..];
+        match after.find(')') {
+            Some(end) => {
+                if let Some(coord) = parse_coordinate(after[..end].trim()) {
+                    out.push(coord);
+                }
+                rest = &after[end + 1..];
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+/// The reader's page for one coordinate of the example wiki. An
+/// address that names no text page reads as the front page.
+fn reader_page(catalog: &DemoCatalog, book: &str, coord: libphext::phext::Coordinate) -> String {
+    let pages = reader_pages(catalog);
+    let front = libphext::phext::default_coordinate();
+    let site_title = pages
+        .iter()
+        .find(|p| p.coord == front)
+        .map(|p| p.title.clone())
+        .unwrap_or_else(|| "Wiki".to_string());
+    let requested = catalog.lattice.read_scroll(&coord).unwrap_or_default();
+    let current = if !requested.is_empty()
+        && !phext_lattice::media::is_well_formed_binary_scroll(&requested)
+    {
+        coord
+    } else {
+        front
+    };
+    let text = catalog.lattice.read_scroll(&current).unwrap_or_default();
+    let title = pages
+        .iter()
+        .find(|p| p.coord == current)
+        .map(|p| p.title.clone())
+        .unwrap_or_default();
+    // Navigation: the front page's own menu first, in its order,
+    // then every other page in address order. The front page
+    // itself is the header's home link.
+    let front_text = catalog.lattice.read_scroll(&front).unwrap_or_default();
+    let mut nav: Vec<&ReaderPage> = Vec::new();
+    for target in reader_hash_links(&front_text) {
+        if let Some(page) = pages.iter().find(|p| p.coord == target) {
+            if page.coord != front && !nav.iter().any(|p| p.coord == page.coord) {
+                nav.push(page);
+            }
+        }
+    }
+    for page in &pages {
+        if page.coord != front && !nav.iter().any(|p| p.coord == page.coord) {
+            nav.push(page);
+        }
+    }
+    let nav_html = nav
+        .iter()
+        .map(|p| {
+            let href = html_escape(&format!("/{book}/?c={}", p.coord));
+            let label = html_escape(&p.title);
+            if p.coord == current {
+                format!("<a class=\"here\" href=\"{href}\">{label}</a>")
+            } else {
+                format!("<a href=\"{href}\">{label}</a>")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let body = render_reader_markdown(&text, book, catalog.media_base);
+    let doc_title = if title.is_empty() || title == site_title {
+        html_escape(&site_title)
+    } else {
+        format!("{} · {}", html_escape(&title), html_escape(&site_title))
+    };
+    let site = html_escape(&site_title);
+    format!(
+        r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{doc_title}</title>
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+body {{ margin: 0; font-family: Georgia, 'Times New Roman', serif; line-height: 1.6; color: #1c2733; background: #fdfcf9; }}
+header {{ display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; align-items: baseline; padding: 0.9rem 1.2rem; border-bottom: 1px solid #ddd6c8; }}
+header .site {{ font-weight: bold; font-size: 1.25rem; color: inherit; text-decoration: none; }}
+header nav {{ flex: 1; }}
+header nav a {{ color: #38618c; }}
+header nav a.here {{ color: inherit; font-weight: bold; text-decoration: none; }}
+header .signin {{ color: #38618c; white-space: nowrap; }}
+main {{ max-width: 44rem; margin: 0 auto; padding: 1.2rem; }}
+main img {{ max-width: 100%; height: auto; }}
+main pre {{ font-family: inherit; text-align: center; line-height: 1.3; }}
+@media (prefers-color-scheme: dark) {{
+  body {{ color: #e8e4da; background: #14181d; }}
+  header {{ border-bottom-color: #333a42; }}
+  header nav a, header .signin {{ color: #8fb8dd; }}
+  header nav a.here {{ color: inherit; }}
+}}
+</style>
+</head>
+<body>
+<header>
+<a class="site" href="/{book}/">{site}</a>
+<nav>{nav_html}</nav>
+<a class="signin" href="/{book}/?edit=1">Sign in</a>
+</header>
+<main>
+{body}</main>
+</body>
+</html>
+"##
+    )
+}
+
+/// Render a page's markdown as the reader shows it. The book's
+/// whole vocabulary: headings, paragraphs, bullet and numbered
+/// lists, links, pictures, and indented blocks (the front page's
+/// heart drawing) kept as drawn.
+fn render_reader_markdown(text: &str, book: &str, media_base: &str) -> String {
+    let mut out = String::new();
+    let mut block: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            if !block.is_empty() {
+                out.push_str(&render_reader_block(&block, book, media_base));
+                block.clear();
+            }
+        } else {
+            block.push(line);
+        }
+    }
+    if !block.is_empty() {
+        out.push_str(&render_reader_block(&block, book, media_base));
+    }
+    out
+}
+
+fn render_reader_block(lines: &[&str], book: &str, media_base: &str) -> String {
+    if lines.len() == 1 {
+        let line = lines[0];
+        for (prefix, tag) in [("### ", "h3"), ("## ", "h2"), ("# ", "h1")] {
+            if let Some(h) = line.strip_prefix(prefix) {
+                return format!("<{tag}>{}</{tag}>\n", reader_inline(h, book, media_base));
+            }
+        }
+    }
+    if lines.iter().all(|l| l.starts_with("- ")) {
+        let mut out = String::from("<ul>\n");
+        for l in lines {
+            out.push_str(&format!("<li>{}</li>\n", reader_inline(&l[2..], book, media_base)));
+        }
+        out.push_str("</ul>\n");
+        return out;
+    }
+    if lines.iter().all(|l| reader_numbered(l).is_some()) {
+        let mut out = String::from("<ol>\n");
+        for l in lines {
+            let item = reader_numbered(l).expect("checked by the all() above");
+            out.push_str(&format!("<li>{}</li>\n", reader_inline(item, book, media_base)));
+        }
+        out.push_str("</ol>\n");
+        return out;
+    }
+    if lines.iter().all(|l| l.starts_with(' ') || l.starts_with('\t')) {
+        let mut out = String::from("<pre>");
+        for l in lines {
+            out.push_str(&html_escape(l));
+            out.push('\n');
+        }
+        out.push_str("</pre>\n");
+        return out;
+    }
+    let joined = lines
+        .iter()
+        .map(|l| reader_inline(l, book, media_base))
+        .collect::<Vec<_>>()
+        .join("<br>\n");
+    format!("<p>{joined}</p>\n")
+}
+
+/// The item text of a `1. ` numbered-list line, if it is one.
+fn reader_numbered(line: &str) -> Option<&str> {
+    let (num, rest) = line.split_once(". ")?;
+    if !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit()) {
+        Some(rest)
+    } else {
+        None
+    }
+}
+
+/// One link or picture inside a line: its label, its target, and
+/// the bytes it spans in `s` (which starts just past the `[`). The
+/// target may itself be a picture — the book writes the heart as
+/// `![alt](![name](/api/media/...))` — in which case the inner
+/// picture's target is the address.
+fn parse_reader_link(s: &str) -> Option<(String, String, usize)> {
+    let close = s.find("](")?;
+    let label = s[..close].to_string();
+    let target_start = close + 2;
+    let target_src = &s[target_start..];
+    let mut depth = 1usize;
+    let mut end = None;
+    for (i, ch) in target_src.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let end = end?;
+    let raw = &target_src[..end];
+    let target = match raw.strip_prefix("![") {
+        Some(inner) => parse_reader_link(inner)
+            .map(|(_, t, _)| t)
+            .unwrap_or_else(|| raw.to_string()),
+        None => raw.to_string(),
+    };
+    Some((label, target, target_start + end + 1))
+}
+
+/// Where a link or picture target points, for a reader: a
+/// `#coordinate` target is the reader's own address for that page;
+/// a `/api/media/` picture is served from the wiki catalog's media
+/// route, so it shows whichever book the editor has open; anything
+/// else (the feedback door among it) keeps its address.
+fn reader_url(target: &str, book: &str, media_base: &str) -> String {
+    if let Some(coord) = target.strip_prefix('#') {
+        format!("/{book}/?c={coord}")
+    } else if let Some(rest) = target.strip_prefix("/api/media/") {
+        format!("{media_base}/{rest}")
+    } else {
+        target.to_string()
+    }
+}
+
+/// Render one line's inline markdown: links and pictures become
+/// HTML; everything else is escaped text.
+fn reader_inline(line: &str, book: &str, media_base: &str) -> String {
+    let esc = html_escape(line);
+    let mut out = String::with_capacity(esc.len());
+    let mut rest = esc.as_str();
+    while !rest.is_empty() {
+        let img_at = rest.find("![");
+        let link_at = rest.find('[');
+        let (at, is_img) = match (img_at, link_at) {
+            (Some(i), Some(l)) if i < l => (i, true),
+            (Some(i), None) => (i, true),
+            (_, Some(l)) => (l, false),
+            (None, None) => {
+                out.push_str(rest);
+                break;
+            }
+        };
+        out.push_str(&rest[..at]);
+        let after_open = if is_img { &rest[at + 2..] } else { &rest[at + 1..] };
+        match parse_reader_link(after_open) {
+            Some((label, target, consumed)) => {
+                let url = reader_url(&target, book, media_base);
+                if is_img {
+                    out.push_str(&format!("<img src=\"{url}\" alt=\"{label}\">"));
+                } else {
+                    out.push_str(&format!("<a href=\"{url}\">{label}</a>"));
+                }
+                rest = &after_open[consumed..];
+            }
+            None => {
+                out.push_str(if is_img { "![" } else { "[" });
+                rest = after_open;
+            }
+        }
+    }
+    out
+}
+
 fn serve_catalog(
     stream: &mut std::net::TcpStream,
     method: &str,
@@ -2054,6 +2385,35 @@ fn handle_request(
         if !link.slash {
             send_redirect(stream, &link.location(), &headers);
             return;
+        }
+        // The example wiki's reader view: a signed-out visitor who
+        // has not asked for the editor meets the book as a plain
+        // rendered wiki — its pages by title, its own menu for
+        // navigation, a sign-in link — never the editor shell. Any
+        // session keeps the shell below exactly as before, and
+        // `?edit` is the reader's own door to that shell (and the
+        // sign-in surface it carries).
+        if gate.session(&headers).is_none() && query_param(&path, "edit").is_none() {
+            let catalog = {
+                let st = state.lock().unwrap();
+                if link.name == EXAMPLE_WIKI_NAME {
+                    st.example_wiki.clone()
+                } else {
+                    None
+                }
+            };
+            if let Some(catalog) = catalog {
+                let coord = query_param(&path, "c")
+                    .and_then(|c| parse_coordinate(c.trim()))
+                    .unwrap_or_else(libphext::phext::default_coordinate);
+                let page = reader_page(&catalog, &link.name, coord);
+                match method.as_str() {
+                    "GET" => send_response(stream, 200, HTML, page.as_bytes(), CacheClass::Shell, &headers, false),
+                    "HEAD" => send_response(stream, 200, HTML, page.as_bytes(), CacheClass::Shell, &headers, true),
+                    _ => send_response(stream, 405, "text/plain; charset=utf-8", b"method not allowed", CacheClass::NoStore, &headers, false),
+                }
+                return;
+            }
         }
         // The same rendering as `/`: the serve-time slots (build stamp,
         // sponsor) are filled here too, so this shell is not the one
@@ -14000,18 +14360,33 @@ mod demo_tests {
         let gate = Arc::new(locked_gate());
         let demo = Arc::new(DemoCatalog::load());
         std::thread::spawn(move || {
-            for mut stream in listener.incoming().take(12).flatten() {
+            for mut stream in listener.incoming().take(16).flatten() {
                 handle_request(&mut stream, &state, &gate, &demo);
             }
         });
 
-        // The /wiki/ shell itself: public, and carrying no scroll text.
+        // The /wiki/ front door: a signed-out visitor meets the
+        // reader view — the book's own pages, rendered — never the
+        // editor shell, and only the wiki's text.
         let (status, body) = exchange(port, "GET /wiki/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("example wiki home scroll"), "{body}");
+        assert!(!body.contains("startWiki"), "reader carries no editor boot: {body}");
+        assert!(!body.contains("Start here.</strong>"), "reader carries no editor strip: {body}");
+        assert!(!body.contains("hello-real-file-marker"));
+
+        // A reader address opens its page.
+        let (status, body) = exchange(port, "GET /wiki/?c=1.1.1/1.1.1/1.1.2 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("second scroll about oak trees"), "{body}");
+
+        // The editor is one explicit step away: ?edit keeps the
+        // shell (and its sign-in surface) exactly as before.
+        let (status, body) = exchange(port, "GET /wiki/?edit=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
         assert_eq!(status, 200, "{body}");
         assert!(body.contains("startWiki"), "shell carries the wiki boot");
         assert!(body.contains("Start here.</strong>"), "shell carries the start strip");
         assert!(!body.contains("example wiki home scroll"));
-        assert!(!body.contains("hello-real-file-marker"));
 
         // Status names the wiki and only the wiki.
         let (status, body) = exchange(port, "GET /api/wiki/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
@@ -14066,6 +14441,94 @@ mod demo_tests {
             "POST /api/update HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
         );
         assert_eq!(status, 401);
+    }
+
+    #[test]
+    fn reader_markdown_renders_the_wiki_subset() {
+        let html = render_reader_markdown(
+            "# Title\n\nWords with a <tag> & an amp.\n\n## Pages\n\n- [Next](#1.1.1/1.1.2/1.1.1) — go\n- Plain item\n\n1. First step\n2. Second step\n\n line one\n line two\n",
+            "wiki",
+            "/api/wiki/media",
+        );
+        assert!(html.contains("<h1>Title</h1>"), "{html}");
+        assert!(html.contains("Words with a &lt;tag&gt; &amp; an amp."), "{html}");
+        assert!(html.contains("<h2>Pages</h2>"), "{html}");
+        assert!(html.contains("<li><a href=\"/wiki/?c=1.1.1/1.1.2/1.1.1\">Next</a> — go</li>"), "{html}");
+        assert!(html.contains("<li>Plain item</li>"), "{html}");
+        assert!(html.contains("<li>First step</li>"), "{html}");
+        assert!(html.contains("<li>Second step</li>"), "{html}");
+        assert!(html.contains("<pre> line one\n line two\n</pre>"), "{html}");
+    }
+
+    #[test]
+    fn signed_out_wiki_reader_renders_pages_and_a_session_keeps_the_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("real.phext"), b"hello-real-file-marker").unwrap();
+        let mut fixture = MappedLattice::from_bytes(b"placeholder");
+        let front = parse_coordinate("1.1.1/1.1.1/1.1.1").unwrap();
+        let _ = fixture.write_scroll(
+            front,
+            "# Test Wiki\n\nWelcome, traveler.\n\n## Pages in this wiki\n\n- [Second Page](#1.1.1/1.1.2/1.1.1) — the other one\n\n![heart](![image.jpg](/api/media/9.9.9/9.9.9/1.1.1))\n".to_string(),
+        );
+        let second = parse_coordinate("1.1.1/1.1.2/1.1.1").unwrap();
+        let _ = fixture.write_scroll(second, "# Second Page\n\nSecond page words.\n".to_string());
+        fixture.write_scroll_raw(
+            phext_lattice::media::media_payload_coord(1),
+            "phext-binary:1:base64\nR0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==".to_string(),
+        );
+        let _ = fixture.write_scroll(
+            phext_lattice::media::media_metadata_coord(1),
+            "{\"name\":\"image.jpg\",\"content_type\":\"image/gif\",\"bytes\":43}".to_string(),
+        );
+        std::fs::write(dir.path().join("wiki.phext"), fixture.to_phext_bytes()).unwrap();
+
+        let phext = dir.path().join("real.phext");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let lattice = MappedLattice::open(&phext).unwrap();
+        let mut app = AppState::new(lattice, phext.to_string_lossy().to_string());
+        app.phext_dir = Some(dir.path().to_string_lossy().to_string());
+        let hosted = app.hosted_phext(EXAMPLE_WIKI_NAME).expect("wiki is hosted");
+        let bytes = std::fs::read(&hosted).unwrap();
+        app.example_wiki = Some(Arc::new(DemoCatalog::load_example_wiki(bytes)));
+        let state = Arc::new(Mutex::new(app));
+        let gate = Arc::new(locked_gate());
+        let demo = Arc::new(DemoCatalog::load());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().take(8).flatten() {
+                handle_request(&mut stream, &state, &gate, &demo);
+            }
+        });
+
+        // The front page, rendered: heading, prose, the book's own
+        // menu as reader links, the picture inline from the wiki
+        // catalog's media route — and no editor chrome anywhere.
+        let (status, body) = exchange(port, "GET /wiki/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("<h1>Test Wiki</h1>"), "{body}");
+        assert!(body.contains("Welcome, traveler."), "{body}");
+        assert!(body.contains("href=\"/wiki/?c=1.1.1/1.1.2/1.1.1\""), "{body}");
+        assert!(body.contains("src=\"/api/wiki/media/9.9.9/9.9.9/1.1.1\""), "{body}");
+        assert!(body.contains(">Sign in</a>"), "{body}");
+        assert!(!body.contains("Sentron"), "{body}");
+        assert!(!body.contains("LATTICE"), "{body}");
+        assert!(!body.contains("Start here.</strong>"), "{body}");
+        assert!(!body.contains("Example wiki. Read it freely"), "{body}");
+        assert!(!body.contains("hello-real-file-marker"));
+
+        // The menu address opens the second page, rendered.
+        let (status, body) = exchange(port, "GET /wiki/?c=1.1.1/1.1.2/1.1.1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("<h1>Second Page</h1>"), "{body}");
+        assert!(body.contains("Second page words."), "{body}");
+
+        // A session keeps the editor shell, exactly as before.
+        let cookie = format!("Cookie: phext_session={}\r\n", Oauth::test_session_cookie());
+        let request = format!("GET /wiki/ HTTP/1.1\r\nHost: localhost\r\n{cookie}Connection: close\r\n\r\n");
+        let (status, body) = exchange(port, &request);
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("startWiki"), "signed-in shell is the editor: {body}");
+        assert!(!body.contains("Welcome, traveler."), "{body}");
     }
 
     #[test]
