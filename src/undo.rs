@@ -5,10 +5,19 @@
 ///
 ///   Z arm: mirrors the target scroll's Z (library.shelf.series)
 ///   Y arm: mirrors the target scroll's Y (collection.volume.book)
-///   X arm: chapter = edit sequence number, section = 1, scroll = 1
+///   X arm: chapter = file-wide serialization sequence, section = 1,
+///          scroll = 1
 ///
-/// So the 5th edit to scroll `3.3.3/5.1.2/1.5.2` lives at
-/// `3.3.3/5.1.2/5.1.1` in the work file.
+/// The chapter is a serialization sequence (records are written in
+/// target-coordinate order, then per-target sequence order), not the
+/// per-target edit sequence: two targets sharing Z/Y arms and a
+/// per-target sequence would otherwise collide at one work
+/// coordinate and merge into a single scroll. The full target
+/// coordinate is recorded in each scroll's `target:` header line,
+/// so a reloaded record re-targets the exact scroll that was edited.
+/// (Work files written before the header existed still load; their
+/// targets are recovered from the work coordinate with the X arm
+/// reset to 1.1.1, as before.)
 ///
 /// Each scroll contains a text-encoded edit record:
 ///   ```text
@@ -24,7 +33,7 @@
 /// open it in phext-nav and browse the edit history of any scroll
 /// by navigating to its Z/Y coordinates.
 
-use libphext::phext::{Coordinate, default_coordinate};
+use libphext::phext::{Coordinate, default_coordinate, to_coordinate};
 use crate::cursor::Position;
 use std::collections::HashMap;
 
@@ -355,16 +364,32 @@ impl UndoEngine {
     /// Coordinate mapping:
     ///   Z arm = target scroll's Z arm
     ///   Y arm = target scroll's Y arm
-    ///   X arm = chapter = sequence number, section = 1, scroll = 1
+    ///   X arm = chapter = file-wide serialization sequence (records
+    ///   are emitted in target-coordinate order, then per-target
+    ///   sequence order), section = 1, scroll = 1
+    ///
+    /// Each scroll begins with a `target:` header line carrying the
+    /// full target coordinate; see the module docs for why.
     pub fn to_work_phext(&self) -> Vec<u8> {
-        let mut entries: Vec<(Coordinate, String)> = Vec::new();
-
+        let mut records: Vec<(&Coordinate, &UndoRecord)> = Vec::new();
         for (target, stack) in &self.stacks {
             for record in &stack.records {
-                let work_coord = work_coordinate(target, record.sequence);
-                let scroll = record.op.to_scroll(record.cursor_before, record.cursor_after);
-                entries.push((work_coord, scroll));
+                records.push((target, record));
             }
+        }
+        records.sort_by(|(ta, ra), (tb, rb)| {
+            ta.cmp(tb).then(ra.sequence.cmp(&rb.sequence))
+        });
+
+        let mut entries: Vec<(Coordinate, String)> = Vec::new();
+        for (i, (target, record)) in records.iter().enumerate() {
+            let work_coord = work_coordinate(target, i + 1);
+            let scroll = format!(
+                "target:{}\n{}",
+                target,
+                record.op.to_scroll(record.cursor_before, record.cursor_after)
+            );
+            entries.push((work_coord, scroll));
         }
 
         // Sort by coordinate for deterministic output
@@ -397,9 +422,22 @@ impl UndoEngine {
         for &coord in work_index.coordinates() {
             if let Some(span) = work_index.get(&coord) {
                 let scroll = std::str::from_utf8(&bytes[span.start..span.end]).unwrap_or("");
-                if let Some((op, cursor_before, cursor_after)) = EditOp::from_scroll(scroll) {
-                    let target = source_coordinate(&coord);
-                    let sequence = coord.x.chapter;
+                // New-format scrolls carry the full target coordinate
+                // in a `target:` header line. Legacy work phexts (no
+                // header) fall back to the coordinate-derived target,
+                // whose X arm resets to 1.1.1 — the pre-fix behavior.
+                let (target, op_scroll) = match scroll.strip_prefix("target:") {
+                    Some(rest) => match rest.split_once('\n') {
+                        Some((addr, body)) => (to_coordinate(addr), body),
+                        None => (source_coordinate(&coord), scroll),
+                    },
+                    None => (source_coordinate(&coord), scroll),
+                };
+                if let Some((op, cursor_before, cursor_after)) = EditOp::from_scroll(op_scroll) {
+                    // Per-target sequence, recomputed exactly as
+                    // `record` computes it (the work coordinate's
+                    // chapter is a file-wide serialization sequence).
+                    let sequence = engine.stacks.get(&target).map(|s| s.total()).unwrap_or(0) + 1;
                     engine.global_sequence += 1;
                     let stack = engine.stacks.entry(target).or_insert_with(ScrollHistory::new);
                     stack.push(UndoRecord {
@@ -606,6 +644,57 @@ mod tests {
         let source_index = crate::index::LatticeIndex::build(b"dummy");
         let loaded = UndoEngine::from_work_phext(&work_bytes, &source_index);
         assert_eq!(loaded.dirty_scrolls().len(), 2); // two target scrolls
+    }
+
+    #[test]
+    fn work_phext_roundtrip_preserves_full_targets() {
+        // STITCH++ main:c9 — two targets sharing Z/Y arms and a
+        // per-target sequence number, differing only in X scroll.
+        // The pre-fix encoding wrote both to one work coordinate and
+        // merged them (total_edits 2 -> 1), and reset every reloaded
+        // target's X arm to 1.1.1.
+        let mut engine = UndoEngine::new();
+        let t1 = to_coordinate("54.15.54/55.75.1/99.90.16");
+        let t2 = to_coordinate("54.15.54/55.75.1/99.90.15");
+
+        engine.record(t1, EditOp::Insert { offset: 0, text: "alpha".to_string() },
+            Position::origin(), Position::origin());
+        engine.record(t2, EditOp::Insert { offset: 0, text: "alpha".to_string() },
+            Position::origin(), Position::origin());
+        assert_eq!(engine.total_edits(), 2);
+
+        let work_bytes = engine.to_work_phext();
+        let source_index = crate::index::LatticeIndex::build(b"dummy");
+        let mut loaded = UndoEngine::from_work_phext(&work_bytes, &source_index);
+
+        // No record lost to a work-coordinate collision...
+        assert_eq!(loaded.total_edits(), 2);
+        // ...and both targets return with full coordinates intact.
+        let dirty = loaded.dirty_scrolls();
+        assert_eq!(dirty.len(), 2);
+        assert!(dirty.contains(&t1));
+        assert!(dirty.contains(&t2));
+        assert!(loaded.undo(&t1).is_some());
+        assert!(loaded.undo(&t2).is_some());
+    }
+
+    #[test]
+    fn work_phext_legacy_format_still_loads() {
+        // A pre-fix work phext: a bare op scroll (no `target:` header)
+        // at the legacy work coordinate. It must still load, with the
+        // target recovered from the work coordinate (X arm 1.1.1).
+        let target = to_coordinate("1.1.1/1.1.1/1.1.5");
+        let op = EditOp::Insert { offset: 0, text: "World".to_string() };
+        let scroll = op.to_scroll(Position::origin(), Position::new(0, 5));
+        let work_coord = work_coordinate(&target, 1);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&delimiters_between(&default_coordinate(), &work_coord));
+        bytes.extend_from_slice(scroll.as_bytes());
+
+        let source_index = crate::index::LatticeIndex::build(b"dummy");
+        let loaded = UndoEngine::from_work_phext(&bytes, &source_index);
+        assert_eq!(loaded.total_edits(), 1);
+        assert_eq!(loaded.dirty_scrolls(), vec![to_coordinate("1.1.1/1.1.1/1.1.1")]);
     }
 
     #[test]
