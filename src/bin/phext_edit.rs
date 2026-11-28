@@ -1431,7 +1431,11 @@ fn reader_pages(catalog: &DemoCatalog) -> Vec<ReaderPage> {
         if phext_lattice::media::is_well_formed_binary_scroll(&text) {
             continue;
         }
-        if let Some(title) = text.lines().next().and_then(|line| line.strip_prefix("# ")) {
+        if let Some(title) = reader_unescape(&text)
+            .lines()
+            .next()
+            .and_then(|line| line.strip_prefix("# "))
+        {
             let title = title.trim();
             if !title.is_empty() {
                 pages.push(ReaderPage { coord, title: title.to_string() });
@@ -1488,7 +1492,7 @@ fn reader_page(catalog: &DemoCatalog, book: &str, coord: libphext::phext::Coordi
     // Navigation: the front page's own menu first, in its order,
     // then every other page in address order. The front page
     // itself is the header's home link.
-    let front_text = catalog.lattice.read_scroll(&front).unwrap_or_default();
+    let front_text = reader_unescape(&catalog.lattice.read_scroll(&front).unwrap_or_default());
     let mut nav: Vec<&ReaderPage> = Vec::new();
     for target in reader_hash_links(&front_text) {
         if let Some(page) = pages.iter().find(|p| p.coord == target) {
@@ -1564,11 +1568,57 @@ main pre {{ font-family: inherit; text-align: center; line-height: 1.3; }}
     )
 }
 
+/// The book stores a few characters as `\uXXXX` escapes (its
+/// builder wrote them that way — the em dash above all). Prose is
+/// meant to be read, so the reader decodes the escapes at render
+/// time; the book's bytes are never touched. An escape that names
+/// no character stays exactly as written.
+fn reader_unescape(text: &str) -> String {
+    if !text.contains("\\u") {
+        return text.to_string();
+    }
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\'
+            && i + 5 < bytes.len()
+            && bytes[i + 1] == b'u'
+            && bytes[i + 2..i + 6].iter().all(|b| b.is_ascii_hexdigit())
+        {
+            let hex = &text[i + 2..i + 6];
+            if let Some(ch) = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32) {
+                out.push(ch);
+                i += 6;
+                continue;
+            }
+        }
+        // Copy one UTF-8 character untouched.
+        let ch_len = utf8_len(bytes[i]);
+        out.push_str(&text[i..i + ch_len]);
+        i += ch_len;
+    }
+    out
+}
+
+fn utf8_len(first: u8) -> usize {
+    if first < 0x80 {
+        1
+    } else if first >> 5 == 0b110 {
+        2
+    } else if first >> 4 == 0b1110 {
+        3
+    } else {
+        4
+    }
+}
+
 /// Render a page's markdown as the reader shows it. The book's
 /// whole vocabulary: headings, paragraphs, bullet and numbered
 /// lists, links, pictures, and indented blocks (the front page's
 /// heart drawing) kept as drawn.
 fn render_reader_markdown(text: &str, book: &str, media_base: &str) -> String {
+    let text = &reader_unescape(text);
     let mut out = String::new();
     let mut block: Vec<&str> = Vec::new();
     for line in text.lines() {
@@ -14458,6 +14508,12 @@ mod demo_tests {
         assert!(html.contains("<li>First step</li>"), "{html}");
         assert!(html.contains("<li>Second step</li>"), "{html}");
         assert!(html.contains("<pre> line one\n line two\n</pre>"), "{html}");
+
+        // The book stores its em dashes as \u2014 escapes; the
+        // reader shows the dash, never the escape.
+        let html = render_reader_markdown("One key \\u2014 both doors.\n", "wiki", "/api/wiki/media");
+        assert!(html.contains("One key — both doors."), "{html}");
+        assert!(!html.contains("\\u2014"), "{html}");
     }
 
     #[test]
