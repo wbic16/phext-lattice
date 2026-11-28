@@ -15,6 +15,7 @@
 /// - `editor` — Pluggable editor mode trait
 /// - `modes` — Vim-style editor mode
 /// - `undo` — Undo/redo engine with phext serialization
+/// - `sync` — Scroll-by-scroll diff and merge between two phexts (envelope, diff, change scrolls, conflict-checked merge)
 
 pub mod coordinate_ext;
 pub mod cursor;
@@ -41,6 +42,7 @@ pub mod traversals;
 pub mod wavefront;
 pub mod search;
 pub mod sentron;
+pub mod sync;
 pub mod sidecar;
 pub mod stats;
 pub mod term_index;
@@ -63,6 +65,7 @@ pub use sidecar::{IndexedLattice, IndexSpec, OpenMode, SyncReport, sidecar_dir};
 pub use sentron::{Sentron, Neuron, Axon, AxisGroup, SENTRON_CAPACITY};
 pub use stats::{ScrollStats, DimensionDensity, LatticeOverview, Neighborhood};
 pub use term_index::{TermIndex, TermHit, Bm25Params, tokenize};
+pub use sync::{ChangeScroll, ChangedEntry, Conflict, EnvelopeEntry, MergeReport, ScrollDiff};
 pub use undo::{UndoEngine, EditOp, UndoRecord};
 pub use tts::{CoordPronunciation, byte_to_syllable, dim_to_syllables, to_ssml, generate_pronunciation_doc, special_coords};
 pub use uml6d::{Phase, ArtifactAddr, UmlContext, trace_artifact, artifacts_in_phase};
