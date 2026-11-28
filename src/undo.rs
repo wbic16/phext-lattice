@@ -49,12 +49,28 @@ pub enum EditOp {
     },
 }
 
+/// Largest UTF-8 char boundary in `text` at or below `offset`.
+/// `offset` must already be clamped to `text.len()`.
+fn floor_char_boundary(text: &str, mut offset: usize) -> usize {
+    while offset > 0 && !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
 impl EditOp {
     /// Apply this operation to text, returning the new text.
+    ///
+    /// Offsets are byte offsets. An offset (or range end) that lands
+    /// inside a multi-byte UTF-8 character is snapped down to the
+    /// nearest char boundary, so no offset value can panic. Ops whose
+    /// offsets already sit on char boundaries — every offset the
+    /// editor itself produces — behave exactly as before, and the
+    /// apply/inverse round trip is preserved for them.
     pub fn apply(&self, text: &str) -> String {
         match self {
             EditOp::Insert { offset, text: ins } => {
-                let offset = (*offset).min(text.len());
+                let offset = floor_char_boundary(text, (*offset).min(text.len()));
                 let mut result = String::with_capacity(text.len() + ins.len());
                 result.push_str(&text[..offset]);
                 result.push_str(ins);
@@ -62,16 +78,16 @@ impl EditOp {
                 result
             }
             EditOp::Delete { offset, deleted } => {
-                let offset = (*offset).min(text.len());
-                let end = (offset + deleted.len()).min(text.len());
+                let offset = floor_char_boundary(text, (*offset).min(text.len()));
+                let end = floor_char_boundary(text, (offset + deleted.len()).min(text.len()));
                 let mut result = String::with_capacity(text.len() - (end - offset));
                 result.push_str(&text[..offset]);
                 result.push_str(&text[end..]);
                 result
             }
             EditOp::Replace { offset, old_text, new_text } => {
-                let offset = (*offset).min(text.len());
-                let end = (offset + old_text.len()).min(text.len());
+                let offset = floor_char_boundary(text, (*offset).min(text.len()));
+                let end = floor_char_boundary(text, (offset + old_text.len()).min(text.len()));
                 let mut result = String::with_capacity(text.len() - (end - offset) + new_text.len());
                 result.push_str(&text[..offset]);
                 result.push_str(new_text);
@@ -463,6 +479,31 @@ mod tests {
         };
         let result = op.apply("Hello World");
         assert_eq!(result, "Hello Lattice");
+    }
+
+    #[test]
+    fn edit_op_apply_non_char_boundary_offset() {
+        // STITCH++ probe:c1 — byte 3 is inside the 3-byte char in "-\u{fffd}"
+        // (bytes 1..4). Every op kind must tolerate it without panicking.
+        let text = "-\u{fffd}";
+        let replace = EditOp::Replace {
+            offset: 3,
+            old_text: String::new(),
+            new_text: String::new(),
+        };
+        assert_eq!(replace.apply(text), text);
+        let insert = EditOp::Insert { offset: 3, text: "x".to_string() };
+        assert_eq!(insert.apply(text), "-x\u{fffd}");
+        // Offset 2 snaps down to the char's start (1); the range end
+        // (1 + 3 bytes) is the char's end, so the char is deleted.
+        let delete = EditOp::Delete { offset: 2, deleted: "\u{fffd}".to_string() };
+        assert_eq!(delete.apply(text), "-");
+        // Round trip on multi-byte text with a boundary-aligned
+        // offset is exact, as before.
+        let op = EditOp::Insert { offset: 1, text: "xy".to_string() };
+        let applied = op.apply(text);
+        assert_eq!(applied, "-xy\u{fffd}");
+        assert_eq!(op.inverse().apply(&applied), text);
     }
 
     #[test]
