@@ -237,6 +237,11 @@ struct AppState {
     /// from the hosted `wiki.phext` (see `EXAMPLE_WIKI_NAME`). `None`
     /// when no wiki is hosted; the /api/wiki routes then answer 404.
     example_wiki: Option<Arc<DemoCatalog>>,
+    /// Books the operator listed as private (`PHEXT_PRIVATE_BOOKS`,
+    /// `--private`): canonical file names (e.g. `feedback.phext`)
+    /// whose read surface requires any valid session. Empty — the
+    /// default — changes nothing: every book reads as it always has.
+    private_books: Vec<String>,
     /// Landing file after sign-in / on a fresh load (--home or PHEXT_HOME)
     home_file: Option<String>,
     /// Landing coordinate within the home file (--home-coord or PHEXT_HOME_COORD)
@@ -270,7 +275,7 @@ impl AppState {
             .map(|dir| dir.join("mcp-oauth.json"))
             .unwrap_or_else(|| PathBuf::from("mcp-oauth.json"));
         let mcp_oauth = Arc::new(McpOAuthStore::new(mcp_oauth_path));
-        AppState { lattice, nav, overview, default_file: file_path.clone(), file_path, dirty: false, phext_dir: None, example_wiki: None, home_file: None, home_coord: None, mcp_oauth, mcp_lattice_cache: Vec::new(), heat_cache: std::collections::HashMap::new() }
+        AppState { lattice, nav, overview, default_file: file_path.clone(), file_path, dirty: false, phext_dir: None, example_wiki: None, private_books: Vec::new(), home_file: None, home_coord: None, mcp_oauth, mcp_lattice_cache: Vec::new(), heat_cache: std::collections::HashMap::new() }
     }
 
     fn rebuild_overview(&mut self) {
@@ -394,6 +399,29 @@ impl AppState {
     /// A symlink that resolves outside that directory is not a hosted file.
     fn hosted_phext(&self, name: &str) -> Option<std::path::PathBuf> {
         hosted_phext_file(self.phext_dir.as_deref(), &self.file_path, name)
+    }
+
+    /// Whether `file_name` (e.g. `feedback.phext`) is listed private.
+    fn is_private_file(&self, file_name: &str) -> bool {
+        self.private_books.iter().any(|b| b == file_name)
+    }
+
+    /// Whether the book at `path` is listed private, by file name.
+    fn is_private_path(&self, path: &std::path::Path) -> bool {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| self.is_private_file(n))
+            .unwrap_or(false)
+    }
+
+    /// Whether `<name>.phext` is listed private.
+    fn is_private_name(&self, name: &str) -> bool {
+        self.is_private_file(&format!("{name}.phext"))
+    }
+
+    /// Whether the book currently open is listed private.
+    fn current_is_private(&self) -> bool {
+        self.is_private_path(std::path::Path::new(&self.file_path))
     }
 
     fn open_phext(&mut self, path: &str) -> Result<(), String> {
@@ -1847,6 +1875,67 @@ fn is_api_path(path: &str) -> bool {
 
 const API_NOT_FOUND: &[u8] = br#"{"ok":false,"error":"not found"}"#;
 
+/// The refusal a private book's read surface gives a request with
+/// no valid session — the same bytes the gate's 401 carries.
+const PRIVATE_BOOK_DENIED: &[u8] = br#"{"ok":false,"error":"unauthorized"}"#;
+
+/// Whether a route reads the shared current file, as opposed to
+/// naming its book (those handlers check the named book themselves)
+/// or deciding for itself (`/api/phexts` filters its list;
+/// `/api/open` checks its target). While a private book is the
+/// current file, these routes answer only to a session.
+fn private_current_surface(path: &str) -> bool {
+    let route = path_route(path);
+    if route == "/api/phexts" || route == "/api/open" {
+        return false;
+    }
+    if matches!(route, "/api/heatmap" | "/api/toc" | "/api/scroll") {
+        // An explicit ?name= names its book; no name means the
+        // current file — this guard's question.
+        return query_param(path, "name").map(|n| n.trim().is_empty()).unwrap_or(true);
+    }
+    true
+}
+
+/// The operator's private-book list: `PHEXT_PRIVATE_BOOKS`
+/// (comma-separated) plus every `--private <name>` flag. Entries
+/// name files (`feedback.phext`); a bare book name (`feedback`) is
+/// taken the same way. Canonical file names out, duplicates removed.
+fn private_books_from(args: &[String], env_val: Option<&str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let push = |raw: &str, out: &mut Vec<String>| {
+        let name = raw.trim();
+        if name.is_empty() {
+            return;
+        }
+        let file = if name.ends_with(".phext") {
+            name.to_string()
+        } else {
+            format!("{name}.phext")
+        };
+        if !out.contains(&file) {
+            out.push(file);
+        }
+    };
+    if let Some(v) = env_val {
+        for part in v.split(',') {
+            push(part, &mut out);
+        }
+    }
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--private" {
+            if let Some(v) = args.get(i + 1) {
+                push(v, &mut out);
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 fn handle_request(
     stream: &mut std::net::TcpStream,
     state: &Arc<Mutex<AppState>>,
@@ -1941,10 +2030,26 @@ fn handle_request(
     // the example wiki, whose shell reads its bytes from the public
     // `/api/wiki` catalog answered below.
     if let Some(link) = phext_link(&path) {
-        let hosted = state.lock().unwrap().hosted_phext(&link.name).is_some();
+        let (hosted, private) = {
+            let st = state.lock().unwrap();
+            (st.hosted_phext(&link.name).is_some(), st.is_private_name(&link.name))
+        };
         if !hosted {
             send_not_found(stream, &method, &headers);
             return;
+        }
+        // A private book's shell routes a signed-out visitor to
+        // sign-in: the SSO handoff starts at the consumer endpoint
+        // and returns them to the book. (In provider mode there is
+        // no single handoff to aim at; the shell below is the
+        // sign-in surface, and the API refuses the book's bytes
+        // until a session exists.)
+        if private && gate.session(&headers).is_none() {
+            if let Some(endpoint) = gate.oauth().sso_consumer_endpoint() {
+                let target = format!("{endpoint}?return=/{}/", link.name);
+                send_redirect(stream, &target, &headers);
+                return;
+            }
         }
         if !link.slash {
             send_redirect(stream, &link.location(), &headers);
@@ -2049,12 +2154,40 @@ fn handle_request(
     if handle_traversals(stream, &mut reader, &method, &path, &headers, state, gate) {
         return;
     }
-    if let Err(reply) = gate.admit(&method, &path, &headers) {
-        reply.write_to(stream);
-        return;
+    // Private books carry a per-book write policy: a write lands
+    // on the book currently open, so when that book is private, any
+    // signed-in account may write it — that is how players leave
+    // feedback — while every other book keeps the editor list. The
+    // session's CSRF check still applies, exactly as it does to an
+    // editor's write. Reads and viewport moves never take this
+    // path; `admit` decides them as it always has.
+    let private_book_write = !matches!(method.as_str(), "GET" | "HEAD")
+        && gate.locked()
+        && state.lock().unwrap().current_is_private()
+        && match gate.session(&headers) {
+            Some(s) if !gate.is_editor(&s) => {
+                let csrf = headers.get("x-csrf-token").map(String::as_str).unwrap_or("");
+                gate.oauth().csrf_matches(&s, csrf)
+            }
+            _ => false,
+        };
+    if !private_book_write {
+        if let Err(reply) = gate.admit(&method, &path, &headers) {
+            reply.write_to(stream);
+            return;
+        }
     }
 
     let mut state = state.lock().unwrap();
+
+    // While a private book is the shared current file, its read
+    // surface answers only to a session — the same rule the ?name=
+    // routes apply to the book by name.
+    let signed_in = gate.session(&headers).is_some();
+    if !signed_in && state.current_is_private() && private_current_surface(&path) {
+        send_response(stream, 401, "application/json", PRIVATE_BOOK_DENIED, CacheClass::NoStore, &headers, false);
+        return;
+    }
 
     match (method.as_str(), path.as_str()) {
         ("GET", p) if is_editor_shell(p) => {
@@ -2066,7 +2199,14 @@ fn handle_request(
 
         // ── Phext file management ──
         ("GET", "/api/phexts") => {
-            json_response(stream, &headers, &state.list_phexts());
+            // Private books are not listed to signed-out callers —
+            // neither their names nor their paths. A session sees
+            // the whole library, as the file switcher needs.
+            let mut files = state.list_phexts();
+            if !signed_in {
+                files.retain(|f| !state.is_private_file(&f.name));
+            }
+            json_response(stream, &headers, &files);
         }
 
         // Heat map data for one hosted phext: per-scroll text statistics
@@ -2082,6 +2222,12 @@ fn handle_request(
             } else {
                 state.hosted_phext(name.trim())
             };
+            if let Some(p) = &target {
+                if state.is_private_path(p) && !signed_in {
+                    send_response(stream, 401, "application/json", PRIVATE_BOOK_DENIED, CacheClass::NoStore, &headers, false);
+                    return;
+                }
+            }
             match target {
                 Some(path) => match state.heat_map_json(&path, &query) {
                     Ok(body) => send_response(stream, 200, "application/json", body.as_bytes(), CacheClass::NoStore, &headers, false),
@@ -2102,7 +2248,11 @@ fn handle_request(
             let scale = query_param(p, "scale").and_then(|s| s.parse().ok());
             let scope = query_param(p, "scope").unwrap_or_default();
             if mode == "matches" && scope == "all" {
-                match toc_matches_all(&state.list_phexts(), &at, scale) {
+                let mut all = state.list_phexts();
+                if !signed_in {
+                    all.retain(|f| !state.is_private_file(&f.name));
+                }
+                match toc_matches_all(&all, &at, scale) {
                     Ok(body) => send_response(stream, 200, "application/json", body.as_bytes(), CacheClass::NoStore, &headers, false),
                     Err(e) => json_response(stream, &headers, &ApiOk { ok: false, message: e }),
                 }
@@ -2112,6 +2262,12 @@ fn handle_request(
                 } else {
                     state.hosted_phext(name.trim())
                 };
+                if let Some(p) = &target {
+                    if state.is_private_path(p) && !signed_in {
+                        send_response(stream, 401, "application/json", PRIVATE_BOOK_DENIED, CacheClass::NoStore, &headers, false);
+                        return;
+                    }
+                }
                 match target {
                     Some(path) => match toc_body(&path, &mode, &at, step, scale) {
                         Ok(body) => send_response(stream, 200, "application/json", body.as_bytes(), CacheClass::NoStore, &headers, false),
@@ -2132,6 +2288,12 @@ fn handle_request(
             } else {
                 state.hosted_phext(name.trim())
             };
+            if let Some(p) = &target {
+                if state.is_private_path(p) && !signed_in {
+                    send_response(stream, 401, "application/json", PRIVATE_BOOK_DENIED, CacheClass::NoStore, &headers, false);
+                    return;
+                }
+            }
             match target {
                 Some(path) => {
                     let display = path.file_name().unwrap_or_default().to_string_lossy().to_string();
@@ -2162,6 +2324,13 @@ fn handle_request(
             } else {
                 requested.to_string()
             };
+            // A private book opens only for a session. Refuse
+            // before any state moves: no dirty check, no
+            // conversion, no switch.
+            if state.is_private_path(std::path::Path::new(&path_str)) && gate.session(&headers).is_none() {
+                send_response(stream, 401, "application/json", PRIVATE_BOOK_DENIED, CacheClass::NoStore, &headers, false);
+                return;
+            }
             // TEI targets — an .xml file or a directory of them inside
             // the library — convert to a chain and open that; every
             // other target opens exactly as it always has.
@@ -6717,6 +6886,43 @@ mod local_mode_tests {
         (port, dir, gate)
     }
 
+    /// `serve_gate` with an operator private-book list on the state.
+    fn serve_gate_private(gate: Gate, local: bool, private: &[&str]) -> (u16, tempfile::TempDir, Arc<Gate>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.phext");
+        std::fs::write(&path, b"local note\n").unwrap();
+        let lattice = MappedLattice::open(&path).unwrap();
+        let mut app = AppState::new(lattice, path.to_string_lossy().to_string());
+        app.phext_dir = Some(dir.path().to_string_lossy().to_string());
+        app.private_books = private.iter().map(|s| s.to_string()).collect();
+        let state = Arc::new(Mutex::new(app));
+        if local {
+            gate.enable_local();
+        }
+        let gate = Arc::new(gate);
+        let demo = DemoCatalog::load();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server_gate = Arc::clone(&gate);
+        std::thread::spawn(move || {
+            for incoming in listener.incoming() {
+                let Ok(mut stream) = incoming else { break };
+                let state = Arc::clone(&state);
+                let gate = Arc::clone(&server_gate);
+                handle_request(&mut stream, &state, &gate, &demo);
+            }
+        });
+        (port, dir, gate)
+    }
+
+    /// A one-scroll hosted book on disk, in the exact bytes the
+    /// reference parser writes — the shape the read routes serve.
+    fn write_book(dir: &tempfile::TempDir, name: &str, text: &str) {
+        let mut map = std::collections::HashMap::new();
+        map.insert(parse_coordinate("1.1.1/1.1.1/1.1.1").unwrap(), text.to_string());
+        std::fs::write(dir.path().join(name), libphext::phext::implode(map)).unwrap();
+    }
+
     fn http(port: u16, method: &str, path: &str, extra: &str) -> (u16, String) {
         http_body(port, method, path, extra, "")
     }
@@ -6911,6 +7117,153 @@ mod local_mode_tests {
             &format!("{headers}X-Filename: {filename}\r\nContent-Length: {}\r\n", payload.len()),
             payload,
         )
+    }
+
+    #[test]
+    fn private_books_parse_normalizes_and_dedupes() {
+        let args = argv(&["--dir", "/tmp/x", "--private", "feedback", "--private", "notes.phext"]);
+        let books = private_books_from(&args, Some("feedback.phext, extra ,"));
+        assert_eq!(
+            books,
+            vec!["feedback.phext".to_string(), "extra.phext".to_string(), "notes.phext".to_string()]
+        );
+        assert!(private_books_from(&argv(&[]), None).is_empty());
+        assert!(private_books_from(&argv(&[]), Some("  ")).is_empty());
+    }
+
+    #[test]
+    fn private_books_hide_from_signed_out_readers() {
+        let gate = Gate::new(Oauth::test_ready(), Editors::parse("google:sub-1"));
+        let (port, dir, _gate) = serve_gate_private(gate, false, &["secret.phext"]);
+        write_book(&dir, "public.phext", "public words");
+        write_book(&dir, "secret.phext", "secret words");
+
+        // The library list omits the private book entirely — no
+        // name, no path — while public books list as always.
+        let (code, body) = http(port, "GET", "/api/phexts", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("public.phext"), "{body}");
+        assert!(!body.contains("secret"), "{body}");
+
+        // Every by-name read refuses, and so does opening it.
+        let (code, _) = http(port, "GET", "/api/scroll?name=secret&coord=1.1.1/1.1.1/1.1.1", "");
+        assert_eq!(code, 401);
+        let (code, _) = http(port, "GET", "/api/heatmap?name=secret", "");
+        assert_eq!(code, 401);
+        let (code, _) = http(port, "GET", "/api/toc?name=secret", "");
+        assert_eq!(code, 401);
+        let (code, _) = http_with_body(port, "POST", "/api/open", "", "secret");
+        assert_eq!(code, 401);
+
+        // The unlisted book reads exactly as before.
+        let (code, body) = http(port, "GET", "/api/scroll?name=public&coord=1.1.1/1.1.1/1.1.1", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("public words"), "{body}");
+    }
+
+    #[test]
+    fn private_books_read_for_any_signed_in_session() {
+        let gate = Gate::new(Oauth::test_ready(), Editors::parse("google:sub-1"));
+        let (port, dir, _gate) = serve_gate_private(gate, false, &["secret.phext"]);
+        write_book(&dir, "public.phext", "public words");
+        write_book(&dir, "secret.phext", "secret words");
+        // github:100 is signed in but not on the editor list.
+        let session = format!("Cookie: phext_session={}\r\n", Oauth::test_session_cookie());
+
+        let (code, body) = http(port, "GET", "/api/phexts", &session);
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("secret.phext"), "{body}");
+
+        let (code, body) = http(port, "GET", "/api/scroll?name=secret&coord=1.1.1/1.1.1/1.1.1", &session);
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("secret words"), "{body}");
+
+        // Open it: the current-file surface reads with the session…
+        let (code, _) = http_with_body(port, "POST", "/api/open", &session, "secret");
+        assert_eq!(code, 200);
+        let (code, body) = http(port, "GET", "/api/scroll/1.1.1/1.1.1/1.1.1", &session);
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("secret words"), "{body}");
+
+        // …but not without one, now that the private book is current.
+        let (code, _) = http(port, "GET", "/api/scroll/1.1.1/1.1.1/1.1.1", "");
+        assert_eq!(code, 401);
+        let (code, _) = http(port, "GET", "/api/nav", "");
+        assert_eq!(code, 401);
+    }
+
+    #[test]
+    fn private_book_writes_need_a_session_not_an_editor() {
+        let gate = Gate::new(Oauth::test_ready(), Editors::parse("google:sub-1"));
+        let (port, dir, _gate) = serve_gate_private(gate, false, &["secret.phext"]);
+        write_book(&dir, "public.phext", "public words");
+        write_book(&dir, "secret.phext", "secret words");
+        let session = format!(
+            "Cookie: phext_session={}\r\nX-CSRF-Token: {TEST_CSRF}\r\n",
+            Oauth::test_session_cookie()
+        );
+
+        // The private book: open, write, save — all on the session.
+        let (code, _) = http_with_body(port, "POST", "/api/open", &session, "secret");
+        assert_eq!(code, 200);
+        let edit = r#"{"coordinate":"1.1.1/1.1.1/1.1.2","content":"a player note"}"#;
+        let (code, body) = http_body(
+            port,
+            "POST",
+            "/api/update",
+            &format!("{session}Content-Type: application/json\r\nContent-Length: {}\r\n", edit.len()),
+            edit,
+        );
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"ok\":true"), "{body}");
+        let (code, body) = http(port, "POST", "/api/save", &session);
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("\"ok\":true"), "{body}");
+
+        // The public book keeps the editor list: same session, 403.
+        let (code, _) = http_with_body(port, "POST", "/api/open", &session, "public");
+        assert_eq!(code, 200);
+        let (code, _) = http_body(
+            port,
+            "POST",
+            "/api/update",
+            &format!("{session}Content-Type: application/json\r\nContent-Length: {}\r\n", edit.len()),
+            edit,
+        );
+        assert_eq!(code, 403);
+    }
+
+    #[test]
+    fn private_book_shell_routes_signed_out_to_sso_sign_in() {
+        let gate = Gate::new(Oauth::test_consumer(), Editors::parse("google:sub-1"));
+        let (port, dir, _gate) = serve_gate_private(gate, false, &["secret.phext"]);
+        write_book(&dir, "public.phext", "public words");
+        write_book(&dir, "secret.phext", "secret words");
+
+        let (code, body) = http(port, "GET", "/secret/", "");
+        assert_eq!(code, 302, "{body}");
+        assert!(
+            body.contains("https://phext.tech/api/auth/sso/novafoxwiki?return=/secret/"),
+            "{body}"
+        );
+
+        // A public book's shell does not redirect.
+        let (code, _) = http(port, "GET", "/public/", "");
+        assert_eq!(code, 200);
+    }
+
+    #[test]
+    fn books_are_public_until_listed_private() {
+        // No private list configured: a book that merely sounds
+        // private reads exactly as every book always has.
+        let (port, dir) = serve(false);
+        write_book(&dir, "secret.phext", "secret words");
+        let (code, body) = http(port, "GET", "/api/scroll?name=secret&coord=1.1.1/1.1.1/1.1.1", "");
+        assert_eq!(code, 200, "{body}");
+        assert!(body.contains("secret words"), "{body}");
+        let (code, body) = http(port, "GET", "/api/phexts", "");
+        assert_eq!(code, 200);
+        assert!(body.contains("secret.phext"), "{body}");
     }
 
     #[test]
@@ -7925,6 +8278,7 @@ fn main() {
         eprintln!("  --host <addr>     Listen address (default: 0.0.0.0; 127.0.0.1 with --local)");
         eprintln!("  --dir <path>      Serve all .phext files in directory");
         eprintln!("  --local           Local dev: no sign-in. Loopback bind only.");
+        eprintln!("  --private <name>  Book that requires sign-in to read (repeatable)");
         eprintln!("                    Phexts: --dir, else PHEXT_DATA_DIR, else ./.phext-local");
         eprintln!("  --help            Show this help");
         eprintln!();
@@ -7932,6 +8286,7 @@ fn main() {
         eprintln!("  PHEXT_PUBLIC_URL, PHEXT_SESSION_SECRET, PHEXT_EDITORS, PHEXT_EDITORS_FILE, PHEXT_COOKIE_SECURE=1");
         eprintln!("  GITHUB_CLIENT_ID/SECRET, GOOGLE_CLIENT_ID/SECRET, X_CLIENT_ID/SECRET");
         eprintln!("  PHEXT_CLAIM_ENABLED=1 opens claim mode (/api/claim; the /claim lookup is always public)");
+        eprintln!("  PHEXT_PRIVATE_BOOKS  Comma-separated private books, e.g. feedback.phext (same as --private)");
         eprintln!("  PHEXT_SPONSOR_URL   Stripe Payment Link for the Support the site donation. Empty hides it.");
         std::process::exit(1);
     }
@@ -8041,11 +8396,18 @@ fn main() {
 
     let mut app_state = AppState::new(lattice, file_path.clone());
     app_state.phext_dir = dir.clone();
+    app_state.private_books =
+        private_books_from(&args, std::env::var("PHEXT_PRIVATE_BOOKS").ok().as_deref());
     // The example wiki: when a wiki.phext is hosted, build its public
     // read-only catalog now, resolved through the same hosted-file
     // check the /wiki/ shell route uses — so the bytes a signed-out
     // visitor can read are exactly that one file, and no other.
-    if let Some(wiki_path) = app_state.hosted_phext(EXAMPLE_WIKI_NAME) {
+    let wiki_hosted = if app_state.is_private_name(EXAMPLE_WIKI_NAME) {
+        None
+    } else {
+        app_state.hosted_phext(EXAMPLE_WIKI_NAME)
+    };
+    if let Some(wiki_path) = wiki_hosted {
         match std::fs::read(&wiki_path) {
             Ok(bytes) => {
                 let catalog = DemoCatalog::load_example_wiki(bytes);
@@ -8119,6 +8481,15 @@ fn main() {
     println!("   active: {} ({} scrolls)", file_path, scroll_count);
     for line in gate.describe() {
         println!("   {}", line);
+    }
+    {
+        let st = state.lock().unwrap();
+        if !st.private_books.is_empty() {
+            println!(
+                "   private books: {} (reading requires sign-in)",
+                st.private_books.join(", ")
+            );
+        }
     }
     println!("   demo: {} scrolls, read-only, http://localhost:{}/?demo", demo.scrolls, port);
     if sponsor_offer().url().is_some() {

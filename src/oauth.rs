@@ -818,6 +818,35 @@ impl Oauth {
         Some(out)
     }
 
+    /// An SSO-consumer instance for tests: no direct providers,
+    /// the phext.tech handoff configured for the `novafoxwiki`
+    /// audience — the shape the Nova Fox wiki runs.
+    pub fn test_consumer() -> Self {
+        Self::from_parts(
+            "https://wiki.example",
+            "consumer-session-secret-must-be-32ch",
+            true,
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "test-sso-secret-must-be-32-chars-minimum",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            false,
+            "",
+            "https://phext.tech",
+            "novafoxwiki",
+            Arc::new(HttpSource),
+        )
+    }
+
     pub fn test_session_cookie() -> String {
         Self::test_ready()
             .seal(&SessionBody {
