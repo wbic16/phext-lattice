@@ -1422,6 +1422,54 @@ struct ReaderPage {
 /// The wiki's text pages, in address order. A page is a scroll
 /// whose first line is a `#` heading; media scrolls and their
 /// metadata are not pages and never appear.
+
+/// Where the reader's Sign in link leads. On an SSO consumer the
+/// handoff is the sign-in: the provider's endpoint for this
+/// instance's audience, with the book as the return — the same
+/// shape the private-book gate redirects through. Any other
+/// instance keeps the editor shell's own sign-in surface at
+/// `?edit`.
+fn reader_signin_href(endpoint: Option<&str>, book: &str) -> String {
+    match endpoint {
+        Some(endpoint) => format!("{endpoint}?return=/{book}/"),
+        None => format!("/{book}/?edit=1"),
+    }
+}
+
+/// The shell's static sign-in links name this instance's own
+/// provider endpoints. On an SSO consumer none of those providers
+/// is configured — the links are dead ends ("Sign-in is not set
+/// up yet") — so at serve time the static spans (the demo and
+/// wiki banners, the intro's provider row) are replaced by the one
+/// working door: the provider handoff the session view advertises.
+/// The shell script rebuilds the intro's provider row from the
+/// session on load either way; this governs the first paint and
+/// the no-script reader. A non-consumer's page is served
+/// byte-for-byte as before.
+fn sso_signin_rewrite<'a>(html: Cow<'a, str>, endpoint: Option<&str>) -> Cow<'a, str> {
+    let Some(endpoint) = endpoint else {
+        return html;
+    };
+    let wiki = format!("<a href=\"{endpoint}?return=/wiki/\">Sign in with phext.tech</a>");
+    let root = format!("<a href=\"{endpoint}?return=/\">Sign in with phext.tech</a>");
+    let root_btn =
+        format!("<a class=\"auth-btn\" href=\"{endpoint}?return=/\">Sign in with phext.tech</a>");
+    Cow::Owned(
+        html.replace(
+            "<a href=\"/api/auth/google?next=%2Fwiki%2F\">Google</a>\n    <a href=\"/api/auth/github?next=%2Fwiki%2F\">GitHub</a>\n    <a href=\"/api/auth/x?next=%2Fwiki%2F\">X</a>",
+            &wiki,
+        )
+        .replace(
+            "<a href=\"/api/auth/google?next=%2F\">Google</a>\n    <a href=\"/api/auth/github?next=%2F\">GitHub</a>",
+            &root,
+        )
+        .replace(
+            "<a class=\"auth-btn\" data-provider=\"google\" href=\"/api/auth/google?next=%2F\">Sign in with Google</a>\n      <a class=\"auth-btn\" data-provider=\"github\" href=\"/api/auth/github?next=%2F\">Sign in with GitHub</a>\n      <a class=\"auth-btn\" data-provider=\"x\" href=\"/api/auth/x?next=%2F\">Sign in with X</a>",
+            &root_btn,
+        ),
+    )
+}
+
 fn reader_pages(catalog: &DemoCatalog) -> Vec<ReaderPage> {
     let mut coords = catalog.lattice.populated_coordinates();
     coords.sort();
@@ -1467,7 +1515,12 @@ fn reader_hash_links(text: &str) -> Vec<libphext::phext::Coordinate> {
 
 /// The reader's page for one coordinate of the example wiki. An
 /// address that names no text page reads as the front page.
-fn reader_page(catalog: &DemoCatalog, book: &str, coord: libphext::phext::Coordinate) -> String {
+fn reader_page(
+    catalog: &DemoCatalog,
+    book: &str,
+    coord: libphext::phext::Coordinate,
+    signin_href: &str,
+) -> String {
     let pages = reader_pages(catalog);
     let front = libphext::phext::default_coordinate();
     let site_title = pages
@@ -1526,6 +1579,7 @@ fn reader_page(catalog: &DemoCatalog, book: &str, coord: libphext::phext::Coordi
         format!("{} · {}", html_escape(&title), html_escape(&site_title))
     };
     let site = html_escape(&site_title);
+    let signin = html_escape(signin_href);
     format!(
         r##"<!DOCTYPE html>
 <html lang="en">
@@ -1558,7 +1612,7 @@ main pre {{ font-family: inherit; text-align: center; line-height: 1.3; }}
 <header>
 <a class="site" href="/{book}/">{site}</a>
 <nav>{nav_html}</nav>
-<a class="signin" href="/{book}/?edit=1">Sign in</a>
+<a class="signin" href="{signin}">Sign in</a>
 </header>
 <main>
 {body}</main>
@@ -1899,11 +1953,12 @@ fn show_signed_out_gate(gate: &Gate, headers: &HashMap<String, String>) -> bool 
 }
 
 fn index_page(gate: &Gate, headers: &HashMap<String, String>) -> Cow<'static, str> {
-    if show_signed_out_gate(gate, headers) {
+    let page = if show_signed_out_gate(gate, headers) {
         Cow::Borrowed(INDEX_HTML)
     } else {
         Cow::Owned(INDEX_HTML.replacen(GATE_OPEN, GATE_SHUT, 1))
-    }
+    };
+    sso_signin_rewrite(page, gate.oauth().sso_consumer_endpoint().as_deref())
 }
 
 fn parse_request(reader: &mut BufReader<std::net::TcpStream>) -> Option<(String, String, HashMap<String, String>)> {
@@ -2456,7 +2511,11 @@ fn handle_request(
                 let coord = query_param(&path, "c")
                     .and_then(|c| parse_coordinate(c.trim()))
                     .unwrap_or_else(libphext::phext::default_coordinate);
-                let page = reader_page(&catalog, &link.name, coord);
+                let signin = reader_signin_href(
+                    gate.oauth().sso_consumer_endpoint().as_deref(),
+                    &link.name,
+                );
+                let page = reader_page(&catalog, &link.name, coord, &signin);
                 match method.as_str() {
                     "GET" => send_response(stream, 200, HTML, page.as_bytes(), CacheClass::Shell, &headers, false),
                     "HEAD" => send_response(stream, 200, HTML, page.as_bytes(), CacheClass::Shell, &headers, true),
@@ -2468,7 +2527,10 @@ fn handle_request(
         // The same rendering as `/`: the serve-time slots (build stamp,
         // sponsor) are filled here too, so this shell is not the one
         // surface that hides which build is running.
-        let page = render_page(INDEX_HTML);
+        let page = sso_signin_rewrite(
+            render_page(INDEX_HTML),
+            gate.oauth().sso_consumer_endpoint().as_deref(),
+        );
         match method.as_str() {
             "GET" => send_response(stream, 200, HTML, page.as_bytes(), CacheClass::Shell, &headers, false),
             "HEAD" => send_response(stream, 200, HTML, page.as_bytes(), CacheClass::Shell, &headers, true),
@@ -14223,6 +14285,34 @@ mod demo_tests {
     }
 
     #[test]
+    fn reader_signin_href_prefers_the_sso_handoff() {
+        assert_eq!(
+            reader_signin_href(Some("https://phext.tech/api/auth/sso/novafoxwiki"), "wiki"),
+            "https://phext.tech/api/auth/sso/novafoxwiki?return=/wiki/"
+        );
+        assert_eq!(reader_signin_href(None, "wiki"), "/wiki/?edit=1");
+    }
+
+    #[test]
+    fn consumer_index_page_signin_points_at_the_handoff() {
+        let gate = Gate::new(Oauth::test_consumer(), Editors::parse("google:1"));
+        let page = index_page(&gate, &HashMap::new());
+        assert!(page.contains("href=\"https://phext.tech/api/auth/sso/novafoxwiki?return=/wiki/\""));
+        assert!(page.contains("href=\"https://phext.tech/api/auth/sso/novafoxwiki?return=/\""));
+        assert!(!page.contains("href=\"/api/auth/google?next="));
+        assert!(!page.contains("href=\"/api/auth/github?next="));
+        assert!(!page.contains("href=\"/api/auth/x?next="));
+    }
+
+    #[test]
+    fn non_consumer_shell_is_served_unchanged() {
+        // test_ready is not a consumer: the rewrite must not fire.
+        let page = index_page(&locked_gate(), &HashMap::new());
+        assert!(page.contains("Sign in with Google"));
+        assert!(!page.contains("api/auth/sso/novafoxwiki"));
+    }
+
+    #[test]
     fn a_signed_in_editor_does_not_see_the_intro() {
         let page = index_page(&locked_gate(), &editor_headers());
         assert!(page.contains(GATE_SHUT));
@@ -14421,6 +14511,9 @@ mod demo_tests {
         let (status, body) = exchange(port, "GET /wiki/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
         assert_eq!(status, 200, "{body}");
         assert!(body.contains("example wiki home scroll"), "{body}");
+        // No SSO consumer configured on this gate: Sign in keeps
+        // the shell's own door.
+        assert!(body.contains("href=\"/wiki/?edit=1\""), "{body}");
         assert!(!body.contains("startWiki"), "reader carries no editor boot: {body}");
         assert!(!body.contains("Start here.</strong>"), "reader carries no editor strip: {body}");
         assert!(!body.contains("hello-real-file-marker"));
@@ -14491,6 +14584,52 @@ mod demo_tests {
             "POST /api/update HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
         );
         assert_eq!(status, 401);
+    }
+
+
+    #[test]
+    fn sso_consumer_wiki_signin_points_at_the_handoff() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("real.phext"), b"hello-real-file-marker").unwrap();
+        let mut fixture = MappedLattice::from_bytes(b"example wiki home scroll");
+        let second = parse_coordinate("1.1.1/1.1.1/1.1.2").expect("coord parses");
+        let _ = fixture.write_scroll(second, "second scroll about oak trees".to_string());
+        std::fs::write(dir.path().join("wiki.phext"), fixture.to_phext_bytes()).unwrap();
+
+        let phext = dir.path().join("real.phext");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let lattice = MappedLattice::open(&phext).unwrap();
+        let mut app = AppState::new(lattice, phext.to_string_lossy().to_string());
+        app.phext_dir = Some(dir.path().to_string_lossy().to_string());
+        let hosted = app.hosted_phext(EXAMPLE_WIKI_NAME).expect("wiki is hosted");
+        let bytes = std::fs::read(&hosted).unwrap();
+        app.example_wiki = Some(Arc::new(DemoCatalog::load_example_wiki(bytes)));
+        let state = Arc::new(Mutex::new(app));
+        let gate = Arc::new(Gate::new(Oauth::test_consumer(), Editors::parse("google:1")));
+        let demo = Arc::new(DemoCatalog::load());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().take(4).flatten() {
+                handle_request(&mut stream, &state, &gate, &demo);
+            }
+        });
+
+        // The reader's Sign in goes straight at the handoff.
+        let (status, body) = exchange(port, "GET /wiki/ HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 200, "{body}");
+        assert!(
+            body.contains("href=\"https://phext.tech/api/auth/sso/novafoxwiki?return=/wiki/\""),
+            "{body}"
+        );
+
+        // The shell behind ?edit carries the same door, and none of
+        // the dead local provider links.
+        let (status, body) = exchange(port, "GET /wiki/?edit=1 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("Sign in with phext.tech"), "{body}");
+        assert!(!body.contains("href=\"/api/auth/google?next="), "{body}");
+        assert!(!body.contains("href=\"/api/auth/github?next="), "{body}");
+        assert!(!body.contains("href=\"/api/auth/x?next="), "{body}");
     }
 
     #[test]
